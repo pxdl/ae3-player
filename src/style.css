@@ -150,14 +150,14 @@ button, #songlist, #bar {
 
 /* ---- export dropdown + help button -------------------------------------- */
 #export-wrap { position: relative; flex: none; }
-#exportbtn, #midibtn {
+#exportbtn, #midibtn, #bankbtn {
     padding: 5px 10px;
     font-size: 11px;
     color: var(--accent);
     background: #282c3a;
     white-space: nowrap;
 }
-#midibtn { flex: none; }
+#midibtn, #bankbtn { flex: none; }
 #exportbtn:disabled { color: var(--dim); cursor: default; }
 #export-menu {
     position: absolute;

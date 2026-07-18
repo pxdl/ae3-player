@@ -9,6 +9,7 @@ import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
 import { Exporter, download, type ExportOpts } from "./export.ts";
+import { storeZip } from "./zip.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -311,6 +312,30 @@ async function exportMidi(): Promise<void> {
     }
 }
 
+/* Bank export: the song's instrument bank exactly as it sits on the disc --
+ * .hd (Sony "Jam" header) + .bd (raw PS-ADPCM body). One zip, not two
+ * downloads: a click is one gesture, and Chrome silently blocks the second
+ * same-gesture download until the user allows "multiple downloads". */
+async function exportBank(): Promise<void> {
+    if (!session || playingIdx < 0) return;
+    const song = session.songs[playingIdx]!;
+    try {
+        const files: [string, Uint8Array][] = [];
+        for (const name of [song.hd, song.bd]) {
+            const b = await session.read(`bgm/${name}`);
+            if (!b)
+                throw new Error(`missing asset bgm/${name}`
+                                + " -- forget the disc and re-open the ISO");
+            files.push([name, b]);
+        }
+        const file = `${song.name}_bank.zip`;
+        download(storeZip(files), file, "application/zip");
+        status(`EXPORTED ${file}`);
+    } catch (e) {
+        status(friendlyError(e), true);
+    }
+}
+
 /* ---- help + export menu visibility -------------------------------------- */
 function toggleHelp(force?: boolean): void {
     const h = $("help");
@@ -486,6 +511,7 @@ async function main(): Promise<void> {
         $("ex-loopn").textContent = String(loopN);
     };
     $("midibtn").onclick = () => void exportMidi();
+    $("bankbtn").onclick = () => void exportBank();
     /* help overlay (key H; click anywhere on it closes, like bgmplay) */
     $("helpbtn").onclick = (e) => { e.stopPropagation(); toggleHelp(); };
     $("help").onclick = () => toggleHelp(false);
