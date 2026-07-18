@@ -6,6 +6,7 @@
 
 import type { SongAssets } from "./player.ts";
 import { RATE } from "./timeline.ts";
+import { storeZip } from "./zip.ts";
 
 export interface ExportOpts {
     songvol: number;
@@ -78,5 +79,36 @@ export class Exporter {
             [assets.hd.buffer, assets.bd.buffer, assets.mid.buffer,
              ...(assets.irx ? [assets.irx.buffer] : []),
              ...(withRev ? [assets.libsd!.buffer] : [])]);
+    }
+
+    /** Build `name`_samples.zip (every bank waveform as a WAV) off-thread
+     *  and download it. Same worker + busy flag as the WAV renders. */
+    kit(name: string, assets: SongAssets): void {
+        if (this.busy) return;
+        this.busy = true;
+        this.worker ??= new Worker(`${base}synth/export-worker.mjs`,
+                                   { type: "module" });
+        const file = `${name}_samples.zip`;
+        this.onstatus?.(`EXPORTING ${file}...`, false);
+        this.worker.onmessage = (e) => {
+            const m = e.data;
+            if (m.t === "kit-done") {
+                this.busy = false;
+                const entries: [string, Uint8Array][] =
+                    (m.entries as { name: string; wav: Uint8Array }[])
+                        .map((x) => [x.name, x.wav]);
+                download(storeZip(entries), file, "application/zip");
+                this.onstatus?.(`EXPORTED ${file} (${entries.length} SAMPLES)`, false);
+            } else if (m.t === "error") {
+                this.busy = false;
+                this.onstatus?.(`EXPORT FAILED: ${m.message}`, true);
+            }
+        };
+        this.worker.onerror = (e) => {
+            this.busy = false;
+            this.onstatus?.(`EXPORT FAILED: ${e.message}`, true);
+        };
+        this.worker.postMessage({ t: "kit", files: { hd: assets.hd, bd: assets.bd } },
+                                [assets.hd.buffer, assets.bd.buffer]);
     }
 }

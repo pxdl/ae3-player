@@ -15,7 +15,8 @@ import `engine.mjs` / `exporter.mjs` directly under Node.
 | `engine.mjs` | app-owned playback engine: load / chunked seek / dials / snapshot |
 | `worklet.mjs` | app-owned `AudioWorkletProcessor` wrapper: renders quanta, posts snapshots + waveform columns |
 | `exporter.mjs` | app-owned offline WAV render (wavdump's mode, second synth instance) |
-| `export-worker.mjs` | app-owned Worker wrapper around `exporter.mjs` |
+| `kit.mjs` | app-owned sample-kit build (bank waveforms -> WAVs with `smpl` loops, via the SDK's bank-introspection API) |
+| `export-worker.mjs` | app-owned Worker wrapper around `exporter.mjs` + `kit.mjs` |
 
 Vendored files are refreshed by `npm run sync-sdk` (provenance in
 `src/vendor/SDK_COMMIT`). Do not edit them here.

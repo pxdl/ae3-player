@@ -49,7 +49,13 @@
           </div>
         </div>
         <button id="midibtn" title="Save this song's MIDI sequence, exactly as it sits on the disc">EXPORT MIDI</button>
-        <button id="bankbtn" title="Save this song's instrument bank (a zip of the .hd + .bd pair, exactly as it sits on the disc)">EXPORT BANK</button>
+        <div id="bank-wrap">
+          <button id="bankbtn" title="Save this song's instrument bank -- raw pair or decoded samples">EXPORT BANK</button>
+          <div id="bank-menu" hidden>
+            <button class="ex-row" id="bank-raw" title="A zip of the .hd + .bd pair, exactly as it sits on the disc">RAW .HD/.BD PAIR</button>
+            <button class="ex-row" id="bank-kit" title="Every waveform decoded to a 44100 Hz WAV, loop points and root key in a smpl chunk">DECODED SAMPLES</button>
+          </div>
+        </div>
         <button id="helpbtn" title="How the console plays this (H)">?</button>
       </header>
       <div id="bar">

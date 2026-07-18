@@ -312,6 +312,21 @@ async function exportMidi(): Promise<void> {
     }
 }
 
+/* Kit export: every waveform in the song's bank decoded to WAV (44100 Hz,
+ * loop points + root key as smpl chunks), zipped. Decode runs in the export
+ * worker through the SDK's bank-introspection API. */
+async function exportKit(): Promise<void> {
+    if (!session || playingIdx < 0 || exporter.busy) return;
+    const song = session.songs[playingIdx]!;
+    try {
+        const assets = await session.songAssets(song);
+        exporter.kit(song.name, assets);
+    } catch (e) {
+        status(friendlyError(e), true);
+    }
+    updateExportBtn();
+}
+
 /* Bank export: the song's instrument bank exactly as it sits on the disc --
  * .hd (Sony "Jam" header) + .bd (raw PS-ADPCM body). One zip, not two
  * downloads: a click is one gesture, and Chrome silently blocks the second
@@ -344,6 +359,10 @@ function toggleHelp(force?: boolean): void {
 
 function showExportMenu(show: boolean): void {
     $("export-menu").hidden = !show;
+}
+
+function showBankMenu(show: boolean): void {
+    $("bank-menu").hidden = !show;
 }
 
 /* ---- keyboard (bgmplay's map) ------------------------------------------- */
@@ -495,10 +514,14 @@ async function main(): Promise<void> {
     exporter.onstatus = (msg, err) => { status(msg, err); updateExportBtn(); };
     $("exportbtn").onclick = (e) => {
         e.stopPropagation();
+        showBankMenu(false);
         if (!exporter.busy) showExportMenu(!!$("export-menu").hidden);
     };
     $("export-menu").onclick = (e) => e.stopPropagation();
-    document.addEventListener("click", () => showExportMenu(false));
+    document.addEventListener("click", () => {
+        showExportMenu(false);
+        showBankMenu(false);
+    });
     $("ex-current").onclick = () => { showExportMenu(false); void exportWav("current"); };
     $("ex-authored").onclick = () => { showExportMenu(false); void exportWav("authored"); };
     $("ex-loop").onclick = () => { showExportMenu(false); void exportWav("loop"); };
@@ -511,7 +534,15 @@ async function main(): Promise<void> {
         $("ex-loopn").textContent = String(loopN);
     };
     $("midibtn").onclick = () => void exportMidi();
-    $("bankbtn").onclick = () => void exportBank();
+    /* bank dropdown (raw pair / decoded sample kit) */
+    $("bankbtn").onclick = (e) => {
+        e.stopPropagation();
+        showExportMenu(false);
+        if (!exporter.busy) showBankMenu(!!$("bank-menu").hidden);
+    };
+    $("bank-menu").onclick = (e) => e.stopPropagation();
+    $("bank-raw").onclick = () => { showBankMenu(false); void exportBank(); };
+    $("bank-kit").onclick = () => { showBankMenu(false); void exportKit(); };
     /* help overlay (key H; click anywhere on it closes, like bgmplay) */
     $("helpbtn").onclick = (e) => { e.stopPropagation(); toggleHelp(); };
     $("help").onclick = () => toggleHelp(false);

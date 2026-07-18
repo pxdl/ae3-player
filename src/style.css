@@ -149,7 +149,7 @@ button, #songlist, #bar {
 #loopx { margin-left: 10px; color: var(--good); }
 
 /* ---- export dropdown + help button -------------------------------------- */
-#export-wrap { position: relative; flex: none; }
+#export-wrap, #bank-wrap { position: relative; flex: none; }
 #exportbtn, #midibtn, #bankbtn {
     padding: 5px 10px;
     font-size: 11px;
@@ -159,7 +159,7 @@ button, #songlist, #bar {
 }
 #midibtn, #bankbtn { flex: none; }
 #exportbtn:disabled { color: var(--dim); cursor: default; }
-#export-menu {
+#export-menu, #bank-menu {
     position: absolute;
     top: calc(100% + 4px);
     right: 0;
@@ -173,7 +173,7 @@ button, #songlist, #bar {
     flex-direction: column;
     gap: 2px;
 }
-#export-menu[hidden] { display: none; }
+#export-menu[hidden], #bank-menu[hidden] { display: none; }
 .ex-row {
     display: flex;
     gap: 4px;

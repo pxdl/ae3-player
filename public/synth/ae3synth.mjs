@@ -184,6 +184,33 @@ export class AE3Synth {
         return out;
     }
 
+    /* ---- bank introspection (ae3_synth_bank_waveform*; see ae3synth.h) */
+    bankWaveforms() { return this.#ex.ae3_synth_bank_waveforms(this.#s); }
+
+    bankWaveform(i) {
+        if (!this.#ex.ae3w_bank_waveform(this.#s, i, this.#scratch))
+            return null;
+        const v = this.#mem().i32, b = this.#scratch >> 2;
+        return { addr: v[b], samples: v[b + 1], loop_start: v[b + 2],
+                 prog: v[b + 3], tone: v[b + 4], root: v[b + 5],
+                 tune: v[b + 6], refs: v[b + 7] };
+    }
+
+    /* Decode waveform i's single pass into a fresh Int16Array (null = bad i). */
+    bankWaveformPcm(i) {
+        const w = this.bankWaveform(i);
+        if (w === null)
+            return null;
+        const p = this.#alloc(w.samples * 2 || 2);
+        const n = this.#ex.ae3_synth_bank_waveform_pcm(this.#s, i, p, w.samples);
+        /* re-view after the call: decode never grows memory, but stay in the
+         * same growth-safe pattern render() uses */
+        const heap = this.#mem().u8.buffer;
+        const out = n >= 0 ? new Int16Array(heap.slice(p, p + n * 2)) : null;
+        this.#ex.free(p);
+        return out;
+    }
+
     clock() {
         this.#ex.ae3w_clock(this.#s, this.#scratch);
         const v = this.#mem().f64, b = this.#scratch >> 3;
