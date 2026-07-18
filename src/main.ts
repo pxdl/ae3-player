@@ -308,7 +308,12 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     try {
         player = await WorkletPlayer.create();
     } catch (e) {
-        status(`audio setup failed: ${e instanceof Error ? e.message : e}`, true);
+        /* the play button stays disabled in this state -- say so where the
+         * song title normally sits, not only in the small status line (a
+         * content blocker eating the worklet/wasm lands here) */
+        $("song-name").textContent = "audio setup failed";
+        status(`audio setup failed: ${e instanceof Error ? e.message : e}`
+               + " -- an ad/content blocker may be blocking the synth", true);
         return;
     }
     player.onended = () => { finished = true; };
@@ -356,6 +361,39 @@ function wirePicker(): void {
         const f = e.dataTransfer?.files[0];
         if (f) void open(f);
     };
+}
+
+/* ?selftest -- boot the whole audio path with no disc and report each step
+ * in the status line AND document.title (readable by accessibility tools).
+ * Diagnoses "the play button does nothing": content blocker eating the
+ * worklet/wasm vs the browser refusing to start audio (autoplay policy). */
+async function selftest(): Promise<void> {
+    $("picker").hidden = true;
+    $("app").hidden = false;
+    const out: string[] = [];
+    const put = (s: string): void => {
+        out.push(s);
+        const line = out.join(" | ");
+        status(line, /FAIL|blocked/.test(line));
+        document.title = line;
+    };
+    $("song-name").textContent = "audio self-test";
+    try {
+        player = await WorkletPlayer.create();
+        put("setup:ok");
+    } catch (e) {
+        put(`setup:FAIL ${e instanceof Error ? e.message : e}`);
+        return;
+    }
+    put(`ctx:${player.ctx.state}`);
+    const btn = $<HTMLButtonElement>("playbtn");
+    btn.disabled = false;
+    btn.onclick = () => {
+        player!.resume();
+        put("click:yes");
+        setTimeout(() => put(`after-click:${player!.ctx.state}`), 800);
+    };
+    put("press-play-to-test-audio-unlock");
 }
 
 async function main(): Promise<void> {
@@ -418,6 +456,9 @@ async function main(): Promise<void> {
         void navigator.serviceWorker
             .register(`${import.meta.env.BASE_URL}sw.js`)
             .catch((e) => console.warn("service worker registration failed", e));
+
+    if (new URLSearchParams(location.search).has("selftest"))
+        return selftest();
 
     const resumed = await resumeSession();
     if (resumed) await enterPlayer(resumed);

@@ -142,6 +142,15 @@ export class WorkletPlayer {
         this.resume();
         this.node.port.postMessage({ t: "play" });
         if (this.snap) this.snap.playing = true;   /* until the next snapshot */
+        /* a context that is still not running 1 s after a gesture-driven play
+         * means the browser vetoed audio (e.g. Safari's per-site Auto-Play
+         * policy) -- silence with no message reads as a dead play button */
+        setTimeout(() => {
+            if (this.ctx.state !== "running")
+                this.onerror?.(`audio is blocked by the browser (context `
+                    + `"${this.ctx.state}") -- in Safari: Settings > Websites `
+                    + `> Auto-Play > allow for this site, and unmute the tab`);
+        }, 1000);
     }
 
     pause(): void {
