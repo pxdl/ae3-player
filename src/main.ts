@@ -3,7 +3,8 @@
  * harness/bgmplay.c keys, defaults, layout). */
 
 import "./style.css";
-import { resumeSession, openIso, type DiscSession } from "./disc.ts";
+import { resumeSession, openIso, friendlyError, US_SERIAL,
+         type DiscSession } from "./disc.ts";
 import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
@@ -103,7 +104,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         if (autoplay) player.play();
         $<HTMLButtonElement>("playbtn").disabled = false;
     } catch (e) {
-        status(String(e instanceof Error ? e.message : e), true);
+        status(friendlyError(e), true);
     } finally {
         loading = false;
         renderList();
@@ -244,7 +245,7 @@ async function exportWav(mode: "current" | "authored" | "loop"): Promise<void> {
         const assets = await session.songAssets(song);
         exporter.start(song.name, suffix, assets, o);
     } catch (e) {
-        status(String(e instanceof Error ? e.message : e), true);
+        status(friendlyError(e), true);
     }
     updateExportBtn();
 }
@@ -316,7 +317,9 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     /* no boot-time load: it could not complete before the first user gesture
      * anyway (autoplay policy) -- the first click/key loads and plays */
     $<HTMLButtonElement>("playbtn").disabled = false;
-    status(`${session.songs.length} songs - SPACE or click one to play`);
+    const region = s.serial && s.serial !== US_SERIAL
+        ? ` - untested region disc (${s.serial}), things may be off` : "";
+    status(`${session.songs.length} songs - SPACE or click one to play${region}`);
     requestAnimationFrame(tick);
 }
 
@@ -338,7 +341,7 @@ function wirePicker(): void {
             });
             await enterPlayer(s);
         } catch (e) {
-            pstat.textContent = String(e instanceof Error ? e.message : e);
+            pstat.textContent = friendlyError(e);
             pstat.classList.add("err");
             bar.hidden = true;
         }
@@ -408,6 +411,13 @@ async function main(): Promise<void> {
         location.reload();
     };
     window.addEventListener("keydown", onKey);
+
+    /* offline after first visit (W6): best-effort, and prod-only -- dev
+     * serves no sw.js, and a stale worker would shadow the dev server */
+    if (import.meta.env.PROD && "serviceWorker" in navigator)
+        void navigator.serviceWorker
+            .register(`${import.meta.env.BASE_URL}sw.js`)
+            .catch((e) => console.warn("service worker registration failed", e));
 
     const resumed = await resumeSession();
     if (resumed) await enterPlayer(resumed);

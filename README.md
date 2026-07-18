@@ -5,13 +5,22 @@ disc image and it extracts the music assets **client-side** (nothing uploaded,
 nothing shipped), then plays them through a bit-exact WebAssembly build of the
 [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer core.
 
-**Status: W4 player alpha.** Working today: ISO picker → in-browser extraction
-→ OPFS cache ("forget my disc" wipes it), the 68-song list with the game's own
-authored per-song volumes (from `bgm_desc.exdb` on your disc), AudioWorklet
-playback, transport with a latency-aligned playhead, seek, loop/timing/kernel/
-reverb/volume dials. Next (W5): piano roll, voice slots, waveform, help
-overlay, WAV export. Then (W6): PWA/offline, browser pass, error paths,
-publish.
+**Status: W6 (feature-complete).** Working today: ISO picker → in-browser
+extraction → OPFS cache ("forget my disc" wipes it), the 68-song list with the
+game's own authored per-song volumes (from `bgm_desc.exdb` on your disc),
+AudioWorklet playback, transport with a latency-aligned playhead, seek,
+loop/timing/kernel/reverb/volume dials, loop-unwound piano roll, voice slots,
+waveform strip with clip highlighting, help overlay, Worker-rendered WAV
+export (three modes, byte-identical to the native renderer) — and it is a PWA:
+after the first visit the app itself works offline, playing from the cached
+extraction (interrupted extractions resume where they left off; clear errors
+for wrong/truncated/non-AE3 images and unplugged drives).
+
+Browser support: Chrome/Chromium is the tested reference. Firefox and Safari
+load and render correctly (smoke-tested); a full interactive pass there is
+still pending. Safari floors: OPFS writes need Safari 18.2+ (older Safari
+plays directly from the ISO each visit, by design), `DecompressionStream` and
+WASM-in-worklet need 16.4+.
 
 This repository never contains or serves game data. Your disc stays on your
 machine.
@@ -40,5 +49,10 @@ npm run sync-sdk   # only when bumping the SDK
 npm run dev        # or: npm run build && npm run preview
 npm run typecheck
 ```
+
+`npm run build` also generates `dist/sw.js` (the precache service worker;
+`scripts/gen-sw.mjs`). Deploys go to GitHub Pages via
+`.github/workflows/deploy.yml` on every push to `main` (needs Pages set to
+the "GitHub Actions" source once the repo is public).
 
 License: MIT.

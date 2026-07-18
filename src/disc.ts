@@ -17,6 +17,25 @@ import type { SongAssets } from "./player.ts";
 const LAST_KEY = "ae3.lastDisc";
 const META = "meta.json";
 
+/** The disc every gate runs against; anything else is best-effort (§4.6). */
+export const US_SERIAL = "SCUS_975.01";
+
+/** Human-readable form of open/read failures for the picker + status line. */
+export function friendlyError(e: unknown): string {
+    if (e instanceof DOMException
+        && (e.name === "NotReadableError" || e.name === "NotFoundError"))
+        return "the ISO file could not be read -- if it is on a removable "
+             + "drive or was moved, reconnect it and choose it again";
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/short read/.test(msg))
+        return `${msg} -- the image ends too early; the ISO file looks `
+             + "truncated or partially copied";
+    if (/ in DATA\.BIN/.test(msg))
+        return `${msg} -- the disc was read but its layout is unrecognized `
+             + "(non-US discs are untested; please report your disc serial)";
+    return msg;
+}
+
 interface Meta {
     v: 1;
     serial: string | null;
@@ -102,22 +121,46 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
         hasLibsd: disc.assets.libsd !== null,
     };
 
+    /* Cache (OPFS) failures are soft -- the session falls back to reading the
+     * ISO File directly. ISO READ failures are hard: they abort the open with
+     * the real error (unplugged drive, truncated image), and the partial
+     * cache is safe to leave behind -- meta.json lands LAST, so an incomplete
+     * extraction never resumes as a session, and the next attempt's has()
+     * check skips everything already extracted. */
     let cache: OpfsCache | null = null;
     if (OpfsCache.supported()) {
         try {
             cache = await OpfsCache.open(disc.cacheKey);
-            for (let i = 0; i < jobs.length; i++) {
-                const [name, entry] = jobs[i]!;
-                progress(i, jobs.length, name);
-                if (!(await cache.has(name)))
-                    await cache.write(name, await disc.vfi.read(entry));
-            }
+        } catch (e) {
+            console.warn("OPFS unavailable; playing from the ISO", e);
+        }
+    }
+    for (let i = 0; i < jobs.length && cache; i++) {
+        const [name, entry] = jobs[i]!;
+        progress(i, jobs.length, name);
+        try {
+            if (await cache.has(name)) continue;
+        } catch (e) {
+            console.warn("OPFS failed; playing from the ISO", e);
+            cache = null;
+            break;
+        }
+        const data = await disc.vfi.read(entry);        /* hard failure */
+        try {
+            await cache.write(name, data);
+        } catch (e) {
+            console.warn("OPFS write failed; playing from the ISO", e);
+            cache = null;
+        }
+    }
+    if (cache) {
+        try {
             await cache.write(META,
                 new TextEncoder().encode(JSON.stringify(meta)));
-            progress(jobs.length, jobs.length, "done");
             localStorage.setItem(LAST_KEY, disc.cacheKey);
+            progress(jobs.length, jobs.length, "done");
         } catch (e) {
-            console.warn("OPFS extraction failed; playing from the ISO", e);
+            console.warn("OPFS write failed; playing from the ISO", e);
             cache = null;
         }
     }
