@@ -105,6 +105,16 @@ button:hover { border-color: var(--dim); }
     gap: 16px;
     padding: 12px 18px;
 }
+/* Safari (unlike Blink) lets button/label text be selected and hit-tests it:
+ * a click with a 1px hand-wobble on the text reads as a selection attempt
+ * and never becomes a click. App chrome is not selectable, and the play
+ * glyph is not a pointer target at all. */
+button, #songlist, #bar {
+    -webkit-user-select: none;
+    user-select: none;
+}
+#playbtn span { pointer-events: none; }
+
 #playbtn {
     width: 46px;
     height: 46px;

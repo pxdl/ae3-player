@@ -244,7 +244,10 @@ function tick(): void {
     const glyph = s?.playing ? "&#10074;&#10074;" : "&#9654;";
     if (glyph !== pbGlyph) {
         pbGlyph = glyph;
-        $("playbtn").innerHTML = glyph;
+        /* span: the glyph is pointer-events:none so clicks anywhere in the
+         * circle target the BUTTON -- Safari hit-tests/selects button text
+         * where Blink does not, which ate clicks landing on the glyph */
+        $("playbtn").innerHTML = `<span>${glyph}</span>`;
     }
     /* footer stats + clip flash (bgmplay's footer line) */
     if (s) {
