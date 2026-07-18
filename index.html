@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>AE3 BGM Player</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23101116'/%3E%3Cpath d='M5 12V5l6-1.5V10' stroke='%23ffc440' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='12' r='1.6' fill='%23ffc440'/%3E%3Ccircle cx='10' cy='10' r='1.6' fill='%23ffc440'/%3E%3C/svg%3E" />
+  <script type="module" src="/src/main.ts"></script>
+</head>
+<body>
+  <div id="app" hidden>
+    <aside id="side">
+      <h1>AE3 BGM SYNTH</h1>
+      <ul id="songlist"></ul>
+      <div id="side-foot">
+        <span id="disc-id"></span>
+        <button id="forget" title="Wipe the extracted assets from this browser">forget my disc</button>
+      </div>
+    </aside>
+    <main id="main">
+      <header id="head">
+        <button id="playbtn" title="Play/pause (Space)" disabled>&#9654;</button>
+        <div id="now">
+          <div id="song-name">&mdash;</div>
+          <div id="song-time"><span id="time-cur">0:00.0</span> / <span id="time-len">0:00.0</span>
+            <span id="bpm"></span></div>
+        </div>
+        <div id="dials">
+          <button class="dial" id="d-vol" title="Song volume (- = keys, A = authored)">VOL 44 AUTH</button>
+          <button class="dial" id="d-loop" title="Loop the song forever, like the console (L)">LOOP</button>
+          <button class="dial" id="d-timing" title="Exact event timing vs the console's 60 Hz tick grid (T)">EXACT</button>
+          <button class="dial" id="d-kernel" title="SPU2 gaussian kernel vs a brighter catmull-rom (G)">GAUSS</button>
+          <button class="dial" id="d-rev" title="Hardware reverb, STUDIO_C -- depth with , and . (R)">REV 30</button>
+        </div>
+      </header>
+      <div id="bar">
+        <div id="bar-loop"></div>
+        <div id="bar-fill"></div>
+        <div id="bar-head"></div>
+      </div>
+      <div id="stage">
+        <p id="stage-note">piano roll, slots and waveform land in the next milestone</p>
+      </div>
+      <div id="meter"><div id="meter-l"></div><div id="meter-r"></div></div>
+      <footer id="foot">
+        <span id="status"></span>
+        <span id="keys">SPACE play &middot; &uarr;&darr; select &middot; ENTER load &middot; L loop &middot; T timing &middot; G kernel &middot; R reverb &middot; , . depth &middot; - = vol &middot; A authored &middot; click bar to seek</span>
+      </footer>
+    </main>
+  </div>
+
+  <div id="picker">
+    <div id="picker-card">
+      <h1>AE3 BGM Player</h1>
+      <p>Point this page at your own <em>Ape Escape 3</em> disc image
+        (<code>.iso</code>). The music assets are extracted <strong>in your
+        browser</strong> and cached in its private storage &mdash; nothing is
+        uploaded, and this site ships no game data.</p>
+      <label id="drop">
+        <input id="file" type="file" accept=".iso" />
+        <span id="drop-label">drop the ISO here, or click to choose</span>
+      </label>
+      <p id="picker-status"></p>
+      <progress id="picker-progress" max="1" value="0" hidden></progress>
+    </div>
+  </div>
+</body>
+</html>
