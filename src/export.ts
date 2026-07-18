@@ -17,6 +17,20 @@ export interface ExportOpts {
 
 const base = import.meta.env.BASE_URL;
 
+/** Deliver `bytes` to the user as a file download. */
+export function download(bytes: Uint8Array | ArrayBuffer, file: string,
+                         type: string): void {
+    /* BlobPart wants ArrayBuffer-backed views; ours always are (OPFS reads,
+     * worker transfers) -- TS just can't see it through Uint8Array's default
+     * ArrayBufferLike parameter */
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 export class Exporter {
     busy = false;
     onstatus: ((msg: string, err: boolean) => void) | null = null;
@@ -39,13 +53,7 @@ export class Exporter {
                     `EXPORTING ${file}... ${(m.frames / RATE).toFixed(0)}s`, false);
             } else if (m.t === "done") {
                 this.busy = false;
-                const url = URL.createObjectURL(
-                    new Blob([m.wav], { type: "audio/wav" }));
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = file;
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 10_000);
+                download(m.wav, file, "audio/wav");
                 this.onstatus?.(`EXPORTED ${file}`, false);
             } else if (m.t === "error") {
                 this.busy = false;

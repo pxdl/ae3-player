@@ -11,7 +11,8 @@ game's own authored per-song volumes (from `bgm_desc.exdb` on your disc),
 AudioWorklet playback, transport with a latency-aligned playhead, seek,
 loop/timing/kernel/reverb/volume dials, loop-unwound piano roll, voice slots,
 waveform strip with clip highlighting, help overlay, Worker-rendered WAV
-export (three modes, byte-identical to the native renderer) — and it is a PWA:
+export (three modes, byte-identical to the native renderer), MIDI export (the
+sequence file exactly as it sits on the disc) — and it is a PWA:
 after the first visit the app itself works offline, playing from the cached
 extraction (interrupted extractions resume where they left off; clear errors
 for wrong/truncated/non-AE3 images and unplugged drives).

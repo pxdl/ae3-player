@@ -8,7 +8,7 @@ import { resumeSession, openIso, friendlyError, US_SERIAL,
 import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
-import { Exporter, type ExportOpts } from "./export.ts";
+import { Exporter, download, type ExportOpts } from "./export.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -293,6 +293,24 @@ async function exportWav(mode: "current" | "authored" | "loop"): Promise<void> {
     updateExportBtn();
 }
 
+/* MIDI export: the sequence exactly as it sits on the disc (a standard SMF;
+ * the CC99 20/30 loop markers ride along as plain controller events). No
+ * render involved, so no worker and no busy state. */
+async function exportMidi(): Promise<void> {
+    if (!session || playingIdx < 0) return;
+    const song = session.songs[playingIdx]!;
+    try {
+        const mid = await session.read(`bgm/${song.mid}`);
+        if (!mid)
+            throw new Error(`missing asset bgm/${song.mid}`
+                            + " -- forget the disc and re-open the ISO");
+        download(mid, song.mid, "audio/midi");
+        status(`EXPORTED ${song.mid}`);
+    } catch (e) {
+        status(friendlyError(e), true);
+    }
+}
+
 /* ---- help + export menu visibility -------------------------------------- */
 function toggleHelp(force?: boolean): void {
     const h = $("help");
@@ -467,6 +485,7 @@ async function main(): Promise<void> {
         if (loopN < 99) loopN++;
         $("ex-loopn").textContent = String(loopN);
     };
+    $("midibtn").onclick = () => void exportMidi();
     /* help overlay (key H; click anywhere on it closes, like bgmplay) */
     $("helpbtn").onclick = (e) => { e.stopPropagation(); toggleHelp(); };
     $("help").onclick = () => toggleHelp(false);
