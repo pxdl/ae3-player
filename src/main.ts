@@ -80,28 +80,59 @@ function renderDials(): void {
 }
 
 /* ---- transport ---------------------------------------------------------- */
-/* Only call from a user-gesture handler: the load round-trip cannot complete
- * while the context is suspended, and resume() needs the gesture. */
+/* The audio stack is created lazily INSIDE the first user gesture: Safari
+ * only lets an AudioContext run when its creating gesture (not merely a
+ * later resume()) is user-initiated under stricter Auto-Play policies.
+ * Chrome/Firefox are indifferent to the timing. */
+let playerReady: Promise<WorkletPlayer> | null = null;
+
+function ensurePlayer(): Promise<WorkletPlayer> {
+    playerReady ??= WorkletPlayer.create().then((p) => {
+        player = p;
+        p.onended = () => { finished = true; };
+        p.onerror = (m) => status(m, true);
+        p.onsnapshot = (s) => viz?.ingest(s);
+        return p;
+    }, (e) => {
+        playerReady = null;              /* allow a retry on the next click */
+        $("song-name").textContent = "audio setup failed";
+        throw new Error(`audio setup failed: `
+            + `${e instanceof Error ? e.message : e}`
+            + " -- an ad/content blocker may be blocking the synth");
+    });
+    return playerReady;
+}
+
+/* Only call from a user-gesture handler: the context is created and resumed
+ * inside that gesture, and the load round-trip cannot complete while it is
+ * suspended. */
 async function loadSong(idx: number, autoplay: boolean): Promise<void> {
-    if (!session || !player || loading) return;
+    if (!session || loading) return;
     const song = session.songs[idx];
     if (!song) return;
-    player.resume();
+    let p: WorkletPlayer;
+    try {
+        p = await ensurePlayer();        /* sync up to the first await */
+    } catch (e) {
+        status(e instanceof Error ? e.message : String(e), true);
+        return;
+    }
+    p.resume();
     loading = true;
     finished = false;
     status(`loading ${song.name}...`);
     try {
         const assets = await session.songAssets(song);
         if (authored) cfg.songvol = song.songvol;
-        const r = await player.load(assets, engineConfig());
+        const r = await p.load(assets, engineConfig());
         timeline = buildTimeline(r.events, r.ppqn);
         playingIdx = idx;
-        player.snap = null;
+        p.snap = null;
         viz?.clearWave();
         $("song-name").textContent = song.name;
         $("time-len").textContent = fmtTime(timeline.lenSamp);
         status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
-        if (autoplay) player.play();
+        if (autoplay) p.play();
         $<HTMLButtonElement>("playbtn").disabled = false;
     } catch (e) {
         status(friendlyError(e), true);
@@ -113,8 +144,8 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
 }
 
 function togglePlay(): void {
-    if (!player) return;
-    if (playingIdx < 0) {               /* first gesture: load the selection */
+    if (!session) return;
+    if (!player || playingIdx < 0) {    /* first gesture: load the selection */
         void loadSong(sel, true);
     } else if (finished) {              /* bgmplay: SPACE after end restarts */
         finished = false;
@@ -305,22 +336,8 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     renderDials();
     viz = new Viz($<HTMLCanvasElement>("roll"), $<HTMLCanvasElement>("slots"),
                   $<HTMLCanvasElement>("wave"));
-    try {
-        player = await WorkletPlayer.create();
-    } catch (e) {
-        /* the play button stays disabled in this state -- say so where the
-         * song title normally sits, not only in the small status line (a
-         * content blocker eating the worklet/wasm lands here) */
-        $("song-name").textContent = "audio setup failed";
-        status(`audio setup failed: ${e instanceof Error ? e.message : e}`
-               + " -- an ad/content blocker may be blocking the synth", true);
-        return;
-    }
-    player.onended = () => { finished = true; };
-    player.onerror = (m) => status(m, true);
-    player.onsnapshot = (s) => viz?.ingest(s);
-    /* no boot-time load: it could not complete before the first user gesture
-     * anyway (autoplay policy) -- the first click/key loads and plays */
+    /* no audio yet: the whole stack is built inside the first click/key
+     * (ensurePlayer) so Safari associates the AudioContext with a gesture */
     $<HTMLButtonElement>("playbtn").disabled = false;
     const region = s.serial && s.serial !== US_SERIAL
         ? ` - untested region disc (${s.serial}), things may be off` : "";
@@ -378,20 +395,19 @@ async function selftest(): Promise<void> {
         document.title = line;
     };
     $("song-name").textContent = "audio self-test";
-    try {
-        player = await WorkletPlayer.create();
-        put("setup:ok");
-    } catch (e) {
-        put(`setup:FAIL ${e instanceof Error ? e.message : e}`);
-        return;
-    }
-    put(`ctx:${player.ctx.state}`);
     const btn = $<HTMLButtonElement>("playbtn");
     btn.disabled = false;
-    btn.onclick = () => {
-        player!.resume();
+    btn.onclick = async () => {         /* the app's real path: create the
+                                         * whole stack inside the gesture */
         put("click:yes");
-        setTimeout(() => put(`after-click:${player!.ctx.state}`), 800);
+        try {
+            const p = await ensurePlayer();
+            put("setup:ok");
+            put(`ctx:${p.ctx.state}`);
+            setTimeout(() => put(`after-click:${p.ctx.state}`), 800);
+        } catch (e) {
+            put(`setup:FAIL ${e instanceof Error ? e.message : e}`);
+        }
     };
     put("press-play-to-test-audio-unlock");
 }

@@ -77,8 +77,15 @@ export class WorkletPlayer {
      * 'ready' before the first user gesture deadlocks. Messages are ordered,
      * so init/load/play queue correctly; resume() must be called from a
      * gesture handler (see resume()). */
+    /* Call synchronously from a user-gesture handler: Safari ties the
+     * context's autoplay dispensation to the CREATING gesture -- a context
+     * built at page-enter time can stay "interrupted" forever under stricter
+     * Auto-Play policies, even when resume() comes from a later click. The
+     * construction and first resume() below run before the first await, i.e.
+     * still inside the caller's gesture. */
     static async create(): Promise<WorkletPlayer> {
         const ctx = new AudioContext({ sampleRate: RATE });
+        void ctx.resume();
         await ctx.audioWorklet.addModule(`${base}synth/worklet.mjs`);
         /* raw bytes, compiled inside the worklet: Chrome silently drops a
          * postMessage'd WebAssembly.Module bound for an AudioWorklet */
