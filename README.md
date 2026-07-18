@@ -16,11 +16,17 @@ after the first visit the app itself works offline, playing from the cached
 extraction (interrupted extractions resume where they left off; clear errors
 for wrong/truncated/non-AE3 images and unplugged drives).
 
-Browser support: Chrome/Chromium is the tested reference. Firefox and Safari
-load and render correctly (smoke-tested); a full interactive pass there is
-still pending. Safari floors: OPFS writes need Safari 18.2+ (older Safari
-plays directly from the ISO each visit, by design), `DecompressionStream` and
-WASM-in-worklet need 16.4+.
+Browser support: Chrome/Chromium is the tested reference; Firefox works.
+Safari works as of the in-gesture audio fix: the whole audio stack is created
+inside the first click, because Safari ties the autoplay dispensation to the
+gesture that CREATED the `AudioContext` — a context built at page-load time
+can stay "interrupted" forever under stricter per-site Auto-Play policies,
+no matter who calls `resume()` later. If audio still refuses to start, the
+status line says so; check Safari Settings > Websites > Auto-Play for this
+site and the tab's mute state. Safari floors: OPFS writes need 18.2+ and can
+be declined by the browser (the app then plays straight from the ISO and asks
+for it again next visit), `DecompressionStream` and WASM-in-worklet need
+16.4+.
 
 This repository never contains or serves game data. Your disc stays on your
 machine.
