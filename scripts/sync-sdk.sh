@@ -16,7 +16,8 @@ DST="$(dirname "$0")/.."
 }
 mkdir -p "$DST/src/vendor/extract" "$DST/public/synth"
 cp "$SDK"/extract-web/src/*.ts "$DST/src/vendor/extract/"
-cp "$SDK/wasm/js/ae3synth.mjs" "$SDK/wasm/dist/ae3synth.wasm" "$DST/public/synth/"
+cp "$SDK/wasm/js/ae3synth.mjs" "$SDK/wasm/js/wav.mjs" \
+   "$SDK/wasm/dist/ae3synth.wasm" "$DST/public/synth/"
 GIT_SHA=$(git -C "$SDK" rev-parse HEAD 2>/dev/null || echo unknown)
 printf 'ae3-sdk %s\nsynced  %s\n' "$GIT_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$DST/src/vendor/SDK_COMMIT"

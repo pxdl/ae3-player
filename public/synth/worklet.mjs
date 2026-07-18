@@ -8,7 +8,7 @@
  *
  * Everything in public/synth/ is served UNBUNDLED by design -- the audio path
  * has no build step and no main-thread glue (see README.md here). */
-import { PlayerEngine } from "./engine.mjs";
+import { PlayerEngine, TICK_SAMPLES } from "./engine.mjs";
 
 const SNAPSHOT_QUANTA = 8;      /* 8 x 128 = 1024 samples ~ 21 ms ~ 47 Hz */
 
@@ -21,6 +21,13 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
         this.peakL = 0;
         this.peakR = 0;
         this.wasDone = false;
+        /* waveform history: one min/max/clip column per 60 Hz tick (800
+         * samples), like bgmplay's audio_cb -- finished columns ship with the
+         * next snapshot as [lmin,lmax,rmin,rmax,clip] x n; the main thread
+         * keeps the ring. Fast-forward output never lands here (render()
+         * returns silence while seeking), matching bgmplay's headless seek. */
+        this.wcur = { lmin: 0, lmax: 0, rmin: 0, rmax: 0, clip: 0, n: 0 };
+        this.wcols = [];
         this.port.onmessage = (e) => { this.#onmessage(e.data); };
     }
 
@@ -47,6 +54,8 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
                     { hd: m.hd, bd: m.bd, mid: m.mid,
                       irx: m.irx, libsd: m.libsd }, m.config);
                 this.wasDone = false;
+                this.wcur.n = 0;        /* bgmplay clears wcol on song load */
+                this.wcols.length = 0;
                 this.port.postMessage(
                     { t: "loaded", ppqn, events,
                       warning: this.engine.warning }, [events.buffer]);
@@ -83,6 +92,7 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
         if (!eng) return true;
         const out = outputs[0], L = out[0], R = out[1];
         const n = eng.render(this.buf, 128);     /* output pre-zeroed per spec */
+        const w = this.wcur;
         for (let i = 0; i < n; i++) {
             const l = this.buf[2 * i], r = this.buf[2 * i + 1];
             L[i] = l;
@@ -90,6 +100,17 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
             const al = Math.abs(l), ar = Math.abs(r);
             if (al > this.peakL) this.peakL = al;
             if (ar > this.peakR) this.peakR = ar;
+            if (w.n === 0) {
+                w.lmin = w.lmax = l; w.rmin = w.rmax = r; w.clip = 0;
+            } else {
+                if (l < w.lmin) w.lmin = l; else if (l > w.lmax) w.lmax = l;
+                if (r < w.rmin) w.rmin = r; else if (r > w.rmax) w.rmax = r;
+            }
+            if (al >= 0.9999 || ar >= 0.9999) w.clip = 1;
+            if (++w.n >= TICK_SAMPLES) {
+                this.wcols.push(w.lmin, w.lmax, w.rmin, w.rmax, w.clip);
+                w.n = 0;
+            }
         }
         if (eng.done && !this.wasDone) {
             this.wasDone = true;
@@ -103,7 +124,9 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
                 s.ctxFrame = currentFrame;
                 s.peakL = this.peakL;
                 s.peakR = this.peakR;
-                this.port.postMessage(s);
+                s.wcols = new Float32Array(this.wcols);
+                this.wcols.length = 0;
+                this.port.postMessage(s, [s.wcols.buffer]);
             }
             this.peakL = this.peakR = 0;
         }

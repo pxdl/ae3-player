@@ -17,7 +17,7 @@
  * depth 30, authored song volume, loop forever like the console. */
 import { AE3Synth, LOOP_FOREVER } from "./ae3synth.mjs";
 
-export { RATE, NVOICES, LOOP_FOREVER } from "./ae3synth.mjs";
+export { RATE, NVOICES, LOOP_FOREVER, TICK_SAMPLES } from "./ae3synth.mjs";
 
 /* Frames fast-forwarded per render() call while seeking: ~2 ms of compute at
  * the WASM core's >150x real time, inside the 2.67 ms quantum budget. */
@@ -148,7 +148,8 @@ export class PlayerEngine {
     }
 
     /** Playback state for the UI: position, display clock, packed voice
-     *  states [flags,ch,key,env]x48 (flags: 1 in_use, 2 active, 4 released). */
+     *  states [flags,ch,key,env]x48 (flags: 1 in_use, 2 active, 4 released),
+     *  and the display stats bgmplay's slot label + footer read. */
     snapshot() {
         const s = this.synth;
         if (!s || this.busy)
@@ -162,10 +163,21 @@ export class PlayerEngine {
             v[i * 4 + 2] = st.key;
             v[i * 4 + 3] = st.env;
         }
+        const st = s.stats();
         return {
             pos: s.pos(),
             clock: s.clock(),
             voices: v,
+            stats: {
+                voices_started: st.voices_started,
+                peak_voices: st.peak_voices,
+                notes_dropped: st.notes_dropped,
+                bus_peak: st.bus_peak,
+                bus_clipped: st.bus_clipped,
+                wet_peak: st.wet_peak,
+                wet_clipped: st.wet_clipped,
+                loops_taken: st.loops_taken,
+            },
             playing: this.playing,
             seeking: this.seekTarget >= 0,
             done: this.done,

@@ -1,12 +1,13 @@
-/* App controller: picker <-> player states, transport, dials, keyboard.
- * Port of the reference consumer's behavior (ae3-sdk harness/bgmplay.c keys
- * and defaults); the visualizers (piano roll, slots, waveform, help, export)
- * land in W5. */
+/* App controller: picker <-> player states, transport, dials, visualizers,
+ * export, help, keyboard. Port of the reference consumer's behavior (ae3-sdk
+ * harness/bgmplay.c keys, defaults, layout). */
 
 import "./style.css";
 import { resumeSession, openIso, type DiscSession } from "./disc.ts";
 import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
+import { Viz } from "./viz.ts";
+import { Exporter, type ExportOpts } from "./export.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -17,12 +18,17 @@ const $ = <T extends HTMLElement>(id: string): T =>
 let session: DiscSession | null = null;
 let player: WorkletPlayer | null = null;
 let timeline: Timeline | null = null;
+let viz: Viz | null = null;
 let sel = 0;                    /* highlighted row */
 let playingIdx = -1;            /* loaded song */
 let loading = false;
 let finished = false;
 let authored = true;
+let loopN = 2;                  /* export dropdown's loop count */
+let prevClip = 0;               /* bus+wet clip total, for the flash */
+let clipFlash = 0;              /* performance.now() of the last increase */
 const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true };
+const exporter = new Exporter();
 
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -90,6 +96,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         timeline = buildTimeline(r.events, r.ppqn);
         playingIdx = idx;
         player.snap = null;
+        viz?.clearWave();
         $("song-name").textContent = song.name;
         $("time-len").textContent = fmtTime(timeline.lenSamp);
         status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
@@ -176,11 +183,13 @@ function fmtTime(samples: number): string {
 
 function tick(): void {
     requestAnimationFrame(tick);
-    if (!player || !timeline) return;
+    if (!player || !timeline) { viz?.draw(null, null, 0, cfg.loop); return; }
     const s = player.snap;
     const disp = displaySample();
     $("time-cur").textContent = fmtTime(disp);
     if (s) $("bpm").textContent = `${bpmOf(timeline, s.clock).toFixed(1)} BPM`;
+    $("loopx").textContent =
+        s && s.stats.loops_taken > 0 ? `×${s.stats.loops_taken}` : "";
     const frac = timeline.lenSamp > 0 ?
         Math.min(disp / timeline.lenSamp, 1) : 0;
     $("bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
@@ -196,12 +205,58 @@ function tick(): void {
     }
     const pb = $("playbtn");
     pb.innerHTML = s?.playing ? "&#10074;&#10074;" : "&#9654;";
-    for (const [id, pk] of [["meter-l", s?.peakL ?? 0],
-                            ["meter-r", s?.peakR ?? 0]] as const) {
-        const el = $(id);
-        el.style.width = `${Math.min(pk * 100, 100).toFixed(1)}%`;
-        el.classList.toggle("hot", pk >= 0.9999);
+    /* footer stats + clip flash (bgmplay's footer line) */
+    if (s) {
+        const st = s.stats;
+        $("stats-line").textContent =
+            `VOICES STARTED ${st.voices_started}  BUS PEAK ${st.bus_peak}/32767` +
+            `  CLIP ${st.bus_clipped}  WET PEAK ${st.wet_peak}` +
+            `  WET CLIP ${st.wet_clipped}`;
+        const clip = st.bus_clipped + st.wet_clipped;
+        if (clip > prevClip) { prevClip = clip; clipFlash = performance.now(); }
     }
+    $("clip-flash").hidden = !(clipFlash && performance.now() - clipFlash < 700);
+    viz?.draw(s, timeline, disp, cfg.loop);
+}
+
+/* ---- export (bgmplay's dropdown: current / authored / loop xN) ---------- */
+function updateExportBtn(): void {
+    const b = $<HTMLButtonElement>("exportbtn");
+    b.disabled = exporter.busy;
+    b.textContent = exporter.busy ? "EXPORTING" : "EXPORT WAV";
+}
+
+async function exportWav(mode: "current" | "authored" | "loop"): Promise<void> {
+    if (!session || playingIdx < 0 || exporter.busy) return;
+    const song = session.songs[playingIdx]!;
+    let suffix = "";
+    let o: ExportOpts;
+    if (mode === "authored") {          /* the curated listening-set render */
+        suffix = "_authored";
+        o = { songvol: song.songvol, revDepth: 30, exact: true,
+              bright: false, loop: 0 };
+    } else {                            /* what you hear (minus the looping) */
+        o = { songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
+              bright: !cfg.gaussian, loop: 0 };
+        if (mode === "loop") { suffix = `_loop${loopN}`; o.loop = loopN; }
+    }
+    try {
+        const assets = await session.songAssets(song);
+        exporter.start(song.name, suffix, assets, o);
+    } catch (e) {
+        status(String(e instanceof Error ? e.message : e), true);
+    }
+    updateExportBtn();
+}
+
+/* ---- help + export menu visibility -------------------------------------- */
+function toggleHelp(force?: boolean): void {
+    const h = $("help");
+    h.hidden = force !== undefined ? !force : !h.hidden;
+}
+
+function showExportMenu(show: boolean): void {
+    $("export-menu").hidden = !show;
 }
 
 /* ---- keyboard (bgmplay's map) ------------------------------------------- */
@@ -225,6 +280,14 @@ function onKey(e: KeyboardEvent): void {
         if (playingIdx >= 0)
             setVol(session.songs[playingIdx]!.songvol, true);
         break;
+    case "z": case "Z": viz?.zoomIn(); break;
+    case "x": case "X": viz?.zoomOut(); break;
+    case "e": case "E": void exportWav("current"); break;
+    case "h": case "H": toggleHelp(); break;
+    case "Escape":
+        if (!$("help").hidden) toggleHelp(false);
+        else showExportMenu(false);
+        break;
     default: return;
     }
     e.preventDefault();
@@ -239,6 +302,8 @@ async function enterPlayer(s: DiscSession): Promise<void> {
         s.cached ? (s.serial ?? s.volumeId) : `${s.serial ?? s.volumeId} (no cache)`;
     renderList();
     renderDials();
+    viz = new Viz($<HTMLCanvasElement>("roll"), $<HTMLCanvasElement>("slots"),
+                  $<HTMLCanvasElement>("wave"));
     try {
         player = await WorkletPlayer.create();
     } catch (e) {
@@ -247,6 +312,7 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     }
     player.onended = () => { finished = true; };
     player.onerror = (m) => status(m, true);
+    player.onsnapshot = (s) => viz?.ingest(s);
     /* no boot-time load: it could not complete before the first user gesture
      * anyway (autoplay policy) -- the first click/key loads and plays */
     $<HTMLButtonElement>("playbtn").disabled = false;
@@ -313,6 +379,28 @@ async function main(): Promise<void> {
     $("d-timing").onclick = toggleTiming;
     $("d-kernel").onclick = toggleKernel;
     $("d-rev").onclick = () => setRev(cfg.revDepth > 0 ? 0 : 30);
+    /* export dropdown (bgmplay's EXPORT WAV button + 3-row panel) */
+    exporter.onstatus = (msg, err) => { status(msg, err); updateExportBtn(); };
+    $("exportbtn").onclick = (e) => {
+        e.stopPropagation();
+        if (!exporter.busy) showExportMenu(!!$("export-menu").hidden);
+    };
+    $("export-menu").onclick = (e) => e.stopPropagation();
+    document.addEventListener("click", () => showExportMenu(false));
+    $("ex-current").onclick = () => { showExportMenu(false); void exportWav("current"); };
+    $("ex-authored").onclick = () => { showExportMenu(false); void exportWav("authored"); };
+    $("ex-loop").onclick = () => { showExportMenu(false); void exportWav("loop"); };
+    $("ex-dec").onclick = () => {
+        if (loopN > 2) loopN--;
+        $("ex-loopn").textContent = String(loopN);
+    };
+    $("ex-inc").onclick = () => {
+        if (loopN < 99) loopN++;
+        $("ex-loopn").textContent = String(loopN);
+    };
+    /* help overlay (key H; click anywhere on it closes, like bgmplay) */
+    $("helpbtn").onclick = (e) => { e.stopPropagation(); toggleHelp(); };
+    $("help").onclick = () => toggleHelp(false);
     $("forget").onclick = async () => {
         if (!session) return;
         player?.pause();

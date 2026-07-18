@@ -12,11 +12,24 @@ import type { DisplayClock } from "./timeline.ts";
 
 export const RATE = 48000;
 
+export interface SnapshotStats {   /* the display subset of ae3_stats */
+    voices_started: number;
+    peak_voices: number;
+    notes_dropped: number;
+    bus_peak: number;
+    bus_clipped: number;
+    wet_peak: number;
+    wet_clipped: number;
+    loops_taken: number;
+}
+
 export interface Snapshot {
     pos: number;               /* absolute samples rendered */
     ctxFrame: number;          /* worklet currentFrame at snapshot */
     clock: DisplayClock;
     voices: Int32Array;        /* [flags,ch,key,env] x 48 */
+    stats: SnapshotStats;
+    wcols: Float32Array;       /* [lmin,lmax,rmin,rmax,clip] x n new columns */
     peakL: number;
     peakR: number;
     playing: boolean;
