@@ -28,6 +28,7 @@ let authored = true;
 let loopN = 2;                  /* export dropdown's loop count */
 let prevClip = 0;               /* bus+wet clip total, for the flash */
 let clipFlash = 0;              /* performance.now() of the last increase */
+let pbGlyph = "";               /* last glyph written to the play button */
 const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true };
 const exporter = new Exporter();
 
@@ -235,8 +236,16 @@ function tick(): void {
     } else {
         lp.style.display = "none";
     }
-    const pb = $("playbtn");
-    pb.innerHTML = s?.playing ? "&#10074;&#10074;" : "&#9654;";
+    /* write the glyph only when it CHANGES: an innerHTML assignment replaces
+     * the text node even when the string is identical, and WebKit swallows a
+     * click whose mousedown/mouseup straddles that replacement -- at 60 Hz
+     * the play button ate clicks at random in Safari (space was immune: no
+     * hit-testing) */
+    const glyph = s?.playing ? "&#10074;&#10074;" : "&#9654;";
+    if (glyph !== pbGlyph) {
+        pbGlyph = glyph;
+        $("playbtn").innerHTML = glyph;
+    }
     /* footer stats + clip flash (bgmplay's footer line) */
     if (s) {
         const st = s.stats;
