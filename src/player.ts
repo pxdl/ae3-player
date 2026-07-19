@@ -35,6 +35,7 @@ export interface Snapshot {
     playing: boolean;
     seeking: boolean;
     done: boolean;
+    cueSongvol: number;        /* live cue-layer songvol; -1 = layer off */
 }
 
 export interface SongAssets {
@@ -45,6 +46,9 @@ export interface SongAssets {
 export interface EngineConfig {
     songvol: number; revDepth: number;
     exact: boolean; gaussian: boolean; loop: number;
+    /* M8 cue layer: while cueOn it owns songvol at cueScale (the authored
+     * volume_scale float); the ducks are the game's cutscene/phone 0.7x fades */
+    cueOn: boolean; cueScale: number; duckDemo: boolean; duckPhone: boolean;
 }
 
 export interface LoadResult { ppqn: number; events: Uint32Array; warning: string; }

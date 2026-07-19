@@ -35,6 +35,8 @@
           <button class="dial" id="d-timing" title="Exact event timing vs the console's 60 Hz tick grid (T)">EXACT</button>
           <button class="dial" id="d-kernel" title="SPU2 gaussian kernel vs a brighter catmull-rom (G)">GAUSS</button>
           <button class="dial" id="d-rev" title="Hardware reverb, STUDIO_C -- depth with , and . (R)">REV 30</button>
+          <button class="dial" id="d-duckd" title="Cutscene duck -- the game fades music to 70% during demos, 0.5 s in / 2 s out (D)">DUCK CUT</button>
+          <button class="dial" id="d-duckp" title="Monkey-phone duck -- same 70% fade during phone calls; both ducks multiply to 49% (P)">DUCK TEL</button>
         </div>
         <div id="export-wrap">
           <button id="exportbtn" title="Render this song to a WAV file (E = current settings)">EXPORT WAV</button>
@@ -75,7 +77,7 @@
         </div>
         <div id="foot-main">
           <span id="status"></span>
-          <span id="keys">SPACE play &middot; &uarr;&darr; select &middot; ENTER load &middot; L loop &middot; T timing &middot; G kernel &middot; R reverb &middot; , . depth &middot; - = vol &middot; A authored &middot; Z X zoom &middot; E export &middot; H help &middot; click bar to seek</span>
+          <span id="keys">SPACE play &middot; &uarr;&darr; select &middot; ENTER load &middot; L loop &middot; T timing &middot; G kernel &middot; R reverb &middot; , . depth &middot; - = vol &middot; A authored &middot; D P ducks &middot; Z X zoom &middot; E export &middot; H help &middot; click bar to seek</span>
         </div>
       </footer>
       <div id="help" hidden>
@@ -101,6 +103,17 @@
             authored levels only occasional transient peaks clip, and the real
             console clips those too. Use - and = to override, and A to return to the
             authored value.</p>
+          </section>
+          <section>
+            <h2>Ducking <small>(keys D P)</small></h2>
+            <p>During cutscenes and monkey-phone calls the game lowers music to
+            70&nbsp;percent, fading down in half a second and back up in two. The
+            fade is a linear ramp the game itself steps every frame; the sound
+            driver just receives the new volume each tick. DUCK&nbsp;CUT holds the
+            cutscene duck, DUCK&nbsp;TEL the phone duck, and both together multiply
+            to 49&nbsp;percent, exactly like the game. Either arms the game's cue
+            volume layer at the authored scale (the VOL dial tracks the fade);
+            - = A return to manual volume.</p>
           </section>
           <section>
             <h2>Exact vs tick clock <small>(key T)</small></h2>

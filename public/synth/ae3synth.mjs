@@ -19,6 +19,9 @@ export const TICK_HZ = 60;
 export const TICK_SAMPLES = RATE / TICK_HZ;
 export const LOOP_FOREVER = 0x7f;
 
+/* AE3_DUCK_* (cue layer) */
+export const DUCK_DEMO = 0, DUCK_PHONE = 1;
+
 /* AE3_EV_* */
 export const EV_CH = 0, EV_TEMPO = 1, EV_END = 2,
              EV_LOOP_START = 3, EV_LOOP_END = 4, EV_LOOP_COUNT = 5, EV_HOOK = 6;
@@ -133,6 +136,20 @@ export class AE3Synth {
     noteOn(ch, key, vel)   { this.#ex.ae3_synth_note_on(this.#s, ch, key, vel); }
     noteOff(ch, key)       { this.#ex.ae3_synth_note_off(this.#s, ch, key); }
     program(ch, prog)      { this.#ex.ae3_synth_program(this.#s, ch, prog); }
+
+    /* ---- cue layer (the game's volume model above the driver; see ae3synth.h).
+     * Enabled, it owns the song volume: per-song scale, options slider, dolby
+     * factor, and the demo/phone ducks (DUCK_DEMO/DUCK_PHONE) with the game's
+     * 0.7 x, 0.5 s in / 2.0 s out linear crossfades on the 60 Hz tick grid. */
+    cueEnable(on)          { this.#ex.ae3_synth_cue_enable(this.#s, on ? 1 : 0); }
+    cueScale(v)            { this.#ex.ae3_synth_cue_scale(this.#s, v); }
+    cueSlider(v)           { this.#ex.ae3_synth_cue_slider(this.#s, v); }
+    cueDolby(on)           { this.#ex.ae3_synth_cue_dolby(this.#s, on ? 1 : 0); }
+    cueDuck(which, active) { this.#ex.ae3_synth_cue_duck(this.#s, which, active ? 1 : 0); }
+    cueDuckConfig(which, level, inSecs, outSecs)
+                           { this.#ex.ae3_synth_cue_duck_config(this.#s, which, level, inSecs, outSecs); }
+    cueSongvol()           { return this.#ex.ae3_synth_cue_songvol(this.#s); }
+    cueDuckLevel(which)    { return this.#ex.ae3_synth_cue_duck_level(this.#s, which); }
 
     /* Render into an interleaved-stereo Float32Array; frames defaults to
      * out.length/2. Returns frames written (0 = song over, -1 = nothing

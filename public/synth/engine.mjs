@@ -29,6 +29,15 @@ export const defaultConfig = () => ({
     exact: true,
     gaussian: true,
     loop: LOOP_FOREVER,   /* 0 = single pass (the gate's finite renders) */
+    /* M8 cue layer (the game's volume model above the driver). While cueOn the
+     * layer owns song volume at cueScale (the song's authored volume_scale --
+     * byte-identical to the static songvol path until a duck is held; verified
+     * SDK-side). duckDemo/duckPhone mirror the game's cutscene/phone ducks:
+     * 0.7x, 0.5 s in / 2.0 s out, linear. */
+    cueOn: false,
+    cueScale: 44.5 / 127,  /* overwritten per song; trunc-safe fallback */
+    duckDemo: false,
+    duckPhone: false,
 });
 
 export class PlayerEngine {
@@ -67,6 +76,13 @@ export class PlayerEngine {
         s.setGaussian(c.gaussian);
         s.setLoop(c.loop);
         s.setSongVolume(c.songvol);
+        if (c.cueOn) {   /* fresh instance: duck levels restart from 1.0, like
+                            bgmplay reload_locked */
+            s.cueScale(c.cueScale);
+            s.cueEnable(true);
+            s.cueDuck(0, c.duckDemo);
+            s.cueDuck(1, c.duckPhone);
+        }
         this.synth?.dispose();
         this.synth = s;
         this.done = false;
@@ -144,6 +160,21 @@ export class PlayerEngine {
         case "exact":    s.setEventTiming(value); break;
         case "gaussian": s.setGaussian(value); break;
         case "loop":     s.setLoop(value); break;
+        case "cueOn":    /* arm at the stored scale / disarm (last value stays
+                            until the caller's next songvol set -- bgmplay's
+                            cue_disarm) */
+            if (value) {
+                s.cueScale(this.config.cueScale);
+                s.cueEnable(true);
+                s.cueDuck(0, this.config.duckDemo);
+                s.cueDuck(1, this.config.duckPhone);
+            } else {
+                s.cueEnable(false);
+            }
+            break;
+        case "cueScale":  s.cueScale(value); break;
+        case "duckDemo":  s.cueDuck(0, value); break;
+        case "duckPhone": s.cueDuck(1, value); break;
         }
     }
 
@@ -181,6 +212,9 @@ export class PlayerEngine {
             playing: this.playing,
             seeking: this.seekTarget >= 0,
             done: this.done,
+            /* live cue songvol while the layer is armed (-1 otherwise), for
+             * the VOL dial to show the duck staircase */
+            cueSongvol: this.config.cueOn ? s.cueSongvol() : -1,
         };
     }
 }

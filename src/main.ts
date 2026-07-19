@@ -30,12 +30,16 @@ let loopN = 2;                  /* export dropdown's loop count */
 let prevClip = 0;               /* bus+wet clip total, for the flash */
 let clipFlash = 0;              /* performance.now() of the last increase */
 let pbGlyph = "";               /* last glyph written to the play button */
-const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true };
+const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true,
+              cueOn: false, cueScale: 44.5 / 127,
+              duckDemo: false, duckPhone: false };
 const exporter = new Exporter();
 
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
     gaussian: cfg.gaussian, loop: cfg.loop ? LOOP_FOREVER : 0,
+    cueOn: cfg.cueOn, cueScale: cfg.cueScale,
+    duckDemo: cfg.duckDemo, duckPhone: cfg.duckPhone,
 });
 
 /* ---- status line -------------------------------------------------------- */
@@ -79,6 +83,8 @@ function renderDials(): void {
     const rev = $("d-rev");
     rev.textContent = cfg.revDepth > 0 ? `REV ${cfg.revDepth}` : "REV OFF";
     rev.classList.toggle("on", cfg.revDepth > 0);
+    $("d-duckd").classList.toggle("on", cfg.duckDemo);
+    $("d-duckp").classList.toggle("on", cfg.duckPhone);
 }
 
 /* ---- transport ---------------------------------------------------------- */
@@ -126,6 +132,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
     try {
         const assets = await session.songAssets(song);
         if (authored) cfg.songvol = song.songvol;
+        cfg.cueScale = song.volumeScale > 0 ? song.volumeScale : 44.5 / 127;
         const r = await p.load(assets, engineConfig());
         timeline = buildTimeline(r.events, r.ppqn);
         playingIdx = idx;
@@ -175,9 +182,32 @@ function displaySample(): number {
 
 /* ---- dial actions (bgmplay's keys) -------------------------------------- */
 function setVol(v: number, auth: boolean): void {
+    if (cfg.cueOn) {   /* manual volume takes songvol back from the cue layer */
+        cfg.cueOn = cfg.duckDemo = cfg.duckPhone = false;
+        player?.set("cueOn", false);
+    }
     cfg.songvol = Math.max(1, Math.min(127, v));
     authored = auth;
     player?.set("songvol", cfg.songvol);
+    renderDials();
+}
+
+/* Hold/release a duck (keys D/P) -- bgmplay's cue_toggle: the first duck arms
+ * the cue layer, which takes songvol at the authored scale (the game's own
+ * condition). Turning both off leaves it armed so the 2 s release finishes;
+ * - = A disarm via setVol. */
+function toggleDuck(which: 0 | 1): void {
+    if (!session || playingIdx < 0) return;
+    const key = which === 0 ? "duckDemo" : "duckPhone";
+    cfg[key] = !cfg[key];
+    if (cfg[key] && !cfg.cueOn) {
+        cfg.cueOn = true;
+        const song = session.songs[playingIdx]!;
+        cfg.songvol = song.songvol;      /* what - = resume from */
+        authored = true;
+        player?.set("cueOn", true);
+    }
+    player?.set(key, cfg[key]);
     renderDials();
 }
 
@@ -259,6 +289,13 @@ function tick(): void {
             `  WET CLIP ${st.wet_clipped}`;
         const clip = st.bus_clipped + st.wet_clipped;
         if (clip > prevClip) { prevClip = clip; clipFlash = performance.now(); }
+        /* cue layer armed: the VOL dial tracks the live duck staircase
+         * (write only on change -- see the playbtn glyph note above) */
+        if (cfg.cueOn && s.cueSongvol >= 0) {
+            const txt = `VOL ${s.cueSongvol} CUE`;
+            const el = $("d-vol");
+            if (el.textContent !== txt) el.textContent = txt;
+        }
     }
     $("clip-flash").hidden = !(clipFlash && performance.now() - clipFlash < 700);
     viz?.draw(s, timeline, disp, cfg.loop);
@@ -386,6 +423,8 @@ function onKey(e: KeyboardEvent): void {
         if (playingIdx >= 0)
             setVol(session.songs[playingIdx]!.songvol, true);
         break;
+    case "d": case "D": toggleDuck(0); break;
+    case "p": case "P": toggleDuck(1); break;
     case "z": case "Z": viz?.zoomIn(); break;
     case "x": case "X": viz?.zoomOut(); break;
     case "e": case "E": void exportWav("current"); break;
@@ -510,6 +549,8 @@ async function main(): Promise<void> {
     $("d-timing").onclick = toggleTiming;
     $("d-kernel").onclick = toggleKernel;
     $("d-rev").onclick = () => setRev(cfg.revDepth > 0 ? 0 : 30);
+    $("d-duckd").onclick = () => toggleDuck(0);
+    $("d-duckp").onclick = () => toggleDuck(1);
     /* export dropdown (bgmplay's EXPORT WAV button + 3-row panel) */
     exporter.onstatus = (msg, err) => { status(msg, err); updateExportBtn(); };
     $("exportbtn").onclick = (e) => {
