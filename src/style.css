@@ -53,6 +53,21 @@ button:hover { border-color: var(--dim); }
     letter-spacing: 0.08em;
     padding: 12px 14px 8px;
 }
+/* ---- sidebar tabs (BGM / STREAMS) --------------------------------------- */
+#tabs {
+    display: flex;
+    gap: 6px;
+    padding: 0 14px 8px;
+}
+.tab {
+    flex: 1;
+    padding: 4px 0;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+}
+.tab.on { color: var(--accent); border-color: var(--accent); }
+
 #songlist {
     list-style: none;
     overflow-y: auto;
@@ -75,6 +90,62 @@ button:hover { border-color: var(--dim); }
     left: 8px;
     color: var(--good);
 }
+/* ---- streams sidebar list ----------------------------------------------- */
+#streamview {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+#streamview[hidden] { display: none; }
+#stream-search {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--panel-hi);
+    border-radius: 3px;
+    margin: 0 14px 6px;
+    padding: 4px 8px;
+    outline: none;
+}
+#stream-search:focus { border-color: var(--accent); }
+#streamlist {
+    list-style: none;
+    overflow-y: auto;
+    flex: 1;
+    padding-bottom: 6px;
+}
+#streamlist li {
+    padding: 2px 14px 2px 22px;
+    color: var(--dim);
+    cursor: pointer;
+    white-space: nowrap;
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+#streamlist li .dur { color: var(--panel-hi); font-size: 11px; }
+#streamlist li:hover { color: var(--text); }
+#streamlist li.sel { background: var(--panel-hi); color: var(--text); }
+#streamlist li.sel .dur { color: var(--dim); }
+#streamlist li.playing { color: var(--good); }
+#streamlist li.playing::before {
+    content: "\25B8";
+    position: absolute;
+    left: 8px;
+    color: var(--good);
+}
+#streamlist li.hdr {
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    cursor: default;
+    padding-left: 14px;
+    margin-top: 6px;
+}
+#streamlist li.hdr:hover { color: var(--accent); }
+
 #side-foot {
     padding: 10px 14px;
     border-top: 1px solid #242833;
@@ -105,6 +176,9 @@ button:hover { border-color: var(--dim); }
     gap: 16px;
     padding: 12px 18px;
 }
+/* tab switching hides these; their display rules would beat UA [hidden] */
+#head[hidden], #stage[hidden], #foot-stats[hidden], #bar[hidden],
+#songlist[hidden] { display: none; }
 /* Safari (unlike Blink) lets button/label text be selected and hit-tests it:
  * a click with a 1px hand-wobble on the text reads as a selection attempt
  * and never becomes a click. App chrome is not selectable, and the play
@@ -251,6 +325,128 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
     display: block;
     width: 100%;
     border-radius: 3px;
+}
+
+/* ---- streams main view --------------------------------------------------- */
+#stream-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+#stream-main[hidden] { display: none; }
+#s-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 18px;
+}
+#s-playbtn {
+    width: 46px;
+    height: 46px;
+    flex: none;
+    font-size: 18px;
+    border-radius: 50%;
+    color: var(--accent);
+    border-color: var(--panel-hi);
+}
+#s-playbtn:not(:disabled):hover { border-color: var(--accent); }
+#s-playbtn:disabled { color: var(--dim); cursor: default; }
+#s-playbtn span { pointer-events: none; }
+#s-now { flex: 1; min-width: 0; }
+#s-name {
+    font-size: 19px;
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#s-time { color: var(--dim); margin-top: 4px; }
+#dials-s { display: flex; gap: 6px; flex: none; }
+#s-exportbtn {
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--accent);
+    background: #282c3a;
+    white-space: nowrap;
+    flex: none;
+}
+#s-exportbtn:disabled { color: var(--dim); cursor: default; }
+#s-bar {
+    position: relative;
+    height: 16px;
+    margin: 0 18px;
+    background: var(--panel);
+    border-radius: 3px;
+    cursor: pointer;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+}
+#s-bar-fill {
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    background: var(--panel-hi);
+}
+#s-bar-head {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: var(--accent);
+}
+#s-info {
+    padding: 10px 18px;
+    color: var(--dim);
+    font-size: 11px;
+    white-space: pre-wrap;
+}
+#s-info .warn { color: var(--bad); }
+#s-setup {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#s-setup[hidden] { display: none; }
+#s-setup-card {
+    width: min(520px, 92%);
+    background: var(--panel);
+    border-radius: 6px;
+    padding: 28px;
+}
+#s-setup-card h2 {
+    color: var(--accent);
+    font-size: 14px;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+}
+#s-setup-card p { color: var(--dim); line-height: 1.5; margin-bottom: 14px; }
+#s-setup-card code { color: var(--text); }
+#s-extract {
+    padding: 8px 14px;
+    color: var(--accent);
+    background: #282c3a;
+}
+#s-extract[hidden] { display: none; }
+#s-iso-pick {
+    display: block;
+    border: 1px dashed var(--panel-hi);
+    border-radius: 4px;
+    padding: 18px 16px;
+    text-align: center;
+    color: var(--dim);
+    cursor: pointer;
+}
+#s-iso-pick:hover { border-color: var(--accent); color: var(--text); }
+#s-iso-pick[hidden] { display: none; }
+#s-iso-pick input { display: none; }
+#s-setup-status { min-height: 1.2em; margin-top: 12px; }
+#s-setup-status.err { color: var(--bad); }
+#s-progress {
+    width: 100%;
+    height: 6px;
+    accent-color: var(--accent);
+    margin-top: 8px;
 }
 
 #foot {

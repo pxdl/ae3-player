@@ -15,7 +15,15 @@
   <div id="app" hidden>
     <aside id="side">
       <h1>AE3 BGM SYNTH</h1>
+      <div id="tabs">
+        <button id="tab-bgm" class="tab on" title="Sequenced music through the SPU2 synth">BGM</button>
+        <button id="tab-streams" class="tab" title="Streamed audio -- phone calls, cutscene voice, minigame music">STREAMS</button>
+      </div>
       <ul id="songlist"></ul>
+      <div id="streamview" hidden>
+        <input id="stream-search" type="search" placeholder="search streams" spellcheck="false" autocomplete="off" />
+        <ul id="streamlist"></ul>
+      </div>
       <div id="side-foot">
         <span id="disc-id"></span>
         <button id="forget" title="Wipe the extracted assets from this browser">forget my disc</button>
@@ -69,6 +77,41 @@
         <canvas id="slots"></canvas>
         <canvas id="wave"></canvas>
       </div>
+      <section id="stream-main" hidden>
+        <header id="s-head">
+          <button id="s-playbtn" title="Play/pause (Space)" disabled><span>&#9654;</span></button>
+          <div id="s-now">
+            <div id="s-name">&mdash;</div>
+            <div id="s-time"><span id="s-cur">0:00.0</span> / <span id="s-len">0:00.0</span></div>
+          </div>
+          <div id="dials-s">
+            <button class="dial on" id="s-trim" title="Drop the trailing silent padding the files are authored with -- the median stream carries 6 s of it. Off = the full payload, exactly as streamed on console (T)">TRIM PAD</button>
+          </div>
+          <button id="s-exportbtn" title="Save this stream as a WAV -- trimmed per the TRIM PAD dial (E)">EXPORT WAV</button>
+        </header>
+        <div id="s-bar">
+          <div id="s-bar-fill"></div>
+          <div id="s-bar-head"></div>
+        </div>
+        <div id="s-info"></div>
+        <div id="s-setup" hidden>
+          <div id="s-setup-card">
+            <h2>STREAMED AUDIO</h2>
+            <p>The disc carries 1158 streamed tracks &mdash; monkey-phone calls,
+            cutscene voice-over, minigame speech and music &mdash; 341&nbsp;MB of
+            <code>sound/stream</code> data. Extract them once from your own disc
+            into this browser's private storage, like the music assets.</p>
+            <button id="s-extract">extract streams (341 MB)</button>
+            <label id="s-iso-pick" hidden>
+              <input id="s-iso" type="file" accept=".iso" />
+              <span>this session was resumed without the disc image &mdash;
+              choose your ISO once more to extract the streams</span>
+            </label>
+            <p id="s-setup-status"></p>
+            <progress id="s-progress" max="1" value="0" hidden></progress>
+          </div>
+        </div>
+      </section>
       <footer id="foot">
         <div id="foot-stats">
           <span id="stats-line"></span>

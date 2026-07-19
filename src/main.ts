@@ -10,6 +10,8 @@ import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
 import { Exporter, download, type ExportOpts } from "./export.ts";
 import { storeZip } from "./zip.ts";
+import { groupStreams, StreamDecoder, StreamPlayer,
+         type StreamCatalog, type StreamEntry } from "./streams.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -34,6 +36,19 @@ const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true
               cueOn: false, cueScale: 44.5 / 127,
               duckDemo: false, duckPhone: false };
 const exporter = new Exporter();
+
+/* streams tab (VIEWER_PLAN §2) */
+let tab: "bgm" | "streams" = "bgm";
+let sCatalog: StreamCatalog | null = null;
+let sVisible: StreamEntry[] = [];   /* flat filtered list, selection space */
+let sSel = 0;
+let sPlayingName: string | null = null;
+let sLoading = false;
+let sTrim = true;                   /* TRIM PAD dial, default on */
+let sGlyph = "";
+let sBusy = false;                  /* export in flight */
+const sDecoder = new StreamDecoder();
+const sPlayer = new StreamPlayer();
 
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -125,6 +140,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         return;
     }
     p.resume();
+    sPlayer.pause();                    /* one thing plays at a time */
     loading = true;
     finished = false;
     status(`loading ${song.name}...`);
@@ -157,11 +173,13 @@ function togglePlay(): void {
         void loadSong(sel, true);
     } else if (finished) {              /* bgmplay: SPACE after end restarts */
         finished = false;
+        sPlayer.pause();
         player.seek(0);
         player.play();
     } else if (player.snap?.playing) {
         player.pause();
     } else {
+        sPlayer.pause();
         player.play();
     }
 }
@@ -236,6 +254,228 @@ function setRev(depth: number): void {
     renderDials();
 }
 
+/* ---- streams tab (VIEWER_PLAN §2) ---------------------------------------- */
+let keysBgmText = "";               /* captured from the DOM at boot */
+const KEYS_STREAMS = "SPACE play · ↑↓ select · ENTER load "
+    + "· T trim · E export · H help · click bar to seek";
+
+const sDur = (e: StreamEntry): number =>
+    e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
+
+function fmtSec(t: number): string {
+    const m = Math.floor(Math.max(0, t) / 60);
+    const s = Math.max(0, t) - m * 60;
+    return `${m}:${s < 10 ? "0" : ""}${s.toFixed(1)}`;
+}
+
+function switchTab(t: "bgm" | "streams"): void {
+    tab = t;
+    $("tab-bgm").classList.toggle("on", t === "bgm");
+    $("tab-streams").classList.toggle("on", t === "streams");
+    $("songlist").hidden = t !== "bgm";
+    $("streamview").hidden = t !== "streams";
+    $("head").hidden = t !== "bgm";
+    $("bar").hidden = t !== "bgm";
+    $("stage").hidden = t !== "bgm";
+    $("foot-stats").hidden = t !== "bgm";
+    $("stream-main").hidden = t !== "streams";
+    $("keys").textContent = t === "bgm" ? keysBgmText : KEYS_STREAMS;
+    status("");
+    if (t === "streams") void ensureStreams();
+}
+
+/* First entry to the tab: catalog from OPFS, or the setup panel. */
+async function ensureStreams(): Promise<void> {
+    if (!session || sCatalog) return;
+    const c = await session.streams.cached();
+    if (c) {
+        sCatalog = c;
+        $("s-setup").hidden = true;
+        renderStreamList();
+        status(`${c.entries.length} streams - SPACE or click one to play`);
+        return;
+    }
+    $("s-setup").hidden = false;
+    const iso = session.streams.hasIso();
+    $("s-extract").hidden = !iso;
+    $("s-iso-pick").hidden = iso;
+}
+
+async function extractStreams(): Promise<void> {
+    if (!session) return;
+    const pstat = $("s-setup-status");
+    const bar = $<HTMLProgressElement>("s-progress");
+    pstat.classList.remove("err");
+    bar.hidden = false;
+    bar.value = 0;
+    $<HTMLButtonElement>("s-extract").disabled = true;
+    try {
+        sCatalog = await session.streams.extract((done, total, name) => {
+            bar.value = total > 0 ? done / total : 0;
+            pstat.textContent = `extracting ${name} (${done}/${total})`;
+        });
+        $("s-setup").hidden = true;
+        renderStreamList();
+        status(`${sCatalog.entries.length} streams - SPACE or click one to play`);
+    } catch (e) {
+        pstat.textContent = friendlyError(e);
+        pstat.classList.add("err");
+        bar.hidden = true;
+    } finally {
+        $<HTMLButtonElement>("s-extract").disabled = false;
+    }
+}
+
+/* Sidebar list: MUSIC/VOICE prefix groups (derived in code from the user's
+ * own catalog -- channels==2 -> MUSIC, else VOICE), filtered by the search
+ * box; selection indexes the flat filtered entry list. */
+function renderStreamList(): void {
+    const ul = $("streamlist");
+    if (!sCatalog) { ul.replaceChildren(); return; }
+    const q = $<HTMLInputElement>("stream-search").value.toLowerCase();
+    const match = (e: StreamEntry): boolean =>
+        !q || e.name.toLowerCase().includes(q);
+    const { music, voice } = groupStreams(sCatalog.entries);
+    const rows: HTMLLIElement[] = [];
+    sVisible = [];
+    for (const [section, groups] of [["MUSIC", music], ["VOICE", voice]] as const) {
+        for (const g of groups) {
+            const hits = g.entries.filter(match);
+            if (!hits.length) continue;
+            const hdr = document.createElement("li");
+            hdr.className = "hdr";
+            hdr.textContent = `${section} · ${g.key} (${hits.length})`;
+            rows.push(hdr);
+            for (const e of hits) {
+                const i = sVisible.length;
+                sVisible.push(e);
+                const li = document.createElement("li");
+                const nm = document.createElement("span");
+                nm.textContent = e.name.replace(/\.x$/, "");
+                const dur = document.createElement("span");
+                dur.className = "dur";
+                dur.textContent = fmtSec(sDur(e));
+                li.append(nm, dur);
+                li.classList.toggle("sel", i === sSel);
+                li.classList.toggle("playing", e.name === sPlayingName);
+                li.onclick = () => { sSel = i; void loadStream(i, true); };
+                rows.push(li);
+            }
+        }
+    }
+    if (sSel >= sVisible.length) sSel = Math.max(0, sVisible.length - 1);
+    ul.replaceChildren(...rows);
+}
+
+function scrollStreamSelIntoView(): void {
+    const e = sVisible[sSel];
+    if (!e) return;
+    for (const li of $("streamlist").children)
+        if (li.classList.contains("sel"))
+            return li.scrollIntoView({ block: "nearest" });
+}
+
+function renderStreamInfo(): void {
+    const el = $("s-info");
+    const d = sPlayer.decoded();
+    if (!d) { el.replaceChildren(); return; }
+    const h = d.header;
+    const full = d.samplesPerChannel / h.rate;
+    const padS = d.padFrames * 28 / h.rate;
+    let text = `${h.channels}ch ${h.rate} Hz · ${d.sectors} sectors · `
+        + `${full.toFixed(1)} s · trailing pad ${d.padFrames} frames`
+        + ` (${padS.toFixed(1)} s)`;
+    if (h.loop)
+        text += ` · LOOP from sector ${h.loop_start}`;
+    el.replaceChildren(document.createTextNode(text));
+    if (h.length !== d.sectors) {
+        const warn = document.createElement("div");
+        warn.className = "warn";
+        warn.textContent = `header claims ${h.length} sectors, file has `
+            + `${d.sectors} -- a shipped authoring bug (16 such files); `
+            + `decoding what is actually there`;
+        el.append(warn);
+    }
+}
+
+async function loadStream(i: number, autoplay: boolean): Promise<void> {
+    if (!session || sLoading) return;
+    const e = sVisible[i];
+    if (!e) return;
+    sLoading = true;
+    status(`loading ${e.name}...`);
+    try {
+        const bytes = await session.streams.read(e.name);
+        if (!bytes)
+            throw new Error(`missing stream ${e.name} -- re-extract, or `
+                            + "re-open the ISO");
+        const d = await sDecoder.decode(e.name, bytes);
+        sPlayer.load(d, sTrim);
+        sPlayingName = e.name;
+        $("s-name").textContent = e.name.replace(/\.x$/, "");
+        $("s-len").textContent = fmtSec(sPlayer.dur());
+        renderStreamInfo();
+        $<HTMLButtonElement>("s-playbtn").disabled = false;
+        $<HTMLButtonElement>("s-exportbtn").disabled = false;
+        status("");
+        if (autoplay) {
+            player?.pause();            /* one thing plays at a time */
+            sPlayer.play();
+        }
+    } catch (err) {
+        status(friendlyError(err), true);
+    } finally {
+        sLoading = false;
+        renderStreamList();
+    }
+}
+
+function sTogglePlay(): void {
+    if (!sPlayer.decoded()) {           /* first gesture: load the selection */
+        void loadStream(sSel, true);
+    } else if (sPlayer.playing()) {
+        sPlayer.pause();
+    } else {
+        player?.pause();
+        sPlayer.play();
+    }
+}
+
+function sToggleTrim(): void {
+    sTrim = !sTrim;
+    const d = $("s-trim");
+    d.classList.toggle("on", sTrim);
+    sPlayer.setTrim(sTrim);
+    $("s-len").textContent = fmtSec(sPlayer.dur());
+}
+
+async function sExport(): Promise<void> {
+    if (!session || sBusy) return;
+    const d = sPlayer.decoded();
+    if (!d) return;
+    sBusy = true;
+    const stemName = d.name.replace(/\.x$/, "");
+    const file = `${stemName}${sTrim ? "_trim" : ""}.wav`;
+    const btn = $<HTMLButtonElement>("s-exportbtn");
+    btn.disabled = true;
+    btn.textContent = "EXPORTING";
+    status(`EXPORTING ${file}...`);
+    try {
+        const bytes = await session.streams.read(d.name);
+        if (!bytes)
+            throw new Error(`missing stream ${d.name}`);
+        const wav = await sDecoder.wav(d.name, bytes, sTrim);
+        download(wav, file, "audio/wav");
+        status(`EXPORTED ${file}`);
+    } catch (e) {
+        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    } finally {
+        sBusy = false;
+        btn.disabled = !sPlayer.decoded();
+        btn.textContent = "EXPORT WAV";
+    }
+}
+
 /* ---- render loop -------------------------------------------------------- */
 function fmtTime(samples: number): string {
     const t = Math.max(0, samples) / RATE;
@@ -246,6 +486,19 @@ function fmtTime(samples: number): string {
 
 function tick(): void {
     requestAnimationFrame(tick);
+    /* streams transport (independent of the BGM branch below) */
+    if (tab === "streams" && sPlayer.decoded()) {
+        const cur = sPlayer.pos(), dur = sPlayer.dur();
+        $("s-cur").textContent = fmtSec(cur);
+        const frac = dur > 0 ? Math.min(cur / dur, 1) : 0;
+        $("s-bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
+        $("s-bar-head").style.left = `calc(${(frac * 100).toFixed(3)}% - 1px)`;
+        const glyph = sPlayer.playing() ? "&#10074;&#10074;" : "&#9654;";
+        if (glyph !== sGlyph) {         /* write-on-change: see pbGlyph note */
+            sGlyph = glyph;
+            $("s-playbtn").innerHTML = `<span>${glyph}</span>`;
+        }
+    }
     if (!player || !timeline) { viz?.draw(null, null, 0, cfg.loop); return; }
     const s = player.snap;
     const disp = displaySample();
@@ -404,6 +657,27 @@ function showBankMenu(show: boolean): void {
 /* ---- keyboard (bgmplay's map) ------------------------------------------- */
 function onKey(e: KeyboardEvent): void {
     if (!session || $("app").hidden) return;
+    if (e.target === $("stream-search")) {      /* typing a filter */
+        if (e.key === "Escape") $<HTMLInputElement>("stream-search").blur();
+        return;
+    }
+    if (tab === "streams") {
+        switch (e.key) {
+        case " ":          sTogglePlay(); break;
+        case "ArrowUp":    if (sSel > 0) sSel--;
+                           renderStreamList(); scrollStreamSelIntoView(); break;
+        case "ArrowDown":  if (sSel < sVisible.length - 1) sSel++;
+                           renderStreamList(); scrollStreamSelIntoView(); break;
+        case "Enter":      void loadStream(sSel, true); break;
+        case "t": case "T": sToggleTrim(); break;
+        case "e": case "E": void sExport(); break;
+        case "h": case "H": toggleHelp(); break;
+        case "Escape":     if (!$("help").hidden) toggleHelp(false); break;
+        default: return;
+        }
+        e.preventDefault();
+        return;
+    }
     switch (e.key) {
     case " ":          togglePlay(); break;
     case "ArrowUp":    if (sel > 0) sel--; renderList(); scrollSelIntoView(); break;
@@ -531,6 +805,11 @@ async function main(): Promise<void> {
         get state() {
             return { sel, playingIdx, loading, finished, authored, cfg };
         },
+        get sPlayer() { return sPlayer; },
+        get sState() {
+            return { tab, sSel, sPlayingName, sLoading, sTrim, sBusy,
+                     visible: sVisible.length };
+        },
     };
     wirePicker();
     $("playbtn").onclick = togglePlay;
@@ -539,6 +818,37 @@ async function main(): Promise<void> {
         const r = $("bar").getBoundingClientRect();
         seekTimeline((e.clientX - r.left) / r.width * timeline.lenSamp);
     };
+    /* streams tab */
+    keysBgmText = $("keys").textContent ?? "";
+    $("tab-bgm").onclick = () => switchTab("bgm");
+    $("tab-streams").onclick = () => switchTab("streams");
+    $("s-playbtn").onclick = sTogglePlay;
+    $("s-trim").onclick = sToggleTrim;
+    $("s-exportbtn").onclick = () => void sExport();
+    $("s-bar").onclick = (e) => {
+        if (!sPlayer.decoded()) return;
+        const r = $("s-bar").getBoundingClientRect();
+        sPlayer.seek((e.clientX - r.left) / r.width * sPlayer.dur());
+    };
+    $("stream-search").oninput = () => renderStreamList();
+    $("s-extract").onclick = () => void extractStreams();
+    $<HTMLInputElement>("s-iso").onchange = async () => {
+        const f = $<HTMLInputElement>("s-iso").files?.[0];
+        if (!f || !session) return;
+        const pstat = $("s-setup-status");
+        pstat.classList.remove("err");
+        pstat.textContent = "reading disc...";
+        try {
+            await session.streams.attachIso(f);
+            $("s-iso-pick").hidden = true;
+            $("s-extract").hidden = false;
+            await extractStreams();
+        } catch (err) {
+            pstat.textContent = friendlyError(err);
+            pstat.classList.add("err");
+        }
+    };
+    sPlayer.onended = () => { /* glyph flips via the tick loop */ };
     $("d-vol").onclick = () => {
         if (playingIdx >= 0 && session)
             setVol(session.songs[playingIdx]!.songvol, true);

@@ -259,3 +259,141 @@ export class AE3Synth {
         }
     }
 }
+
+/* ---- EXST (.x) streams: binding over ae3_exst_* (core/exst.c) ------------
+ *
+ * Standalone decoder, own wasm instance (same isolation stance as AE3Synth).
+ * Semantics per core/ae3synth.h: per-sector decode with per-channel history
+ * in a state object; payload flags never stop decode; the header's length
+ * field is untrusted (16 shipped files overstate it -- EXST.md §4), the
+ * actual whole-sector payload is the bound. decodeFile() is the workhorse
+ * (player worker, gates); reset()/decodeSector() expose the streaming form
+ * for chunked decode of the multi-minute music tracks. */
+
+export const EXST_HDR = 0x78;
+export const EXST_SECTOR = 2048;
+
+export class AE3Exst {
+    static async instantiate(wasmSource) {
+        const module = wasmSource instanceof WebAssembly.Module
+            ? wasmSource
+            : await WebAssembly.compile(wasmSource);
+        const exst = new AE3Exst();
+        const imports = {};
+        for (const im of WebAssembly.Module.imports(module)) {
+            imports[im.module] ??= {};
+            imports[im.module][im.name] =
+                im.module === "env" && im.name === "emscripten_notify_memory_growth"
+                    ? () => { exst.#views = null; }
+                    : () => { throw new Error(`wasm called unstubbed import ${im.module}.${im.name}`); };
+        }
+        const instance = await WebAssembly.instantiate(module, imports);
+        exst.#init(instance);
+        return exst;
+    }
+
+    #ex;               /* wasm exports */
+    #views = null;     /* heap views; null after memory growth */
+    #state = 0;        /* ae3_exst*, opaque (size via ae3w_exst_state_size) */
+    #scratch = 0;      /* 29-u32 header flattener output + sector staging */
+    #sec = 0;          /* staged input sector */
+    #out = 0;          /* decoded sector output: 3584 s16 */
+    #channels = 0;
+
+    #init(instance) {
+        this.#ex = instance.exports;
+        this.#ex._initialize();
+        this.#state = this.#alloc(this.#ex.ae3w_exst_state_size());
+        this.#scratch = this.#alloc(29 * 4);
+        this.#sec = this.#alloc(EXST_SECTOR);
+        this.#out = this.#alloc(3584 * 2);
+    }
+
+    #mem() {
+        if (this.#views === null) {
+            const b = this.#ex.memory.buffer;
+            this.#views = { u8: new Uint8Array(b), u32: new Uint32Array(b) };
+        }
+        return this.#views;
+    }
+
+    #alloc(n) {
+        const p = this.#ex.malloc(n);
+        if (!p)
+            throw new Error(`wasm malloc(${n}) failed`);
+        return p;
+    }
+
+    /* Parse + validate a 0x78-byte stream header (throws on bad magic /
+     * channel count). Field names mirror ae3_exst_header. */
+    parseHeader(bytes) {
+        const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        const n = Math.min(u8.length, EXST_HDR);
+        const p = this.#alloc(n || 1);
+        this.#mem().u8.set(u8.subarray(0, n), p);
+        const ok = this.#ex.ae3w_exst_parse(p, n, this.#scratch);
+        this.#ex.free(p);
+        if (!ok)
+            throw new Error("not an EXST stream (bad magic or channel count)");
+        const v = this.#mem().u32, b = this.#scratch >> 2;
+        return {
+            channels: v[b], rate: v[b + 1], loop: v[b + 2],
+            loop_start: v[b + 3], length: v[b + 4],
+            vol_l: Array.from(v.subarray(b + 5, b + 13)),
+            vol_r: Array.from(v.subarray(b + 13, b + 21)),
+            reverb: Array.from(v.subarray(b + 21, b + 29)),
+        };
+    }
+
+    /* Arm the decode state (throws on unsupported channel count -- per-sector
+     * decode needs frame-aligned slices, ch in {1,2,4,8}; shipped: 1 or 2). */
+    reset(channels) {
+        if (this.#ex.ae3_exst_reset(this.#state, channels) !== 0)
+            throw new Error(`unsupported channel count ${channels}`);
+        this.#channels = channels;
+    }
+
+    /* Decode one 2048-byte sector -> fresh Int16Array, interleaved,
+     * 3584/channels samples per channel. */
+    decodeSector(sector) {
+        const u8 = sector instanceof Uint8Array ? sector : new Uint8Array(sector);
+        if (u8.length !== EXST_SECTOR)
+            throw new Error(`sector must be ${EXST_SECTOR} bytes`);
+        this.#mem().u8.set(u8, this.#sec);
+        const spc = this.#ex.ae3_exst_decode(this.#state, this.#sec, this.#out);
+        if (spc < 0)
+            throw new Error("decode state not armed (call reset)");
+        const heap = this.#mem().u8.buffer;
+        return new Int16Array(heap.slice(this.#out, this.#out + spc * this.#channels * 2));
+    }
+
+    /* Whole-file decode: header + actual whole-sector payload (the header
+     * length field is reported, never trusted). trimPad drops the trailing
+     * silent-pad run, shortened equally across channels like the oracle.
+     * -> { header, sectors, padFrames, samplesPerChannel, pcm } */
+    decodeFile(file, { trimPad = false } = {}) {
+        const u8 = file instanceof Uint8Array ? file : new Uint8Array(file);
+        const header = this.parseHeader(u8);
+        this.reset(header.channels);
+        const sectors = Math.floor((u8.length - EXST_HDR) / EXST_SECTOR);
+        const payLen = sectors * EXST_SECTOR;
+        const pay = this.#alloc(payLen || 1);
+        this.#mem().u8.set(u8.subarray(EXST_HDR, EXST_HDR + payLen), pay);
+        const padFrames = this.#ex.ae3_exst_trailing_pad(pay, payLen, header.channels);
+        const spcSector = 3584 / header.channels;
+        let samplesPerChannel = sectors * spcSector;
+        const pcm = new Int16Array(samplesPerChannel * header.channels);
+        for (let s = 0; s < sectors; s++) {
+            this.#ex.ae3_exst_decode(this.#state, pay + s * EXST_SECTOR, this.#out);
+            const heap16 = new Int16Array(this.#mem().u8.buffer, this.#out, 3584);
+            pcm.set(heap16, s * 3584);
+        }
+        this.#ex.free(pay);
+        if (trimPad)
+            samplesPerChannel -= padFrames * 28;
+        return {
+            header, sectors, padFrames, samplesPerChannel,
+            pcm: pcm.subarray(0, samplesPerChannel * header.channels),
+        };
+    }
+}

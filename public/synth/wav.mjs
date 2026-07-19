@@ -7,18 +7,21 @@
 
 export const RATE = 48000;
 
-export function wavHeader(dataBytes) {
+/* Defaults are the synth render's framing (stereo 48 kHz); EXST stream
+ * exports pass the stream header's channels/rate and stay byte-identical to
+ * exstdump / `ae3 exst --decode` likewise. */
+export function wavHeader(dataBytes, channels = 2, rate = RATE) {
     const h = new DataView(new ArrayBuffer(44));
     const tag = (o, s) => { for (let i = 0; i < s.length; i++) h.setUint8(o + i, s.charCodeAt(i)); };
     tag(0, "RIFF");  h.setUint32(4, 36 + dataBytes, true);
     tag(8, "WAVEfmt ");
-    h.setUint32(16, 16, true);           /* fmt chunk length */
-    h.setUint16(20, 1, true);            /* PCM */
-    h.setUint16(22, 2, true);            /* stereo */
-    h.setUint32(24, RATE, true);
-    h.setUint32(28, RATE * 4, true);     /* byte rate */
-    h.setUint16(32, 4, true);            /* block align */
-    h.setUint16(34, 16, true);           /* bits */
+    h.setUint32(16, 16, true);                   /* fmt chunk length */
+    h.setUint16(20, 1, true);                    /* PCM */
+    h.setUint16(22, channels, true);
+    h.setUint32(24, rate, true);
+    h.setUint32(28, rate * channels * 2, true);  /* byte rate */
+    h.setUint16(32, channels * 2, true);         /* block align */
+    h.setUint16(34, 16, true);                   /* bits */
     tag(36, "data"); h.setUint32(40, dataBytes, true);
     return new Uint8Array(h.buffer);
 }

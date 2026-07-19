@@ -1,10 +1,11 @@
-/* Plain-Worker wrapper around exporter.mjs + kit.mjs: the browser side of
- * WAV / sample-kit export. Runs on this worker thread with its own synth
- * instance -- the audio worklet never stalls -- then transfers the finished
- * bytes back. The wasm is fetched next to this script (once, then cached in
- * the worker). */
+/* Plain-Worker wrapper around exporter.mjs + kit.mjs + stream.mjs: the
+ * browser side of WAV / sample-kit export and EXST stream decode. Runs on
+ * this worker thread with its own synth instance -- the audio worklet never
+ * stalls -- then transfers the finished bytes back. The wasm is fetched next
+ * to this script (once, then cached in the worker). */
 import { renderWavFile } from "./exporter.mjs";
 import { buildSampleKit } from "./kit.mjs";
+import { decodeStream, streamWav } from "./stream.mjs";
 
 let wasmBytes = null;
 
@@ -19,6 +20,24 @@ onmessage = async (e) => {
                         entries.map((x) => x.wav.buffer));
             return;
         }
+        if (m.t === "stream") {
+            /* untrimmed decode; the UI derives the trimmed view from
+             * padFrames without a second round-trip */
+            const r = await decodeStream(wasmBytes, m.file);
+            postMessage({ t: "stream-done", id: m.id, header: r.header,
+                          sectors: r.sectors, padFrames: r.padFrames,
+                          samplesPerChannel: r.samplesPerChannel, pcm: r.pcm },
+                        [r.pcm.buffer]);
+            return;
+        }
+        if (m.t === "stream-wav") {
+            const r = await decodeStream(wasmBytes, m.file,
+                                         { trimPad: m.trimPad });
+            const wav = streamWav(r.header, r.pcm);
+            postMessage({ t: "stream-wav-done", id: m.id, name: m.name, wav },
+                        [wav.buffer]);
+            return;
+        }
         let last = 0;
         const { wav, frames } = await renderWavFile(
             wasmBytes, m.files, m.opts, (fr) => {
@@ -30,6 +49,6 @@ onmessage = async (e) => {
             });
         postMessage({ t: "done", wav, frames }, [wav.buffer]);
     } catch (err) {
-        postMessage({ t: "error", message: String(err?.message ?? err) });
+        postMessage({ t: "error", id: m?.id, message: String(err?.message ?? err) });
     }
 };
