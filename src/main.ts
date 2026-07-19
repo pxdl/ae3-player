@@ -12,6 +12,7 @@ import { Exporter, download, type ExportOpts } from "./export.ts";
 import { storeZip } from "./zip.ts";
 import { groupStreams, StreamDecoder, StreamPlayer,
          type StreamCatalog, type StreamEntry } from "./streams.ts";
+import { StreamViz } from "./sviz.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -40,7 +41,16 @@ const exporter = new Exporter();
 /* streams tab (VIEWER_PLAN §2) */
 let tab: "bgm" | "streams" = "bgm";
 let sCatalog: StreamCatalog | null = null;
-let sVisible: StreamEntry[] = [];   /* flat filtered list, selection space */
+/* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
+ * entries. Selection walks every visible row (headers included), so the
+ * keyboard can jump categories; groups start folded. */
+type SRow =
+    | { kind: "section"; id: string; label: string }
+    | { kind: "group"; id: string; label: string }
+    | { kind: "entry"; entry: StreamEntry };
+let sRows: SRow[] = [];             /* visible rows, selection space */
+const sFolded = new Set<string>();  /* ids: "MUSIC", "MUSIC/mgm", ... */
+let sFoldInit = false;
 let sSel = 0;
 let sPlayingName: string | null = null;
 let sLoading = false;
@@ -49,6 +59,7 @@ let sGlyph = "";
 let sBusy = false;                  /* export in flight */
 const sDecoder = new StreamDecoder();
 const sPlayer = new StreamPlayer();
+let sViz: StreamViz | null = null;
 
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -256,8 +267,8 @@ function setRev(depth: number): void {
 
 /* ---- streams tab (VIEWER_PLAN §2) ---------------------------------------- */
 let keysBgmText = "";               /* captured from the DOM at boot */
-const KEYS_STREAMS = "SPACE play · ↑↓ select · ENTER load "
-    + "· T trim · E export · H help · click bar to seek";
+const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fold "
+    + "· T trim · E export · H help · click bar/stage to seek";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -291,6 +302,7 @@ async function ensureStreams(): Promise<void> {
     if (c) {
         sCatalog = c;
         $("s-setup").hidden = true;
+        $("s-stage").hidden = false;
         renderStreamList();
         status(`${c.entries.length} streams - SPACE or click one to play`);
         return;
@@ -315,6 +327,7 @@ async function extractStreams(): Promise<void> {
             pstat.textContent = `extracting ${name} (${done}/${total})`;
         });
         $("s-setup").hidden = true;
+        $("s-stage").hidden = false;
         renderStreamList();
         status(`${sCatalog.entries.length} streams - SPACE or click one to play`);
     } catch (e) {
@@ -326,9 +339,16 @@ async function extractStreams(): Promise<void> {
     }
 }
 
-/* Sidebar list: MUSIC/VOICE prefix groups (derived in code from the user's
- * own catalog -- channels==2 -> MUSIC, else VOICE), filtered by the search
- * box; selection indexes the flat filtered entry list. */
+/* Sidebar fold tree: MUSIC/VOICE sections -> prefix groups -> entries
+ * (taxonomy derived in code from the user's own catalog -- channels==2 ->
+ * MUSIC, else VOICE). Groups start folded so the categories scan in one
+ * screen; a search shows every match expanded, folds ignored. */
+function sToggleFold(id: string): void {
+    if (sFolded.has(id)) sFolded.delete(id);
+    else sFolded.add(id);
+    renderStreamList();
+}
+
 function renderStreamList(): void {
     const ul = $("streamlist");
     if (!sCatalog) { ul.replaceChildren(); return; }
@@ -336,40 +356,69 @@ function renderStreamList(): void {
     const match = (e: StreamEntry): boolean =>
         !q || e.name.toLowerCase().includes(q);
     const { music, voice } = groupStreams(sCatalog.entries);
+    if (!sFoldInit) {                   /* first render: categories folded */
+        sFoldInit = true;
+        for (const [sec, gs] of [["MUSIC", music], ["VOICE", voice]] as const)
+            for (const g of gs) sFolded.add(`${sec}/${g.key}`);
+    }
+    sRows = [];
     const rows: HTMLLIElement[] = [];
-    sVisible = [];
-    for (const [section, groups] of [["MUSIC", music], ["VOICE", voice]] as const) {
+    const push = (row: SRow, li: HTMLLIElement): void => {
+        const i = sRows.length;
+        sRows.push(row);
+        li.classList.toggle("sel", i === sSel);
+        rows.push(li);
+    };
+    for (const [sec, groups] of [["MUSIC", music], ["VOICE", voice]] as const) {
+        const total = groups.reduce((n, g) => n + g.entries.filter(match).length, 0);
+        if (q && !total) continue;
+        const secOpen = q ? true : !sFolded.has(sec);
+        const sli = document.createElement("li");
+        sli.className = "sec";
+        sli.textContent = `${secOpen ? "▾" : "▸"} ${sec} (${total})`;
+        const si = sRows.length;
+        sli.onclick = () => { sSel = si; sToggleFold(sec); };
+        push({ kind: "section", id: sec, label: sec }, sli);
+        if (!secOpen) continue;
         for (const g of groups) {
             const hits = g.entries.filter(match);
             if (!hits.length) continue;
-            const hdr = document.createElement("li");
-            hdr.className = "hdr";
-            hdr.textContent = `${section} · ${g.key} (${hits.length})`;
-            rows.push(hdr);
+            const gid = `${sec}/${g.key}`;
+            const gOpen = q ? true : !sFolded.has(gid);
+            const gli = document.createElement("li");
+            gli.className = "hdr";
+            const gn = document.createElement("span");
+            gn.textContent = `${gOpen ? "▾" : "▸"} ${g.key} (${hits.length})`;
+            const gd = document.createElement("span");
+            gd.className = "dur";
+            gd.textContent = fmtSec(hits.reduce((t, e) => t + sDur(e), 0));
+            gli.append(gn, gd);
+            const gi = sRows.length;
+            gli.onclick = () => { sSel = gi; sToggleFold(gid); };
+            push({ kind: "group", id: gid, label: g.key }, gli);
+            if (!gOpen) continue;
             for (const e of hits) {
-                const i = sVisible.length;
-                sVisible.push(e);
                 const li = document.createElement("li");
+                li.className = "entry";
                 const nm = document.createElement("span");
                 nm.textContent = e.name.replace(/\.x$/, "");
                 const dur = document.createElement("span");
                 dur.className = "dur";
                 dur.textContent = fmtSec(sDur(e));
                 li.append(nm, dur);
-                li.classList.toggle("sel", i === sSel);
                 li.classList.toggle("playing", e.name === sPlayingName);
+                const i = sRows.length;
                 li.onclick = () => { sSel = i; void loadStream(i, true); };
-                rows.push(li);
+                push({ kind: "entry", entry: e }, li);
             }
         }
     }
-    if (sSel >= sVisible.length) sSel = Math.max(0, sVisible.length - 1);
+    if (sSel >= sRows.length) sSel = Math.max(0, sRows.length - 1);
     ul.replaceChildren(...rows);
 }
 
 function scrollStreamSelIntoView(): void {
-    const e = sVisible[sSel];
-    if (!e) return;
+    if (!sRows[sSel]) return;
     for (const li of $("streamlist").children)
         if (li.classList.contains("sel"))
             return li.scrollIntoView({ block: "nearest" });
@@ -400,8 +449,9 @@ function renderStreamInfo(): void {
 
 async function loadStream(i: number, autoplay: boolean): Promise<void> {
     if (!session || sLoading) return;
-    const e = sVisible[i];
-    if (!e) return;
+    const row = sRows[i];
+    if (!row || row.kind !== "entry") return;
+    const e = row.entry;
     sLoading = true;
     status(`loading ${e.name}...`);
     try {
@@ -412,9 +462,11 @@ async function loadStream(i: number, autoplay: boolean): Promise<void> {
         const d = await sDecoder.decode(e.name, bytes);
         sPlayer.load(d, sTrim);
         sPlayingName = e.name;
+        sViz?.set(d, sTrim);
         $("s-name").textContent = e.name.replace(/\.x$/, "");
         $("s-len").textContent = fmtSec(sPlayer.dur());
         renderStreamInfo();
+        updateSBarPad();
         $<HTMLButtonElement>("s-playbtn").disabled = false;
         $<HTMLButtonElement>("s-exportbtn").disabled = false;
         status("");
@@ -431,8 +483,11 @@ async function loadStream(i: number, autoplay: boolean): Promise<void> {
 }
 
 function sTogglePlay(): void {
-    if (!sPlayer.decoded()) {           /* first gesture: load the selection */
-        void loadStream(sSel, true);
+    if (!sPlayer.decoded()) {           /* first gesture: load the selection
+                                         * (or the first entry below it) */
+        let i = sSel;
+        while (i < sRows.length && sRows[i]!.kind !== "entry") i++;
+        if (i < sRows.length) { sSel = i; void loadStream(i, true); }
     } else if (sPlayer.playing()) {
         sPlayer.pause();
     } else {
@@ -441,11 +496,27 @@ function sTogglePlay(): void {
     }
 }
 
+/* Seek-bar pad shading: with trim OFF the authored silent tail is part of
+ * the timeline, so its span is marked like the BGM bar's loop region. */
+function updateSBarPad(): void {
+    const el = $("s-bar-pad");
+    const d = sPlayer.decoded();
+    const padFrac = d && !sTrim && d.samplesPerChannel > 0
+        ? d.padFrames * 28 / d.samplesPerChannel : 0;
+    el.style.display = padFrac > 0 ? "block" : "none";
+    if (padFrac > 0) {
+        el.style.left = `${((1 - padFrac) * 100).toFixed(3)}%`;
+        el.style.width = `${(padFrac * 100).toFixed(3)}%`;
+    }
+}
+
 function sToggleTrim(): void {
     sTrim = !sTrim;
     const d = $("s-trim");
     d.classList.toggle("on", sTrim);
     sPlayer.setTrim(sTrim);
+    sViz?.set(sPlayer.decoded(), sTrim);
+    updateSBarPad();
     $("s-len").textContent = fmtSec(sPlayer.dur());
 }
 
@@ -498,6 +569,7 @@ function tick(): void {
             sGlyph = glyph;
             $("s-playbtn").innerHTML = `<span>${glyph}</span>`;
         }
+        sViz?.draw(frac);
     }
     if (!player || !timeline) { viz?.draw(null, null, 0, cfg.loop); return; }
     const s = player.snap;
@@ -666,9 +738,39 @@ function onKey(e: KeyboardEvent): void {
         case " ":          sTogglePlay(); break;
         case "ArrowUp":    if (sSel > 0) sSel--;
                            renderStreamList(); scrollStreamSelIntoView(); break;
-        case "ArrowDown":  if (sSel < sVisible.length - 1) sSel++;
+        case "ArrowDown":  if (sSel < sRows.length - 1) sSel++;
                            renderStreamList(); scrollStreamSelIntoView(); break;
-        case "Enter":      void loadStream(sSel, true); break;
+        case "ArrowRight": {                /* unfold the header under the cursor */
+            const r = sRows[sSel];
+            if (r && r.kind !== "entry" && sFolded.has(r.id)) {
+                sFolded.delete(r.id);
+                renderStreamList();
+            }
+            break;
+        }
+        case "ArrowLeft": {                 /* fold, or hop to the parent header */
+            const r = sRows[sSel];
+            if (!r) break;
+            if (r.kind === "entry") {
+                for (let i = sSel - 1; i >= 0; i--)
+                    if (sRows[i]!.kind !== "entry") { sSel = i; break; }
+            } else if (!sFolded.has(r.id)) {
+                sFolded.add(r.id);
+            } else if (r.kind === "group") {
+                for (let i = sSel - 1; i >= 0; i--)
+                    if (sRows[i]!.kind === "section") { sSel = i; break; }
+            }
+            renderStreamList();
+            scrollStreamSelIntoView();
+            break;
+        }
+        case "Enter": {                     /* entry loads; header folds */
+            const r = sRows[sSel];
+            if (!r) break;
+            if (r.kind === "entry") void loadStream(sSel, true);
+            else sToggleFold(r.id);
+            break;
+        }
         case "t": case "T": sToggleTrim(); break;
         case "e": case "E": void sExport(); break;
         case "h": case "H": toggleHelp(); break;
@@ -808,7 +910,7 @@ async function main(): Promise<void> {
         get sPlayer() { return sPlayer; },
         get sState() {
             return { tab, sSel, sPlayingName, sLoading, sTrim, sBusy,
-                     visible: sVisible.length };
+                     rows: sRows.length, folded: sFolded.size };
         },
     };
     wirePicker();
@@ -825,11 +927,16 @@ async function main(): Promise<void> {
     $("s-playbtn").onclick = sTogglePlay;
     $("s-trim").onclick = sToggleTrim;
     $("s-exportbtn").onclick = () => void sExport();
-    $("s-bar").onclick = (e) => {
+    sViz = new StreamViz($<HTMLCanvasElement>("s-wave"),
+                         $<HTMLCanvasElement>("s-spec"));
+    const sSeek = (el: HTMLElement) => (e: MouseEvent) => {
         if (!sPlayer.decoded()) return;
-        const r = $("s-bar").getBoundingClientRect();
+        const r = el.getBoundingClientRect();
         sPlayer.seek((e.clientX - r.left) / r.width * sPlayer.dur());
     };
+    $("s-bar").onclick = sSeek($("s-bar"));
+    $("s-wave").onclick = sSeek($("s-wave"));
+    $("s-spec").onclick = sSeek($("s-spec"));
     $("stream-search").oninput = () => renderStreamList();
     $("s-extract").onclick = () => void extractStreams();
     $<HTMLInputElement>("s-iso").onchange = async () => {

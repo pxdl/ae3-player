@@ -116,7 +116,7 @@ button:hover { border-color: var(--dim); }
     padding-bottom: 6px;
 }
 #streamlist li {
-    padding: 2px 14px 2px 22px;
+    padding: 2px 14px 2px 30px;
     color: var(--dim);
     cursor: pointer;
     white-space: nowrap;
@@ -133,18 +133,29 @@ button:hover { border-color: var(--dim); }
 #streamlist li.playing::before {
     content: "\25B8";
     position: absolute;
-    left: 8px;
+    left: 16px;
     color: var(--good);
 }
+/* fold tree headers: sections (MUSIC/VOICE) and prefix groups */
+#streamlist li.sec {
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    padding-left: 14px;
+    margin-top: 6px;
+}
+#streamlist li.sec:hover { color: var(--accent); background: var(--panel-hi); }
 #streamlist li.hdr {
     color: var(--accent);
     font-size: 11px;
     letter-spacing: 0.06em;
-    cursor: default;
-    padding-left: 14px;
-    margin-top: 6px;
+    padding-left: 22px;
+    opacity: 0.8;
 }
-#streamlist li.hdr:hover { color: var(--accent); }
+#streamlist li.hdr:hover { color: var(--accent); background: var(--panel-hi); }
+#streamlist li.hdr .dur, #streamlist li.sec.sel, #streamlist li.hdr.sel {
+    opacity: 1;
+}
 
 #side-foot {
     padding: 10px 14px;
@@ -383,6 +394,13 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
     user-select: none;
     -webkit-user-select: none;
 }
+#s-bar-pad {
+    position: absolute;
+    top: 0; bottom: 0;
+    background: rgba(255, 196, 64, 0.12);
+    border-left: 1px solid rgba(255, 196, 64, 0.5);
+    display: none;
+}
 #s-bar-fill {
     position: absolute;
     top: 0; bottom: 0; left: 0;
@@ -401,6 +419,25 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
     white-space: pre-wrap;
 }
 #s-info .warn { color: var(--bad); }
+/* stage: waveform lane + spectrogram (sviz.ts) */
+#s-stage {
+    flex: 1;
+    min-height: 0;
+    margin: 0 18px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+#s-stage[hidden] { display: none; }
+#s-wave { flex: none; height: 160px; }
+#s-spec { flex: 1; min-height: 80px; }
+#s-stage canvas {
+    display: block;
+    width: 100%;
+    border-radius: 3px;
+    background: var(--panel);
+    cursor: pointer;
+}
 #s-setup {
     flex: 1;
     display: flex;

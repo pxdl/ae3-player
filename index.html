@@ -90,10 +90,15 @@
           <button id="s-exportbtn" title="Save this stream as a WAV -- trimmed per the TRIM PAD dial (E)">EXPORT WAV</button>
         </header>
         <div id="s-bar">
+          <div id="s-bar-pad"></div>
           <div id="s-bar-fill"></div>
           <div id="s-bar-head"></div>
         </div>
         <div id="s-info"></div>
+        <div id="s-stage" hidden>
+          <canvas id="s-wave"></canvas>
+          <canvas id="s-spec"></canvas>
+        </div>
         <div id="s-setup" hidden>
           <div id="s-setup-card">
             <h2>STREAMED AUDIO</h2>
