@@ -1,24 +1,28 @@
 # ae3-player
 
-Browser player for the Ape Escape 3 soundtrack — point it at your own game
-disc image and it extracts the music assets **client-side** (nothing uploaded,
-nothing shipped), then plays them through a bit-exact WebAssembly build of the
+Browser sound player for Ape Escape 3 — point it at your own game disc image
+and it extracts assets **client-side** (nothing uploaded, nothing shipped),
+then plays the game's sequenced music, streams, and embedded sound effects.
+Sequenced audio runs through a WebAssembly build of the
 [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer core.
 
-**Status: W6 (feature-complete).** Working today: ISO picker → in-browser
-extraction → OPFS cache ("forget my disc" wipes it), the 68-song list with the
-game's own authored per-song volumes (from `bgm_desc.exdb` on your disc),
-AudioWorklet playback, transport with a latency-aligned playhead, seek,
-loop/timing/kernel/reverb/volume dials, loop-unwound piano roll, voice slots,
-waveform strip with clip highlighting, help overlay, Worker-rendered WAV
-export (three modes, byte-identical to the native renderer), MIDI export (the
-sequence file exactly as it sits on the disc), instrument-bank export (the
-raw `.hd`/`.bd` pair zipped, or every waveform decoded to 44100 Hz WAVs —
-byte-identical to the reference decoder — with loop points and root keys as
-`smpl` chunks) — and it is a PWA:
-after the first visit the app itself works offline, playing from the cached
-extraction (interrupted extractions resume where they left off; clear errors
-for wrong/truncated/non-AE3 images and unplugged drives).
+Working today: ISO picker → in-browser extraction → OPFS cache ("forget my
+disc" wipes it); all 68 BGM songs at the game's authored per-song volumes;
+341 MB of lazily extracted streamed music, dialogue, and cutscene audio; and
+101 embedded SE banks exposing 2,699 assembled bank:request entries through
+the same 48-voice synth. BGM includes AudioWorklet playback, latency-aligned
+transport and seek, loop/timing/kernel/reverb/volume dials, a loop-unwound
+piano roll, voice slots, waveform and clip meters, Worker-rendered WAV, raw
+MIDI, bank-pair, and decoded sample-kit export. Streams include pad-aware
+decode, waveform/spectrogram transport, raw `.x`, and WAV export. SE includes
+exact or console-tick request timing, caller volume, gaussian/bright
+resampling, reverb, voice/wave views, ten-second-capped assembled WAV export,
+and raw `.hd`/`.bd` bank export.
+
+The app is a PWA: after the first visit its code works offline and cached
+assets play without the ISO. Interrupted extractions resume where they left
+off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
+drives.
 
 Browser support: Chrome/Chromium is the tested reference; Firefox works.
 Safari works as of the in-gesture audio fix: the whole audio stack is created
@@ -27,10 +31,9 @@ gesture that CREATED the `AudioContext` — a context built at page-load time
 can stay "interrupted" forever under stricter per-site Auto-Play policies,
 no matter who calls `resume()` later. If audio still refuses to start, the
 status line says so; check Safari Settings > Websites > Auto-Play for this
-site and the tab's mute state. Safari floors: OPFS writes need 18.2+ and can
-be declined by the browser (the app then plays straight from the ISO and asks
-for it again next visit), `DecompressionStream` and WASM-in-worklet need
-16.4+.
+site and the tab's mute state. Safari floors: `Promise.withResolvers` needs
+17.4+; OPFS writes need 18.2+ and can be declined by the browser (the app
+then plays straight from the ISO and asks for it again next visit).
 
 This repository never contains or serves game data. Your disc stays on your
 machine.

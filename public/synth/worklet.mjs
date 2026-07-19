@@ -51,7 +51,9 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
             }
             case "load": {
                 const { ppqn, events } = await this.engine.load(
-                    { hd: m.hd, bd: m.bd, mid: m.mid,
+                    { kind: m.mode === "se" ? "se" : "bgm",
+                      hd: m.hd, bd: m.bd, mid: m.mid,
+                      bank: m.bank, request: m.request,
                       irx: m.irx, libsd: m.libsd }, m.config);
                 this.wasDone = false;
                 this.wcur.n = 0;        /* bgmplay clears wcol on song load */

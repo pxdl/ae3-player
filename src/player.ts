@@ -43,6 +43,11 @@ export interface SongAssets {
     irx: Uint8Array | null; libsd: Uint8Array | null;
 }
 
+export interface SeAssets {
+    hd: Uint8Array; bd: Uint8Array;
+    irx: Uint8Array | null; libsd: Uint8Array | null;
+}
+
 export interface EngineConfig {
     songvol: number; revDepth: number;
     exact: boolean; gaussian: boolean; loop: number;
@@ -119,9 +124,11 @@ export class WorkletPlayer {
             break;
         case "snapshot":
             this.snap = m as Snapshot;
+            if (this.snap.done) this.snap.playing = false;
             this.onsnapshot?.(this.snap);
             break;
         case "ended":
+            if (this.snap) this.snap.playing = false;
             this.onended?.();
             break;
         case "error":
@@ -135,18 +142,36 @@ export class WorkletPlayer {
         }
     }
 
+    /** Post one transferable synth load and resolve its worklet reply. */
+    private loadMessage(message: Record<string, unknown>,
+                        bufs: Array<Uint8Array | null>): Promise<LoadResult> {
+        const { promise, resolve, reject } = Promise.withResolvers<LoadResult>();
+        this.pendingLoad = { resolve, reject };
+        this.node.port.postMessage(message,
+            bufs.filter((b) => b !== null).map((b) => b!.buffer));
+        return promise;
+    }
+
     /** Load a song into the worklet synth (buffers are transferred). */
     load(assets: SongAssets, config: EngineConfig): Promise<LoadResult> {
-        return new Promise((resolve, reject) => {
-            this.pendingLoad = { resolve, reject };
-            const bufs = [assets.hd, assets.bd, assets.mid,
-                          assets.irx, assets.libsd];
-            this.node.port.postMessage({
-                t: "load", config,
-                hd: assets.hd, bd: assets.bd, mid: assets.mid,
-                irx: assets.irx, libsd: assets.libsd,
-            }, bufs.filter((b) => b !== null).map((b) => b!.buffer));
-        });
+        const bufs = [assets.hd, assets.bd, assets.mid,
+                      assets.irx, assets.libsd];
+        return this.loadMessage({
+            t: "load", mode: "bgm", config,
+            hd: assets.hd, bd: assets.bd, mid: assets.mid,
+            irx: assets.irx, libsd: assets.libsd,
+        }, bufs);
+    }
+
+    /** Load one embedded SE bank/request into the same shared synth path. */
+    loadSe(assets: SeAssets, bank: number, request: number,
+           config: EngineConfig): Promise<LoadResult> {
+        const bufs = [assets.hd, assets.bd, assets.irx, assets.libsd];
+        return this.loadMessage({
+            t: "load", mode: "se", config, bank, request,
+            hd: assets.hd, bd: assets.bd,
+            irx: assets.irx, libsd: assets.libsd,
+        }, bufs);
     }
 
     play(): void {

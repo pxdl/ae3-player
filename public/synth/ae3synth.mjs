@@ -124,6 +124,8 @@ export class AE3Synth {
     /* ---- loading (core copies what it keeps; our staging is freed at once) */
     loadBank(hd, bd)   { this.#load("loadBank", (h, hn, b, bn) => this.#ex.ae3_synth_load_bank(this.#s, h, hn, b, bn), hd, bd); }
     loadSeq(mid)       { this.#load("loadSeq", (p, n) => this.#ex.ae3_synth_load_seq(this.#s, p, n), mid); }
+    loadSe(bank, request) { const r = this.#ex.ae3_synth_load_se(this.#s, bank, request);
+                            if (r !== 0) throw new Error(`loadSe: ${this.#error()}`); }
     loadPitchIrx(irx)  { this.#load("loadPitchIrx", (p, n) => this.#ex.ae3_synth_load_pitch_irx(this.#s, p, n), irx); }
     loadReverbIrx(irx) { this.#load("loadReverbIrx", (p, n) => this.#ex.ae3_synth_load_reverb_irx(this.#s, p, n), irx); }
 
@@ -203,6 +205,8 @@ export class AE3Synth {
 
     /* ---- bank introspection (ae3_synth_bank_waveform*; see ae3synth.h) */
     bankWaveforms() { return this.#ex.ae3_synth_bank_waveforms(this.#s); }
+    seBanks() { return this.#ex.ae3_synth_se_banks(this.#s); }
+    seRequests(bank) { return this.#ex.ae3_synth_se_requests(this.#s, bank); }
 
     bankWaveform(i) {
         if (!this.#ex.ae3w_bank_waveform(this.#s, i, this.#scratch))

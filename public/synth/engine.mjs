@@ -45,7 +45,7 @@ export class PlayerEngine {
     constructor(module) {
         this.module = module;
         this.synth = null;
-        this.assets = null;             /* {hd,bd,mid,irx,libsd} Uint8Arrays */
+        this.assets = null;             /* BGM or embedded-SE load descriptor */
         this.config = defaultConfig();
         this.playing = false;
         this.done = false;
@@ -56,10 +56,11 @@ export class PlayerEngine {
         this.voicebuf = new Int32Array(48 * 4);
     }
 
-    /* Fresh synth from the cached buffers, full config re-applied. Load order
-     * is bgmplay reload_locked's: pitch irx, bank, seq, libsd, dials. */
+    /* Fresh synth from the cached buffers, full config re-applied. BGM follows
+     * bgmplay reload_locked; SE selects one embedded bank/request after the
+     * shared bank load. */
     async #build() {
-        const { hd, bd, mid, irx, libsd } = this.assets;
+        const { hd, bd, mid, irx, libsd, kind, bank, request } = this.assets;
         const c = this.config;
         const s = await AE3Synth.instantiate(this.module);
         this.warning = "";
@@ -67,17 +68,19 @@ export class PlayerEngine {
             if (irx) s.loadPitchIrx(irx);
         } catch (e) { this.warning = String(e.message ?? e); }
         s.loadBank(hd, bd);             /* fatal: caller catches */
-        s.loadSeq(mid);
+        if (kind === "se") s.loadSe(bank, request);
+        else s.loadSeq(mid);
         try {
             if (libsd) s.loadReverbIrx(libsd);
         } catch (e) { this.warning = String(e.message ?? e); }
         s.setReverbDepth(c.revDepth);
         s.setEventTiming(c.exact);
         s.setGaussian(c.gaussian);
-        s.setLoop(c.loop);
+        if (kind !== "se") s.setLoop(c.loop);
         s.setSongVolume(c.songvol);
-        if (c.cueOn) {   /* fresh instance: duck levels restart from 1.0, like
-                            bgmplay reload_locked */
+        if (kind !== "se" && c.cueOn) {
+            /* Fresh instance: duck levels restart from 1.0, like bgmplay
+             * reload_locked. */
             s.cueScale(c.cueScale);
             s.cueEnable(true);
             s.cueDuck(0, c.duckDemo);
@@ -88,8 +91,8 @@ export class PlayerEngine {
         this.done = false;
     }
 
-    /** Load a song. Returns {ppqn, events} for the main thread's timeline
-     *  builder -- events packed [tick,kind,status,a,b,uspqn] per event. */
+    /** Load BGM or an embedded SE request. BGM returns packed sequence events
+     * for the main-thread timeline; SE returns an empty event vector. */
     async load(assets, config) {
         this.busy = true;
         try {
@@ -97,8 +100,9 @@ export class PlayerEngine {
             Object.assign(this.config, config);
             this.seekTarget = -1;
             await this.#build();
-            const ppqn = this.synth.seqPpqn();
-            const evs = this.synth.seqEventsAll();
+            const isSe = assets.kind === "se";
+            const ppqn = isSe ? 0 : this.synth.seqPpqn();
+            const evs = isSe ? [] : this.synth.seqEventsAll();
             const events = new Uint32Array(evs.length * 6);
             for (let i = 0; i < evs.length; i++) {
                 const e = evs[i];

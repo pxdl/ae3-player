@@ -31,6 +31,10 @@ button {
     cursor: pointer;
 }
 button:hover { border-color: var(--dim); }
+button:not(:disabled):active {
+    transform: scale(0.96);
+    transition: transform 80ms cubic-bezier(0.2, 0, 0, 1);
+}
 
 /* ---- player layout ------------------------------------------------------ */
 #app {
@@ -480,6 +484,209 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
 #s-setup-status { min-height: 1.2em; margin-top: 12px; }
 #s-setup-status.err { color: var(--bad); }
 #s-progress {
+    width: 100%;
+    height: 6px;
+    accent-color: var(--accent);
+    margin-top: 8px;
+}
+
+/* ---- embedded SE browser ------------------------------------------------ */
+#seview {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+#seview[hidden] { display: none; }
+#se-search {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--panel-hi);
+    border-radius: 3px;
+    margin: 0 14px 6px;
+    padding: 4px 8px;
+    outline: none;
+}
+#se-search:focus { border-color: var(--accent); }
+#selist {
+    list-style: none;
+    overflow-y: auto;
+    flex: 1;
+    padding-bottom: 6px;
+}
+#selist li {
+    color: var(--dim);
+    cursor: pointer;
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    white-space: nowrap;
+}
+#selist li:hover { color: var(--text); }
+#selist li.sel { background: var(--panel-hi); color: var(--text); }
+#selist li.bank {
+    color: var(--accent);
+    padding: 3px 14px;
+    letter-spacing: 0.04em;
+}
+#selist li.cue { padding: 2px 14px 2px 30px; }
+#selist li .count {
+    color: var(--dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+#selist li.playing { color: var(--good); }
+#selist li.playing::before {
+    content: "\25B8";
+    position: absolute;
+    left: 16px;
+    color: var(--good);
+}
+
+#se-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+#se-main[hidden] { display: none; }
+#se-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 18px;
+}
+#se-playbtn {
+    width: 46px;
+    height: 46px;
+    flex: none;
+    font-size: 18px;
+    border-radius: 50%;
+    color: var(--accent);
+    border-color: var(--panel-hi);
+}
+#se-playbtn:not(:disabled):hover { border-color: var(--accent); }
+#se-playbtn:disabled { color: var(--dim); cursor: default; }
+#se-playbtn span { pointer-events: none; }
+#se-now { flex: 1; min-width: 0; }
+#se-name {
+    font-size: 19px;
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#se-time {
+    color: var(--dim);
+    margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+}
+#se-coord { margin-inline-start: 10px; color: var(--accent); }
+#dials-se { display: flex; gap: 6px; flex: none; }
+#se-exportbtn, #se-bankbtn {
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--accent);
+    background: #282c3a;
+    white-space: nowrap;
+    flex: none;
+}
+#se-exportbtn:disabled, #se-bankbtn:disabled {
+    color: var(--dim);
+    cursor: default;
+}
+#se-bar {
+    position: relative;
+    height: 16px;
+    margin: 0 18px;
+    background: var(--panel);
+    border-radius: 3px;
+    overflow: hidden;
+}
+#se-bar-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: var(--panel-hi);
+}
+#se-bar-head {
+    position: absolute;
+    inset-block: 0;
+    width: 2px;
+    background: var(--accent);
+}
+#se-info {
+    padding: 10px 18px;
+    color: var(--dim);
+    font-size: 11px;
+    white-space: pre-wrap;
+}
+#se-stage {
+    flex: 1;
+    min-height: 0;
+    margin: 0 18px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+#se-stage[hidden], #se-null[hidden] { display: none; }
+#se-slots { flex: none; height: 58px; }
+#se-wave { flex: 1; min-height: 160px; }
+#se-stage canvas {
+    display: block;
+    width: 100%;
+    border-radius: 3px;
+    background: var(--panel);
+}
+#se-setup {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#se-setup[hidden] { display: none; }
+#se-setup-card {
+    width: min(520px, 92%);
+    background: var(--panel);
+    border-radius: 6px;
+    padding: 28px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+}
+#se-setup-card h2 {
+    color: var(--accent);
+    font-size: 14px;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+}
+#se-setup-card p {
+    color: var(--dim);
+    line-height: 1.5;
+    margin-bottom: 14px;
+    text-wrap: pretty;
+}
+#se-setup-card code { color: var(--text); }
+#se-extract {
+    padding: 8px 14px;
+    color: var(--accent);
+    background: #282c3a;
+}
+#se-extract[hidden], #se-iso-pick[hidden] { display: none; }
+#se-iso-pick {
+    display: block;
+    border: 1px dashed var(--panel-hi);
+    border-radius: 4px;
+    padding: 18px 16px;
+    text-align: center;
+    color: var(--dim);
+    cursor: pointer;
+}
+#se-iso-pick:hover { border-color: var(--accent); color: var(--text); }
+#se-iso-pick input { display: none; }
+#se-setup-status { min-height: 1.2em; margin-top: 12px; }
+#se-setup-status.err { color: var(--bad); }
+#se-progress {
     width: 100%;
     height: 6px;
     accent-color: var(--accent);

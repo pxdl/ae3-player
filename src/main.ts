@@ -8,11 +8,12 @@ import { resumeSession, openIso, friendlyError, US_SERIAL,
 import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
-import { Exporter, download, type ExportOpts } from "./export.ts";
+import { Exporter, download, type ExportOpts, type SeExportOpts } from "./export.ts";
 import { storeZip } from "./zip.ts";
 import { groupStreams, StreamDecoder, StreamPlayer,
          type StreamCatalog, type StreamEntry } from "./streams.ts";
 import { StreamViz } from "./sviz.ts";
+import { SeInspector, type SeBankEntry, type SeCatalog } from "./se.ts";
 
 const LOOP_FOREVER = 0x7f;
 
@@ -37,9 +38,10 @@ const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true
               cueOn: false, cueScale: 44.5 / 127,
               duckDemo: false, duckPhone: false };
 const exporter = new Exporter();
+let audioMode: "bgm" | "se" | null = null;
 
 /* streams tab (VIEWER_PLAN §2) */
-let tab: "bgm" | "streams" = "bgm";
+let tab: "bgm" | "streams" | "se" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
@@ -60,6 +62,24 @@ let sBusy = false;                  /* export in flight */
 const sDecoder = new StreamDecoder();
 const sPlayer = new StreamPlayer();
 let sViz: StreamViz | null = null;
+
+/* embedded sequenced effects */
+type SeRow =
+    | { kind: "bank"; entry: SeBankEntry }
+    | { kind: "cue"; entry: SeBankEntry; bank: number; request: number };
+let seCatalog: SeCatalog | null = null;
+let seRows: SeRow[] = [];
+let seSel = 0;
+let seBusy = false;
+let seOpenBank: string | null = null;
+let seShape: Uint16Array | null = null;
+let seLoading = false;
+let sePlaying: Extract<SeRow, { kind: "cue" }> | null = null;
+let seGlyph = "";
+let seKnownFrames = RATE * 10;
+let seViz: Viz | null = null;
+const seInspector = new SeInspector();
+const seCfg = { volume: 64, exact: true, gaussian: true, revDepth: 30 };
 
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -160,6 +180,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         if (authored) cfg.songvol = song.songvol;
         cfg.cueScale = song.volumeScale > 0 ? song.volumeScale : 44.5 / 127;
         const r = await p.load(assets, engineConfig());
+        audioMode = "bgm";
         timeline = buildTimeline(r.events, r.ppqn);
         playingIdx = idx;
         p.snap = null;
@@ -180,7 +201,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
 
 function togglePlay(): void {
     if (!session) return;
-    if (!player || playingIdx < 0) {    /* first gesture: load the selection */
+    if (!player || playingIdx < 0 || audioMode !== "bgm") {
         void loadSong(sel, true);
     } else if (finished) {              /* bgmplay: SPACE after end restarts */
         finished = false;
@@ -269,6 +290,9 @@ function setRev(depth: number): void {
 let keysBgmText = "";               /* captured from the DOM at boot */
 const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fold "
     + "· T trim · E wav · X raw · H help · click bar/stage to seek";
+const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u00B7 ENTER load/fold "
+    + "\u00B7 - = volume \u00B7 T timing \u00B7 G kernel \u00B7 R reverb "
+    + "\u00B7 E wav \u00B7 X bank \u00B7 H help";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -279,20 +303,25 @@ function fmtSec(t: number): string {
     return `${m}:${s < 10 ? "0" : ""}${s.toFixed(1)}`;
 }
 
-function switchTab(t: "bgm" | "streams"): void {
+function switchTab(t: "bgm" | "streams" | "se"): void {
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
     $("tab-streams").classList.toggle("on", t === "streams");
+    $("tab-se").classList.toggle("on", t === "se");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
+    $("seview").hidden = t !== "se";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
-    $("foot-stats").hidden = t !== "bgm";
+    $("foot-stats").hidden = t === "streams";
     $("stream-main").hidden = t !== "streams";
-    $("keys").textContent = t === "bgm" ? keysBgmText : KEYS_STREAMS;
+    $("se-main").hidden = t !== "se";
+    $("keys").textContent =
+        t === "bgm" ? keysBgmText : t === "streams" ? KEYS_STREAMS : KEYS_SE;
     status("");
     if (t === "streams") void ensureStreams();
+    if (t === "se") void ensureSeCatalog();
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
@@ -567,6 +596,309 @@ async function sExport(): Promise<void> {
     }
 }
 
+/* ---- embedded SE tab --------------------------------------------------- */
+function seSetup(show: boolean, needsIso = false): void {
+    $("se-setup").hidden = !show;
+    $("se-stage").hidden = show;
+    $("se-extract").hidden = needsIso;
+    $("se-iso-pick").hidden = !needsIso;
+}
+
+function buildSeRows(): void {
+    const q = $<HTMLInputElement>("se-search").value.trim().toLowerCase();
+    const rows: SeRow[] = [];
+    for (const entry of seCatalog?.entries ?? []) {
+        if (q && !entry.name.toLowerCase().includes(q)) continue;
+        rows.push({ kind: "bank", entry });
+        if (entry.name !== seOpenBank || !seShape) continue;
+        for (let bank = 0; bank < seShape.length; bank++) {
+            for (let request = 0; request < seShape[bank]!; request++)
+                rows.push({ kind: "cue", entry, bank, request });
+        }
+    }
+    seRows = rows;
+    seSel = Math.min(seSel, Math.max(0, seRows.length - 1));
+}
+
+function renderSeList(): void {
+    buildSeRows();
+    const children = seRows.map((row, i) => {
+        const li = document.createElement("li");
+        li.className = row.kind;
+        li.classList.toggle("sel", i === seSel);
+        if (row.kind === "bank") {
+            const open = row.entry.name === seOpenBank;
+            const label = document.createElement("span");
+            label.textContent = `${open ? "\u25BE" : "\u25B8"} ${row.entry.name}`;
+            const count = document.createElement("span");
+            count.className = "count";
+            count.textContent = open && seShape
+                ? `${seShape.reduce((n, v) => n + v, 0)} requests`
+                : `${row.entry.bytes / 1048576 < 0.1
+                    ? (row.entry.bytes / 1024).toFixed(0) + " KB"
+                    : (row.entry.bytes / 1048576).toFixed(1) + " MB"}`;
+            li.append(label, count);
+        } else {
+            li.textContent = `${row.bank}:${row.request}`;
+            li.classList.toggle("playing", sePlaying?.entry.name === row.entry.name
+                && sePlaying.bank === row.bank
+                && sePlaying.request === row.request);
+        }
+        li.onclick = () => { seSel = i; void seActivate(i, row.kind === "cue"); };
+        return li;
+    });
+    $("selist").replaceChildren(...children);
+    $("selist").children[seSel]?.scrollIntoView({ block: "nearest" });
+}
+
+async function ensureSeCatalog(): Promise<boolean> {
+    if (!session) return false;
+    const meta = await session.se.cached();
+    if (!meta) {
+        seSetup(true, !session.se.hasIso());
+        return false;
+    }
+    seCatalog = meta;
+    seSetup(false);
+    renderSeList();
+    return true;
+}
+async function extractSeBanks(): Promise<void> {
+    if (!session) return;
+    const btn = $<HTMLButtonElement>("se-extract");
+    const st = $("se-setup-status");
+    const progress = $<HTMLProgressElement>("se-progress");
+    btn.disabled = true;
+    progress.hidden = false;
+    st.classList.remove("err");
+    try {
+        seCatalog = await session.se.extract((done, total, name) => {
+            progress.max = total;
+            progress.value = done;
+            st.textContent = `extracting ${done}/${total}: ${name}`;
+        });
+        st.textContent = `${seCatalog.entries.length} SE banks ready`;
+        seSetup(false);
+        renderSeList();
+        status(`${seCatalog.entries.length} SE banks cached`);
+    } catch (e) {
+        st.textContent = friendlyError(e);
+        st.classList.add("err");
+    } finally {
+        btn.disabled = false;
+        progress.hidden = true;
+    }
+}
+
+async function seActivate(i: number, play: boolean): Promise<void> {
+    if (!session || seLoading) return;
+    const row = seRows[i];
+    if (!row) return;
+    if (row.kind === "cue") {
+        if (play) await loadSeCue(row, true);
+        return;
+    }
+    if (seOpenBank === row.entry.name) {
+        seOpenBank = null;
+        seShape = null;
+        renderSeList();
+        return;
+    }
+    seLoading = true;
+    status(`reading ${row.entry.name} sequence table...`);
+    try {
+        const files = await session.se.bank(row.entry);
+        seShape = await seInspector.inspect(files);
+        seOpenBank = row.entry.name;
+        status("");
+    } catch (e) {
+        status(friendlyError(e), true);
+    } finally {
+        seLoading = false;
+        renderSeList();
+    }
+}
+
+const seEngineConfig = (): EngineConfig => ({
+    songvol: seCfg.volume,
+    revDepth: seCfg.revDepth,
+    exact: seCfg.exact,
+    gaussian: seCfg.gaussian,
+    loop: LOOP_FOREVER,
+    cueOn: false,
+    cueScale: 1,
+    duckDemo: false,
+    duckPhone: false,
+});
+
+async function seSynthAssets(entry: SeBankEntry) {
+    if (!session) throw new Error("no disc session");
+    const files = await session.se.bank(entry);
+    const [irx, libsd] = await Promise.all([
+        session.read("irx/sg2iopm1.irx"),
+        session.read("irx/libsd.bin"),
+    ]);
+    return { files, assets: { ...files, irx, libsd } };
+}
+
+async function loadSeCue(
+    row: Extract<SeRow, { kind: "cue" }>, autoplay: boolean,
+): Promise<void> {
+    if (!session || seLoading) return;
+    let p: WorkletPlayer;
+    try {
+        p = await ensurePlayer();
+    } catch (e) {
+        status(e instanceof Error ? e.message : String(e), true);
+        return;
+    }
+    p.resume();
+    sPlayer.pause();
+    seLoading = true;
+    finished = false;
+    status(`loading ${row.entry.name} ${row.bank}:${row.request}...`);
+    try {
+        const { assets } = await seSynthAssets(row.entry);
+        const r = await p.loadSe(assets, row.bank, row.request, seEngineConfig());
+        audioMode = "se";
+        timeline = null;
+        sePlaying = row;
+        seKnownFrames = RATE * 10;
+        p.snap = null;
+        seViz?.clearWave();
+        $("se-name").textContent = row.entry.name;
+        $("se-coord").textContent = `bank ${row.bank} \u00B7 request ${row.request}`;
+        $("se-len").textContent = "\u2264 0:10.0";
+        $<HTMLButtonElement>("se-playbtn").disabled = false;
+        $<HTMLButtonElement>("se-bankbtn").disabled = false;
+        updateSeExportBtn();
+        status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
+        if (autoplay) p.play();
+    } catch (e) {
+        status(friendlyError(e), true);
+    } finally {
+        seLoading = false;
+        renderSeList();
+        renderSeDials();
+    }
+}
+
+function seTogglePlay(): void {
+    if (!sePlaying) {
+        let i = seSel;
+        while (i < seRows.length && seRows[i]!.kind !== "cue") i++;
+        const row = seRows[i];
+        if (row?.kind === "cue") {
+            seSel = i;
+            void loadSeCue(row, true);
+        }
+    } else if (!player || audioMode !== "se") {
+        void loadSeCue(sePlaying, true);
+    } else if (finished) {
+        finished = false;
+        player.seek(0);
+        player.play();
+    } else if (player.snap?.playing) {
+        player.pause();
+    } else {
+        sPlayer.pause();
+        player.play();
+    }
+}
+
+function renderSeInfo(): void {
+    if (!sePlaying) return;
+    $("se-info").textContent =
+        `${sePlaying.entry.hd} + ${sePlaying.entry.bd}\n`
+        + `isolated caller volume ${seCfg.volume}/127 \u00B7 `
+        + `${seCfg.exact ? "exact 480 Hz" : "console 60 Hz"} dispatch \u00B7 `
+        + `${seCfg.gaussian ? "SPU2 gaussian" : "bright"} resampling \u00B7 `
+        + `reverb ${seCfg.revDepth}`;
+}
+
+function renderSeDials(): void {
+    $("se-vol").textContent = `VOL ${seCfg.volume}`;
+    $("se-timing").textContent = seCfg.exact ? "EXACT" : "TICK";
+    $("se-timing").classList.toggle("on", seCfg.exact);
+    $("se-kernel").textContent = seCfg.gaussian ? "GAUSS" : "BRIGHT";
+    $("se-kernel").classList.toggle("on", seCfg.gaussian);
+    $("se-rev").textContent = `REV ${seCfg.revDepth}`;
+    $("se-rev").classList.toggle("on", seCfg.revDepth > 0);
+    renderSeInfo();
+}
+
+function setSeVolume(value: number): void {
+    seCfg.volume = Math.max(1, Math.min(127, value));
+    if (audioMode === "se") player?.set("songvol", seCfg.volume);
+    renderSeDials();
+}
+
+function seToggleExact(): void {
+    seCfg.exact = !seCfg.exact;
+    if (audioMode === "se") {
+        finished = false;
+        player?.set("exact", seCfg.exact ? 1 : 0);
+        player?.seek(0);
+    }
+    renderSeDials();
+}
+
+function seToggleKernel(): void {
+    seCfg.gaussian = !seCfg.gaussian;
+    if (audioMode === "se") player?.set("gaussian", seCfg.gaussian ? 1 : 0);
+    renderSeDials();
+}
+
+function seToggleReverb(): void {
+    seCfg.revDepth = seCfg.revDepth > 0 ? 0 : 30;
+    if (audioMode === "se") player?.set("revDepth", seCfg.revDepth);
+    renderSeDials();
+}
+
+function updateSeExportBtn(): void {
+    const button = $<HTMLButtonElement>("se-exportbtn");
+    button.disabled = !sePlaying || seBusy || exporter.busy;
+    button.textContent = seBusy || exporter.busy ? "EXPORTING" : "EXPORT WAV";
+}
+
+async function exportSeCue(): Promise<void> {
+    if (!session || !sePlaying || seBusy || exporter.busy) return;
+    const row = sePlaying;
+    seBusy = true;
+    updateSeExportBtn();
+    status(`EXPORTING se_${row.entry.name}_${row.bank}_${row.request}.wav...`);
+    try {
+        const { assets } = await seSynthAssets(row.entry);
+        const opts: SeExportOpts = {
+            bank: row.bank, request: row.request, volume: seCfg.volume,
+            revDepth: seCfg.revDepth, exact: seCfg.exact,
+            bright: !seCfg.gaussian, seconds: 10,
+        };
+        exporter.se(`se_${row.entry.name}`, assets, opts);
+    } catch (e) {
+        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    } finally {
+        seBusy = false;
+        updateSeExportBtn();
+    }
+}
+
+async function exportSeBank(): Promise<void> {
+    if (!session || !sePlaying) return;
+    try {
+        const { hd, bd } = await session.se.bank(sePlaying.entry);
+        const zip = storeZip([
+            [sePlaying.entry.hd, hd],
+            [sePlaying.entry.bd, bd],
+        ]);
+        const file = `${sePlaying.entry.name}_bank.zip`;
+        download(zip, file, "application/zip");
+        status(`EXPORTED ${file}`);
+    } catch (e) {
+        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    }
+}
+
 /* ---- render loop -------------------------------------------------------- */
 function fmtTime(samples: number): string {
     const t = Math.max(0, samples) / RATE;
@@ -591,15 +923,54 @@ function tick(): void {
         }
         sViz?.draw(frac);
     }
-    if (!player || !timeline) { viz?.draw(null, null, 0, cfg.loop); return; }
+    if (tab === "se" && player && audioMode === "se") {
+        const s = player.snap;
+        const pos = s?.pos ?? 0;
+        if (finished && pos > 0 && pos !== seKnownFrames) {
+            seKnownFrames = pos;
+            $("se-len").textContent = fmtTime(pos);
+        } else if (pos > RATE * 10) {
+            $("se-len").textContent = "\u221E";
+        }
+        $("se-cur").textContent = fmtTime(pos);
+        const frac = seKnownFrames > 0 ? Math.min(pos / seKnownFrames, 1) : 0;
+        $("se-bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
+        $("se-bar-head").style.left =
+            `calc(${(frac * 100).toFixed(3)}% - 1px)`;
+        const glyph = s?.playing ? "&#10074;&#10074;" : "&#9654;";
+        if (glyph !== seGlyph) {
+            seGlyph = glyph;
+            $("se-playbtn").innerHTML = `<span>${glyph}</span>`;
+        }
+        if (s) {
+            const st = s.stats;
+            $("stats-line").textContent =
+                `VOICES STARTED ${st.voices_started}  `
+                + `BUS PEAK ${st.bus_peak}/32767  CLIP ${st.bus_clipped}  `
+                + `WET PEAK ${st.wet_peak}  WET CLIP ${st.wet_clipped}`;
+            const clip = st.bus_clipped + st.wet_clipped;
+            if (clip > prevClip) {
+                prevClip = clip;
+                clipFlash = performance.now();
+            }
+        }
+        $("clip-flash").hidden =
+            !(clipFlash && performance.now() - clipFlash < 700);
+        seViz?.draw(s, null, pos, false);
+        return;
+    }
+    if (!player || !timeline || audioMode !== "bgm") {
+        if (tab === "bgm") viz?.draw(null, null, 0, cfg.loop);
+        return;
+    }
     const s = player.snap;
     const disp = displaySample();
     $("time-cur").textContent = fmtTime(disp);
     if (s) $("bpm").textContent = `${bpmOf(timeline, s.clock).toFixed(1)} BPM`;
     $("loopx").textContent =
-        s && s.stats.loops_taken > 0 ? `×${s.stats.loops_taken}` : "";
-    const frac = timeline.lenSamp > 0 ?
-        Math.min(disp / timeline.lenSamp, 1) : 0;
+        s && s.stats.loops_taken > 0 ? `\u00D7${s.stats.loops_taken}` : "";
+    const frac = timeline.lenSamp > 0
+        ? Math.min(disp / timeline.lenSamp, 1) : 0;
     $("bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
     $("bar-head").style.left = `calc(${(frac * 100).toFixed(3)}% - 1px)`;
     const lp = $("bar-loop");
@@ -611,30 +982,24 @@ function tick(): void {
     } else {
         lp.style.display = "none";
     }
-    /* write the glyph only when it CHANGES: an innerHTML assignment replaces
-     * the text node even when the string is identical, and WebKit swallows a
-     * click whose mousedown/mouseup straddles that replacement -- at 60 Hz
-     * the play button ate clicks at random in Safari (space was immune: no
-     * hit-testing) */
+    /* Write the glyph only when it changes. Replacing the span every frame
+     * makes WebKit swallow clicks whose down/up straddle that replacement. */
     const glyph = s?.playing ? "&#10074;&#10074;" : "&#9654;";
     if (glyph !== pbGlyph) {
         pbGlyph = glyph;
-        /* span: the glyph is pointer-events:none so clicks anywhere in the
-         * circle target the BUTTON -- Safari hit-tests/selects button text
-         * where Blink does not, which ate clicks landing on the glyph */
         $("playbtn").innerHTML = `<span>${glyph}</span>`;
     }
-    /* footer stats + clip flash (bgmplay's footer line) */
     if (s) {
         const st = s.stats;
         $("stats-line").textContent =
-            `VOICES STARTED ${st.voices_started}  BUS PEAK ${st.bus_peak}/32767` +
-            `  CLIP ${st.bus_clipped}  WET PEAK ${st.wet_peak}` +
-            `  WET CLIP ${st.wet_clipped}`;
+            `VOICES STARTED ${st.voices_started}  BUS PEAK ${st.bus_peak}/32767`
+            + `  CLIP ${st.bus_clipped}  WET PEAK ${st.wet_peak}`
+            + `  WET CLIP ${st.wet_clipped}`;
         const clip = st.bus_clipped + st.wet_clipped;
-        if (clip > prevClip) { prevClip = clip; clipFlash = performance.now(); }
-        /* cue layer armed: the VOL dial tracks the live duck staircase
-         * (write only on change -- see the playbtn glyph note above) */
+        if (clip > prevClip) {
+            prevClip = clip;
+            clipFlash = performance.now();
+        }
         if (cfg.cueOn && s.cueSongvol >= 0) {
             const txt = `VOL ${s.cueSongvol} CUE`;
             const el = $("d-vol");
@@ -749,8 +1114,52 @@ function showBankMenu(show: boolean): void {
 /* ---- keyboard (bgmplay's map) ------------------------------------------- */
 function onKey(e: KeyboardEvent): void {
     if (!session || $("app").hidden) return;
-    if (e.target === $("stream-search")) {      /* typing a filter */
-        if (e.key === "Escape") $<HTMLInputElement>("stream-search").blur();
+    if (e.target === $("stream-search") || e.target === $("se-search")) {
+        if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+        return;
+    }
+    if (tab === "se") {
+        switch (e.key) {
+        case " ": seTogglePlay(); break;
+        case "ArrowUp":
+            if (seSel > 0) seSel--;
+            renderSeList();
+            break;
+        case "ArrowDown":
+            if (seSel < seRows.length - 1) seSel++;
+            renderSeList();
+            break;
+        case "ArrowRight": {
+            const row = seRows[seSel];
+            if (row?.kind === "bank" && row.entry.name !== seOpenBank)
+                void seActivate(seSel, false);
+            break;
+        }
+        case "ArrowLeft": {
+            const row = seRows[seSel];
+            if (row?.kind === "cue") {
+                while (seSel > 0 && seRows[seSel]!.kind !== "bank") seSel--;
+                renderSeList();
+            } else if (row?.kind === "bank" && row.entry.name === seOpenBank) {
+                void seActivate(seSel, false);
+            }
+            break;
+        }
+        case "Enter":
+            void seActivate(seSel, seRows[seSel]?.kind === "cue");
+            break;
+        case "-": setSeVolume(seCfg.volume - 1); break;
+        case "=": setSeVolume(seCfg.volume + 1); break;
+        case "t": case "T": seToggleExact(); break;
+        case "g": case "G": seToggleKernel(); break;
+        case "r": case "R": seToggleReverb(); break;
+        case "e": case "E": void exportSeCue(); break;
+        case "x": case "X": void exportSeBank(); break;
+        case "h": case "H": toggleHelp(); break;
+        case "Escape": if (!$("help").hidden) toggleHelp(false); break;
+        default: return;
+        }
+        e.preventDefault();
         return;
     }
     if (tab === "streams") {
@@ -844,6 +1253,9 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     renderDials();
     viz = new Viz($<HTMLCanvasElement>("roll"), $<HTMLCanvasElement>("slots"),
                   $<HTMLCanvasElement>("wave"));
+    seViz = new Viz($<HTMLCanvasElement>("se-null"),
+                    $<HTMLCanvasElement>("se-slots"),
+                    $<HTMLCanvasElement>("se-wave"));
     /* no audio yet: the whole stack is built inside the first click/key
      * (ensurePlayer) so Safari associates the AudioContext with a gesture */
     $<HTMLButtonElement>("playbtn").disabled = false;
@@ -933,6 +1345,10 @@ async function main(): Promise<void> {
             return { tab, sSel, sPlayingName, sLoading, sTrim, sBusy,
                      rows: sRows.length, folded: sFolded.size };
         },
+        get seState() {
+            return { seSel, seOpenBank, seLoading, seBusy, sePlaying,
+                     rows: seRows.length, shape: seShape && [...seShape] };
+        },
     };
     wirePicker();
     $("playbtn").onclick = togglePlay;
@@ -945,6 +1361,7 @@ async function main(): Promise<void> {
     keysBgmText = $("keys").textContent ?? "";
     $("tab-bgm").onclick = () => switchTab("bgm");
     $("tab-streams").onclick = () => switchTab("streams");
+    $("tab-se").onclick = () => switchTab("se");
     $("s-playbtn").onclick = sTogglePlay;
     $("s-trim").onclick = sToggleTrim;
     $("s-exportbtn").onclick = () => void sExport();
@@ -977,6 +1394,34 @@ async function main(): Promise<void> {
             pstat.classList.add("err");
         }
     };
+    /* embedded SE tab */
+    $("se-playbtn").onclick = seTogglePlay;
+    $("se-vol").onclick = () => setSeVolume(64);
+    $("se-timing").onclick = seToggleExact;
+    $("se-kernel").onclick = seToggleKernel;
+    $("se-rev").onclick = seToggleReverb;
+    $("se-exportbtn").onclick = () => void exportSeCue();
+    $("se-bankbtn").onclick = () => void exportSeBank();
+    $("se-search").oninput = () => renderSeList();
+    $("se-extract").onclick = () => void extractSeBanks();
+    $<HTMLInputElement>("se-iso").onchange = async () => {
+        const input = $<HTMLInputElement>("se-iso");
+        const file = input.files?.[0];
+        if (!file || !session) return;
+        const setupStatus = $("se-setup-status");
+        setupStatus.classList.remove("err");
+        setupStatus.textContent = "reading disc...";
+        try {
+            await session.se.attachIso(file);
+            $("se-iso-pick").hidden = true;
+            $("se-extract").hidden = false;
+            await extractSeBanks();
+        } catch (e) {
+            setupStatus.textContent = friendlyError(e);
+            setupStatus.classList.add("err");
+        }
+    };
+    renderSeDials();
     sPlayer.onended = () => { /* glyph flips via the tick loop */ };
     $("d-vol").onclick = () => {
         if (playingIdx >= 0 && session)
@@ -988,7 +1433,11 @@ async function main(): Promise<void> {
     $("d-rev").onclick = () => setRev(cfg.revDepth > 0 ? 0 : 30);
     $("d-duck").onclick = toggleDuck;
     /* export dropdown (bgmplay's EXPORT WAV button + 3-row panel) */
-    exporter.onstatus = (msg, err) => { status(msg, err); updateExportBtn(); };
+    exporter.onstatus = (msg, err) => {
+        status(msg, err);
+        updateExportBtn();
+        updateSeExportBtn();
+    };
     $("exportbtn").onclick = (e) => {
         e.stopPropagation();
         showBankMenu(false);

@@ -13,6 +13,7 @@
 import { openDisc, BlobSource, OpfsCache,
          type BgmSong, type VfiEntry } from "./vendor/extract/index.ts";
 import { StreamStore } from "./streams.ts";
+import { SeStore } from "./se.ts";
 import type { SongAssets } from "./player.ts";
 
 const LAST_KEY = "ae3.lastDisc";
@@ -52,6 +53,7 @@ export interface DiscSession {
     volumeId: string;
     cached: boolean;                       /* true = OPFS-backed, ISO-free */
     streams: StreamStore;                  /* sound/stream phase (STREAMS tab) */
+    se: SeStore;                            /* lazy sound/se phase (SE tab) */
     read(name: string): Promise<Uint8Array | null>;
     songAssets(song: BgmSong): Promise<SongAssets>;
     forget(): Promise<void>;
@@ -89,6 +91,7 @@ export async function resumeSession(): Promise<DiscSession | null> {
             volumeId: meta.volumeId,
             cached: true,
             streams: new StreamStore(cache, null, last),
+            se: new SeStore(cache, null, last),
             read: (n) => cache.read(n),
             songAssets: (song) =>
                 assetsFor(session, song, meta.hasIrx, meta.hasLibsd),
@@ -175,6 +178,7 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
         volumeId: disc.volumeId,
         cached: cache !== null,
         streams: new StreamStore(cache, disc.vfi, disc.cacheKey),
+        se: new SeStore(cache, disc.vfi, disc.cacheKey),
         read: async (n) => {
             if (cache) {
                 const b = await cache.read(n);

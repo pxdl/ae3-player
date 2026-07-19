@@ -3,9 +3,10 @@
  * this worker thread with its own synth instance -- the audio worklet never
  * stalls -- then transfers the finished bytes back. The wasm is fetched next
  * to this script (once, then cached in the worker). */
-import { renderWavFile } from "./exporter.mjs";
+import { renderWavFile, renderSeWavFile } from "./exporter.mjs";
 import { buildSampleKit } from "./kit.mjs";
 import { decodeStream, streamWav } from "./stream.mjs";
+import { inspectSeBank } from "./se.mjs";
 
 let wasmBytes = null;
 
@@ -18,6 +19,12 @@ onmessage = async (e) => {
             const entries = await buildSampleKit(wasmBytes, m.files);
             postMessage({ t: "kit-done", entries },
                         entries.map((x) => x.wav.buffer));
+            return;
+        }
+        if (m.t === "se-inspect") {
+            const requests = await inspectSeBank(wasmBytes, m.files);
+            postMessage({ t: "se-inspect-done", id: m.id, requests },
+                        [requests.buffer]);
             return;
         }
         if (m.t === "stream") {
@@ -38,8 +45,9 @@ onmessage = async (e) => {
                         [wav.buffer]);
             return;
         }
+        const render = m.t === "se-render" ? renderSeWavFile : renderWavFile;
         let last = 0;
-        const { wav, frames } = await renderWavFile(
+        const { wav, frames } = await render(
             wasmBytes, m.files, m.opts, (fr) => {
                 const now = Date.now();
                 if (now - last >= 100) {

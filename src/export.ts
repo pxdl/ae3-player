@@ -4,7 +4,7 @@
  * whenever present, libsd + rev depth only when the depth is nonzero. One
  * export at a time (bgmplay's exporting flag). */
 
-import type { SongAssets } from "./player.ts";
+import type { SeAssets, SongAssets } from "./player.ts";
 import { RATE } from "./timeline.ts";
 import { storeZip } from "./zip.ts";
 
@@ -14,6 +14,16 @@ export interface ExportOpts {
     exact: boolean;
     bright: boolean;
     loop: number;               /* 0 = single pass; N>=2 = wavdump --loop N */
+}
+
+export interface SeExportOpts {
+    volume: number;
+    revDepth: number;
+    exact: boolean;
+    bright: boolean;
+    bank: number;
+    request: number;
+    seconds: number;
 }
 
 const base = import.meta.env.BASE_URL;
@@ -77,6 +87,49 @@ export class Exporter {
         };
         this.worker.postMessage({ t: "render", files, opts },
             [assets.hd.buffer, assets.bd.buffer, assets.mid.buffer,
+             ...(assets.irx ? [assets.irx.buffer] : []),
+             ...(withRev ? [assets.libsd!.buffer] : [])]);
+    }
+
+    /** Render one embedded SE request, capped for authored infinite loops. */
+    se(name: string, assets: SeAssets, o: SeExportOpts): void {
+        if (this.busy) return;
+        this.busy = true;
+        this.worker ??= new Worker(`${base}synth/export-worker.mjs`,
+                                   { type: "module" });
+        const file = `${name}_${o.bank}_${o.request}.wav`;
+        this.onstatus?.(`EXPORTING ${file} (VOL ${o.volume})...`, false);
+        const withRev = o.revDepth > 0 && assets.libsd !== null;
+        this.worker.onmessage = (e) => {
+            const m = e.data;
+            if (m.t === "progress") {
+                this.onstatus?.(
+                    `EXPORTING ${file}... ${(m.frames / RATE).toFixed(1)}s`, false);
+            } else if (m.t === "done") {
+                this.busy = false;
+                download(m.wav, file, "audio/wav");
+                this.onstatus?.(`EXPORTED ${file}`, false);
+            } else if (m.t === "error") {
+                this.busy = false;
+                this.onstatus?.(`EXPORT FAILED: ${m.message}`, true);
+            }
+        };
+        this.worker.onerror = (e) => {
+            this.busy = false;
+            this.onstatus?.(`EXPORT FAILED: ${e.message}`, true);
+        };
+        const files = {
+            hd: assets.hd, bd: assets.bd, irx: assets.irx,
+            libsd: withRev ? assets.libsd : null,
+        };
+        const opts = {
+            volume: o.volume,
+            revDepth: withRev ? o.revDepth : null,
+            exact: o.exact, bright: o.bright,
+            bank: o.bank, request: o.request, seconds: o.seconds,
+        };
+        this.worker.postMessage({ t: "se-render", files, opts },
+            [assets.hd.buffer, assets.bd.buffer,
              ...(assets.irx ? [assets.irx.buffer] : []),
              ...(withRev ? [assets.libsd!.buffer] : [])]);
     }

@@ -1,7 +1,7 @@
 {
-  "name": "AE3 BGM Player",
-  "short_name": "AE3 BGM",
-  "description": "Browser player for the Ape Escape 3 soundtrack -- extracts the music from your own disc image, client-side.",
+  "name": "AE3 Sound Player",
+  "short_name": "AE3 Sound",
+  "description": "Browser player for Ape Escape 3 music, streams, and sound effects -- extracted from your own disc image, client-side.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
