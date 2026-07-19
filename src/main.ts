@@ -268,7 +268,7 @@ function setRev(depth: number): void {
 /* ---- streams tab (VIEWER_PLAN §2) ---------------------------------------- */
 let keysBgmText = "";               /* captured from the DOM at boot */
 const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fold "
-    + "· T trim · E export · H help · click bar/stage to seek";
+    + "· T trim · E wav · X raw · H help · click bar/stage to seek";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -469,6 +469,7 @@ async function loadStream(i: number, autoplay: boolean): Promise<void> {
         updateSBarPad();
         $<HTMLButtonElement>("s-playbtn").disabled = false;
         $<HTMLButtonElement>("s-exportbtn").disabled = false;
+        $<HTMLButtonElement>("s-rawbtn").disabled = false;
         status("");
         if (autoplay) {
             player?.pause();            /* one thing plays at a time */
@@ -518,6 +519,25 @@ function sToggleTrim(): void {
     sViz?.set(sPlayer.decoded(), sTrim);
     updateSBarPad();
     $("s-len").textContent = fmtSec(sPlayer.dur());
+}
+
+/* Raw .x export -- the EXST container exactly as it sits on the disc, for
+ * anyone who wants the file format itself (the MIDI/bank-pair precedent:
+ * straight bytes, no worker, no busy state). */
+async function sExportRaw(): Promise<void> {
+    if (!session) return;
+    const d = sPlayer.decoded();
+    if (!d) return;
+    try {
+        const bytes = await session.streams.read(d.name);
+        if (!bytes)
+            throw new Error(`missing stream ${d.name} -- re-extract, or `
+                            + "re-open the ISO");
+        download(bytes, d.name, "application/octet-stream");
+        status(`EXPORTED ${d.name}`);
+    } catch (e) {
+        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    }
 }
 
 async function sExport(): Promise<void> {
@@ -773,6 +793,7 @@ function onKey(e: KeyboardEvent): void {
         }
         case "t": case "T": sToggleTrim(); break;
         case "e": case "E": void sExport(); break;
+        case "x": case "X": void sExportRaw(); break;
         case "h": case "H": toggleHelp(); break;
         case "Escape":     if (!$("help").hidden) toggleHelp(false); break;
         default: return;
@@ -927,6 +948,7 @@ async function main(): Promise<void> {
     $("s-playbtn").onclick = sTogglePlay;
     $("s-trim").onclick = sToggleTrim;
     $("s-exportbtn").onclick = () => void sExport();
+    $("s-rawbtn").onclick = () => void sExportRaw();
     sViz = new StreamViz($<HTMLCanvasElement>("s-wave"),
                          $<HTMLCanvasElement>("s-spec"));
     const sSeek = (el: HTMLElement) => (e: MouseEvent) => {

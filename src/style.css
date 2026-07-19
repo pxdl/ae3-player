@@ -374,7 +374,7 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
 }
 #s-time { color: var(--dim); margin-top: 4px; }
 #dials-s { display: flex; gap: 6px; flex: none; }
-#s-exportbtn {
+#s-exportbtn, #s-rawbtn {
     padding: 5px 10px;
     font-size: 11px;
     color: var(--accent);
@@ -382,7 +382,7 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
     white-space: nowrap;
     flex: none;
 }
-#s-exportbtn:disabled { color: var(--dim); cursor: default; }
+#s-exportbtn:disabled, #s-rawbtn:disabled { color: var(--dim); cursor: default; }
 #s-bar {
     position: relative;
     height: 16px;
