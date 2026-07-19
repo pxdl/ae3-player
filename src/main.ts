@@ -83,8 +83,7 @@ function renderDials(): void {
     const rev = $("d-rev");
     rev.textContent = cfg.revDepth > 0 ? `REV ${cfg.revDepth}` : "REV OFF";
     rev.classList.toggle("on", cfg.revDepth > 0);
-    $("d-duckd").classList.toggle("on", cfg.duckDemo);
-    $("d-duckp").classList.toggle("on", cfg.duckPhone);
+    $("d-duck").classList.toggle("on", cfg.duckDemo);
 }
 
 /* ---- transport ---------------------------------------------------------- */
@@ -192,22 +191,22 @@ function setVol(v: number, auth: boolean): void {
     renderDials();
 }
 
-/* Hold/release a duck (keys D/P) -- bgmplay's cue_toggle: the first duck arms
- * the cue layer, which takes songvol at the authored scale (the game's own
- * condition). Turning both off leaves it armed so the 2 s release finishes;
- * - = A disarm via setVol. */
-function toggleDuck(which: 0 | 1): void {
+/* Hold/release the duck (key D) -- bgmplay's cue_toggle on the demo group.
+ * (The game's phone group is identical and never overlaps the cutscene one in
+ * play, so the player exposes just this; both stay in the SDK API.) Arming
+ * takes songvol at the authored scale, the game's own condition; releasing
+ * leaves the layer armed so the 2 s ramp finishes -- - = A disarm via setVol. */
+function toggleDuck(): void {
     if (!session || playingIdx < 0) return;
-    const key = which === 0 ? "duckDemo" : "duckPhone";
-    cfg[key] = !cfg[key];
-    if (cfg[key] && !cfg.cueOn) {
+    cfg.duckDemo = !cfg.duckDemo;
+    if (cfg.duckDemo && !cfg.cueOn) {
         cfg.cueOn = true;
         const song = session.songs[playingIdx]!;
         cfg.songvol = song.songvol;      /* what - = resume from */
         authored = true;
         player?.set("cueOn", true);
     }
-    player?.set(key, cfg[key]);
+    player?.set("duckDemo", cfg.duckDemo);
     renderDials();
 }
 
@@ -423,8 +422,7 @@ function onKey(e: KeyboardEvent): void {
         if (playingIdx >= 0)
             setVol(session.songs[playingIdx]!.songvol, true);
         break;
-    case "d": case "D": toggleDuck(0); break;
-    case "p": case "P": toggleDuck(1); break;
+    case "d": case "D": toggleDuck(); break;
     case "z": case "Z": viz?.zoomIn(); break;
     case "x": case "X": viz?.zoomOut(); break;
     case "e": case "E": void exportWav("current"); break;
@@ -549,8 +547,7 @@ async function main(): Promise<void> {
     $("d-timing").onclick = toggleTiming;
     $("d-kernel").onclick = toggleKernel;
     $("d-rev").onclick = () => setRev(cfg.revDepth > 0 ? 0 : 30);
-    $("d-duckd").onclick = () => toggleDuck(0);
-    $("d-duckp").onclick = () => toggleDuck(1);
+    $("d-duck").onclick = toggleDuck;
     /* export dropdown (bgmplay's EXPORT WAV button + 3-row panel) */
     exporter.onstatus = (msg, err) => { status(msg, err); updateExportBtn(); };
     $("exportbtn").onclick = (e) => {
