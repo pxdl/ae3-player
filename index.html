@@ -222,25 +222,28 @@
           <section>
             <h2>SE event track vs source audio</h2>
             <p>The event score shows the request's commands, not a decoded waveform.
-            A short track can start a looped sample or SPU2 noise voice that keeps
-            sounding until its authored sustain envelope reaches silence. Some
-            envelopes are extraordinarily slow: the Arabian 25:1 and 28:0 sources
-            run for about 39.8 hours, which is effectively continuous in normal
-            play but is not a repeated event track. Separately, a
-            <strong>STREAM JUMP</strong> can repeat the bytecode itself. The L key
-            only controls an infinite stream jump; it does not disable a sample
-            loop. The live waveform, source markers, event duration, source-envelope
-            endpoint, and playback status distinguish those cases. Click the
+            A short track can start a looped ADPCM sample or SPU2 noise voice that
+            keeps sounding until its authored sustain envelope reaches silence.
+            This <strong>is a loop in the source data</strong>, even when the event
+            stream itself does not jump. Some envelopes are extraordinarily slow:
+            the Arabian 25:1 and 28:0 sources run for about 39.8 hours, which is
+            effectively continuous in normal play. Separately, a
+            <strong>STREAM JUMP</strong> repeats the request bytecode. The L key only
+            controls an infinite stream jump; it does not disable a source loop.
+            Source loops are labeled alongside their envelope endpoint. Click the
             transport bar or event score to seek.</p>
           </section>
           <section>
             <h2>SE event markers</h2>
             <p><code>1</code> is a one-shot sample, <code>L</code> is a looped
             sample, <code>N</code> is the SPU2 noise source, and <code>R</code>
-            means that tone also feeds the reverb send. LFO DEPTH, LFO RATE,
-            VELOCITY, PAN, and GLIDE labels are commands issued by the authored
-            bytecode. Long-lived loop/noise status is amber. Requests whose source
-            outlives a practical export need an explicit 10, 30, or 60 second cap.</p>
+            means that tone also feeds the reverb send. An open circle labeled
+            <code>STOP Pnn Knn</code> is a velocity-zero command that stops a
+            matching live program/key voice; it starts no sound by itself. LFO
+            DEPTH, LFO RATE, VELOCITY, PAN, and GLIDE labels are commands issued by
+            the authored bytecode. Long-lived loop/noise status is amber. Requests
+            whose source outlives a practical export need an explicit 10, 30, or
+            60 second cap.</p>
           </section>
           <section>
             <h2>Authored volume <small>(VOL NN AUTH, keys - = A)</small></h2>

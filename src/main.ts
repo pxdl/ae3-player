@@ -672,19 +672,44 @@ function seLoopFrames(info: SeRequestInfo): {
         };
 }
 
+function seNoteCounts(info: SeRequestInfo): { starts: number; stops: number } {
+    let starts = 0, stops = 0;
+    for (const event of info.events) {
+        if (event.kind === "note") starts++;
+        else if (event.kind === "off") stops++;
+    }
+    return { starts, stops };
+}
+
+function seStopTargets(info: SeRequestInfo): string {
+    const targets = new Set<string>();
+    for (const event of info.events)
+        if (event.kind === "off")
+            targets.add(`program ${event.program}, key ${event.key}`);
+    return [...targets].join("; ");
+}
+
+function seIsStopOnly(info: SeRequestInfo): boolean {
+    const { starts, stops } = seNoteCounts(info);
+    return starts === 0 && stops > 0 && info.controls === 0 && !info.loop;
+}
+
 function seDurationLabel(info: SeRequestInfo): string {
+    const { stops } = seNoteCounts(info);
+    if (seIsStopOnly(info))
+        return stops === 1 ? "voice stop" : `${stops} voice stops`;
     const frames = seEventFrames(info);
     const seconds = frames / RATE;
     const time = seconds < 10 ? `${seconds.toFixed(1)}s` : fmtSeTime(frames);
     if (info.loop?.count === 0)
-        return `stream \u221E \u00B7 ${time} cycle`;
+        return `stream ∞ · ${time} cycle`;
     if (info.sustained)
-        return `audio \u221E \u00B7 ${time} events`;
+        return `source loop ∞ · ${time} events`;
     const sourceEnd = seSourceEndFrames(info);
     if (info.loopingVoices && sourceEnd > frames + RATE / 10)
-        return `\u2248${fmtSeTime(sourceEnd)} audio`;
+        return `source loop · envelope ≈${fmtSeTime(sourceEnd)}`;
     return info.loop
-        ? `${time} events \u00B7 repeat \u00D7${info.loop.count}`
+        ? `${time} events · repeat ×${info.loop.count}`
         : `${time} events`;
 }
 
@@ -974,18 +999,20 @@ function seTogglePlay(): void {
 function renderSeLength(): void {
     const info = currentSeInfo();
     if (!info) {
-        $("se-len").textContent = "\u2014";
+        $("se-len").textContent = "—";
+    } else if (seIsStopOnly(info)) {
+        $("se-len").textContent = "voice-stop command";
     } else if (info.loop?.count === 0 && seCfg.loop) {
         const loop = seLoopFrames(info)!;
         $("se-len").textContent =
-            `\u221E \u00B7 ${fmtSeTime(loop.cycle)} stream cycle`;
+            `∞ · ${fmtSeTime(loop.cycle)} stream cycle`;
     } else if (info.sustained) {
-        $("se-len").textContent = "\u221E \u00B7 non-decaying source";
+        $("se-len").textContent = "∞ · non-decaying source";
     } else if (seKnownFrames !== null) {
         $("se-len").textContent =
-            `${seKnownEstimated ? "\u2248" : ""}${fmtSeTime(seKnownFrames)} audio`;
+            `${seKnownEstimated ? "≈" : ""}${fmtSeTime(seKnownFrames)} audio`;
     } else if (seMeasuring) {
-        $("se-len").textContent = "measuring audio\u2026";
+        $("se-len").textContent = "measuring audio…";
     } else {
         $("se-len").textContent = `${fmtSeTime(seEventFrames(info))} events`;
     }
@@ -998,38 +1025,43 @@ function renderSeLength(): void {
 function renderSeInfo(): void {
     if (!sePlaying) return;
     const info = currentSeInfo();
-    const stream = info
-        ? `${info.notes} note event${info.notes === 1 ? "" : "s"} \u00B7 `
-          + `${info.controls} control${info.controls === 1 ? "" : "s"} \u00B7 `
+    const counts = info ? seNoteCounts(info) : null;
+    const stream = info && counts
+        ? `${counts.starts} start${counts.starts === 1 ? "" : "s"} · `
+          + `${counts.stops} stop${counts.stops === 1 ? "" : "s"} · `
+          + `${info.controls} control${info.controls === 1 ? "" : "s"} · `
           + (info.loop
-              ? `${info.loop.count === 0 ? "infinite jump" : `jump \u00D7${info.loop.count}`} `
+              ? `${info.loop.count === 0 ? "infinite jump" : `jump ×${info.loop.count}`} `
                 + `${fmtSeTime(seLoopFrames(info)!.cycle)} cycle`
               : `${fmtSeTime(seEventFrames(info))} event track`)
         : "event metadata unavailable";
     const sourceEnd = info ? seSourceEndFrames(info) : 0;
     const sources = info
-        ? (info.sustained
-            ? `${info.sustainedVoices} non-decaying loop/noise `
-              + `voice${info.sustainedVoices === 1 ? "" : "s"} remain after the event track`
-            : info.loopingVoices && sourceEnd > seEventFrames(info)
-                ? `${info.loopingVoices} loop/noise source `
-                  + `voice${info.loopingVoices === 1 ? "" : "s"} `
-                  + `${info.loopingVoices === 1 ? "remains" : "remain"} after events; `
-                  + `envelope endpoint \u2248${fmtSeTime(sourceEnd)}`
-                : info.activeVoices
-                    ? `${info.activeVoices} note${info.activeVoices === 1 ? "" : "s"} `
-                      + `${info.activeVoices === 1 ? "has" : "have"} no explicit note-off; `
-                      + "waveform/envelope lifetime ends the source"
-                    : "all notes receive an explicit note-off")
+        ? (seIsStopOnly(info)
+            ? `voice-stop request: stops matching live ${seStopTargets(info)}; `
+              + "starts no audio source by itself"
+            : info.sustained
+                ? `${info.sustainedVoices} non-decaying loop/noise `
+                  + `voice${info.sustainedVoices === 1 ? "" : "s"} remain after the event track`
+                : info.loopingVoices && sourceEnd > seEventFrames(info)
+                    ? `${info.loopingVoices} loop/noise source `
+                      + `voice${info.loopingVoices === 1 ? "" : "s"} `
+                      + `${info.loopingVoices === 1 ? "remains" : "remain"} after events; `
+                      + `envelope endpoint ≈${fmtSeTime(sourceEnd)}`
+                    : info.activeVoices
+                        ? `${info.activeVoices} note${info.activeVoices === 1 ? "" : "s"} `
+                          + `${info.activeVoices === 1 ? "has" : "have"} no explicit note-off; `
+                          + "waveform/envelope lifetime ends the source"
+                        : "all started notes receive an explicit note-off")
         : "";
     const now = sePastEvents && info?.loopingVoices
         ? "\nplayback now: event track ended; loop/noise source envelope is still sounding"
         : "";
     $("se-info").textContent =
         `${sePlaying.entry.hd} + ${sePlaying.entry.bd}\n${stream}\n${sources}${now}\n`
-        + `isolated caller volume ${seCfg.volume}/127 \u00B7 `
-        + `${seCfg.exact ? "exact 480 Hz" : "console 60 Hz"} dispatch \u00B7 `
-        + `${seCfg.gaussian ? "SPU2 gaussian" : "bright"} resampling \u00B7 `
+        + `isolated caller volume ${seCfg.volume}/127 · `
+        + `${seCfg.exact ? "exact 480 Hz" : "console 60 Hz"} dispatch · `
+        + `${seCfg.gaussian ? "SPU2 gaussian" : "bright"} resampling · `
         + `reverb ${seCfg.revDepth}`;
 }
 

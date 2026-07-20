@@ -149,6 +149,12 @@ export class SeSequenceViz {
             return;
         }
 
+        let starts = 0, stops = 0;
+        for (const event of this.noteEvents) {
+            if (event.kind === "note") starts++;
+            else stops++;
+        }
+
         const left = 58, right = 18, top = 48, bottom = 32;
         const innerW = Math.max(1, w - left - right);
         const controlH = Math.min(88, Math.max(62, h * 0.30));
@@ -250,18 +256,25 @@ export class SeSequenceViz {
         ctx.textBaseline = "top";
         ctx.font = "10px 'SFMono-Regular', Menlo, monospace";
         ctx.fillText(
-            `${info.notes} NOTE EVENT${info.notes === 1 ? "" : "S"}  \u00B7  `
-            + `${info.controls} CONTROL${info.controls === 1 ? "" : "S"}  \u00B7  `
+            `${starts} START${starts === 1 ? "" : "S"}  ·  `
+            + `${stops} STOP${stops === 1 ? "" : "S"}  ·  `
+            + `${info.controls} CONTROL${info.controls === 1 ? "" : "S"}  ·  `
             + `${this.exact ? "EXACT 480 Hz" : "CONSOLE 60 Hz"} TIMELINE`,
             left, 8);
         const sourceEnd = this.exact
             ? info.sourceEndExactFrame
             : info.sourceEndConsoleFrame;
-        if (info.sustained) {
+        if (starts === 0 && stops > 0 && info.controls === 0 && !info.loop) {
+            ctx.fillStyle = DIM;
+            ctx.font = "9px 'SFMono-Regular', Menlo, monospace";
+            ctx.fillText(
+                `VOICE-STOP REQUEST  ·  STARTS NO AUDIO SOURCE BY ITSELF`,
+                left, 25);
+        } else if (info.sustained) {
             ctx.fillStyle = GOLD;
             ctx.font = "9px 'SFMono-Regular', Menlo, monospace";
             ctx.fillText(
-                `SOURCE CONTINUES AFTER EVENTS  \u2192  \u221E  `
+                `SOURCE CONTINUES AFTER EVENTS  →  ∞  `
                 + `(${info.sustainedVoices} NON-DECAYING LOOP/NOISE `
                 + `VOICE${info.sustainedVoices === 1 ? "" : "S"})`,
                 left, 25);
@@ -269,8 +282,8 @@ export class SeSequenceViz {
             ctx.fillStyle = GOLD;
             ctx.font = "9px 'SFMono-Regular', Menlo, monospace";
             ctx.fillText(
-                `LOOP/NOISE SOURCE CONTINUES AFTER EVENTS  \u2192  `
-                + `ENVELOPE END \u2248${durationLabel(sourceEnd)}`,
+                `LOOP/NOISE SOURCE CONTINUES AFTER EVENTS  →  `
+                + `ENVELOPE END ≈${durationLabel(sourceEnd)}`,
                 left, 25);
         } else {
             ctx.fillStyle = DIM;
@@ -278,7 +291,7 @@ export class SeSequenceViz {
             ctx.fillText(
                 info.activeVoices
                     ? `${info.activeVoices} NOTE${info.activeVoices === 1 ? "" : "S"} WITHOUT EXPLICIT NOTE-OFF`
-                    : "ALL NOTES HAVE EXPLICIT NOTE-OFF",
+                    : "ALL STARTED NOTES HAVE EXPLICIT NOTE-OFF",
                 left, 25);
         }
 
@@ -312,6 +325,13 @@ export class SeSequenceViz {
             ctx.beginPath();
             ctx.arc(x, y, 2.5, 0, Math.PI * 2);
             ctx.stroke();
+            const program = (event.program ?? 0).toString(16).padStart(2, "0").toUpperCase();
+            const key = (event.key ?? 0).toString(16).padStart(2, "0").toUpperCase();
+            ctx.fillStyle = DIM;
+            ctx.font = "8px 'SFMono-Regular', Menlo, monospace";
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(`STOP P${program} K${key}`, x + 5, y);
             return;
         }
         const velocity = (event.velocity ?? 0) / 127;
