@@ -13,6 +13,98 @@ export const RATE = 48000;
 export const EV_CH = 0, EV_TEMPO = 1, EV_END = 2,
              EV_LOOP_START = 3, EV_LOOP_END = 4;
 
+/** Parse a format-0 MIDI sequence and return its single-pass duration on the
+ * synth's 48 kHz clock. This mirrors core/seq.c's tempo walk without loading
+ * the much larger instrument bank. */
+export function midiDurationSamples(midi: Uint8Array): number {
+    const fail = (message: string): never => {
+        throw new Error(`invalid MIDI: ${message}`);
+    };
+    const tagged = (offset: number, a: number, b: number, c: number, d: number): boolean =>
+        midi[offset] === a && midi[offset + 1] === b
+        && midi[offset + 2] === c && midi[offset + 3] === d;
+    const u16 = (offset: number): number => midi[offset]! * 0x100 + midi[offset + 1]!;
+    const u32 = (offset: number): number =>
+        midi[offset]! * 0x1000000 + midi[offset + 1]! * 0x10000
+        + midi[offset + 2]! * 0x100 + midi[offset + 3]!;
+
+    if (midi.length < 22 || !tagged(0, 0x4d, 0x54, 0x68, 0x64))
+        return fail("missing MThd header");
+    const headerLength = u32(4);
+    const format = u16(8);
+    const tracks = u16(10);
+    const ppqn = u16(12);
+    if (headerLength !== 6 || format !== 0 || tracks !== 1)
+        return fail(`expected format 0 with one track, got format ${format} with ${tracks}`);
+    if (ppqn === 0 || (ppqn & 0x8000) !== 0)
+        return fail("unsupported time division");
+    if (!tagged(14, 0x4d, 0x54, 0x72, 0x6b))
+        return fail("missing MTrk chunk");
+
+    const trackLength = u32(18);
+    const trackEnd = 22 + trackLength;
+    if (trackEnd > midi.length)
+        return fail(`MTrk length ${trackLength} exceeds file`);
+
+    let offset = 22;
+    let tick = 0;
+    let runningStatus = 0;
+    let segmentTick = 0;
+    let segmentSample = 0;
+    let samplesPerTick = RATE * 500000 / (1e6 * ppqn);
+    let endSample = -1;
+
+    const vlq = (): number => {
+        let value = 0;
+        for (let bytes = 0; bytes < 4; bytes++) {
+            if (offset >= trackEnd) return fail("truncated variable-length quantity");
+            const byte = midi[offset++]!;
+            value = value * 0x80 + (byte & 0x7f);
+            if ((byte & 0x80) === 0) return value;
+        }
+        return fail("variable-length quantity exceeds four bytes");
+    };
+
+    while (offset < trackEnd) {
+        if (endSample >= 0) return fail("events follow end-of-track");
+        tick += vlq();
+        if (offset >= trackEnd) return fail("truncated event");
+        if ((midi[offset]! & 0x80) !== 0) runningStatus = midi[offset++]!;
+        const status = runningStatus;
+
+        if (status === 0xff) {
+            if (offset >= trackEnd) return fail("truncated meta event");
+            const type = midi[offset++]!;
+            const length = vlq();
+            if (offset + length > trackEnd) return fail("truncated meta payload");
+            const at = segmentSample + (tick - segmentTick) * samplesPerTick;
+            if (type === 0x51 && length === 3) {
+                const microseconds = midi[offset]! * 0x10000
+                    + midi[offset + 1]! * 0x100 + midi[offset + 2]!;
+                segmentSample = at;
+                segmentTick = tick;
+                samplesPerTick = RATE * microseconds / (1e6 * ppqn);
+            } else if (type === 0x2f) {
+                endSample = Math.round(at);
+            }
+            offset += length;
+        } else if (status === 0xf0 || status === 0xf7) {
+            const length = vlq();
+            if (offset + length > trackEnd) return fail("truncated system-exclusive event");
+            offset += length;
+        } else if ((status & 0x80) !== 0) {
+            const kind = status & 0xf0;
+            const length = kind === 0xc0 || kind === 0xd0 ? 1 : 2;
+            if (offset + length > trackEnd) return fail("truncated channel event");
+            offset += length;
+        } else {
+            return fail(`data byte has no running status at track offset ${offset - 22}`);
+        }
+    }
+    if (endSample < 0) return fail("track has no end-of-track event");
+    return endSample;
+}
+
 export interface TempoSeg { tick: number; sample: number; spt: number; }
 
 /* one piano-roll note span (bgmplay vnote_t), timeline samples */

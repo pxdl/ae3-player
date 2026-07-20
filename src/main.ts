@@ -5,8 +5,8 @@
 import "./style.css";
 import { resumeSession, openIso, friendlyError, US_SERIAL,
          type DiscSession } from "./disc.ts";
-import { WorkletPlayer, RATE, type EngineConfig } from "./player.ts";
-import { buildTimeline, displayPos, bpmOf, type Timeline } from "./timeline.ts";
+import { WorkletPlayer, RATE, type EngineConfig, type Snapshot } from "./player.ts";
+import { buildTimeline, displayPos, bpmOf, midiDurationSamples, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
 import { Exporter, download, type ExportOpts, type SeExportOpts } from "./export.ts";
 import { storeZip } from "./zip.ts";
@@ -16,6 +16,47 @@ import { StreamViz } from "./sviz.ts";
 import { SeInspector, type SeBankEntry, type SeCatalog,
          type SeMeasureFiles, type SeRequestInfo } from "./se.ts";
 import { SeSequenceViz } from "./seviz.ts";
+
+export type ViewerChannel = "music" | "streams" | "effects";
+
+export interface ViewerItem {
+    id: string;
+    label: string;
+    detail: string;
+    duration: number | null;
+    kind: "media" | "group";
+    playing: boolean;
+}
+
+export interface ViewerSetup {
+    label: string;
+    detail: string;
+    progress: number | null;
+}
+
+export interface ViewerLibrary {
+    revision: number;
+    connected: boolean;
+    channel: ViewerChannel;
+    discLabel: string;
+    status: string;
+    error: boolean;
+    items: ViewerItem[];
+    selectedId: string | null;
+    counts: Record<ViewerChannel, number | null>;
+}
+
+export interface ViewerTransport {
+    title: string;
+    current: number;
+    duration: number;
+    progress: number;
+    playing: boolean;
+    loading: boolean;
+    exporting: boolean;
+    status: string;
+    error: boolean;
+}
 
 const LOOP_FOREVER = 0x7f;
 const SE_SEEK_LIMIT = 5 * 60 * RATE;
@@ -42,6 +83,24 @@ const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true
               duckDemo: false, duckPhone: false };
 const exporter = new Exporter();
 let audioMode: "bgm" | "se" | null = null;
+let viewerRevision = 0;
+const VIEWER_LEVEL_COUNT = 32;
+const viewerLevelHistory = new Float32Array(VIEWER_LEVEL_COUNT);
+let viewerLevelHead = 0;
+let bgmDurations = new Float64Array();
+
+function ingestViewerLevels(snapshot: Snapshot): void {
+    for (let offset = 0; offset + 5 <= snapshot.wcols.length; offset += 5) {
+        const level = Math.max(
+            Math.abs(snapshot.wcols[offset]!),
+            Math.abs(snapshot.wcols[offset + 1]!),
+            Math.abs(snapshot.wcols[offset + 2]!),
+            Math.abs(snapshot.wcols[offset + 3]!),
+        );
+        viewerLevelHistory[viewerLevelHead] = Math.sqrt(Math.min(1, level));
+        viewerLevelHead = (viewerLevelHead + 1) % VIEWER_LEVEL_COUNT;
+    }
+}
 
 /* streams tab (VIEWER_PLAN §2) */
 let tab: "bgm" | "streams" | "se" = "bgm";
@@ -112,14 +171,38 @@ function status(msg: string, err = false): void {
 /* ---- song list ---------------------------------------------------------- */
 function renderList(): void {
     const ul = $("songlist");
-    ul.replaceChildren(...session!.songs.map((s, i) => {
+    ul.replaceChildren(...session!.songs.map((song, index) => {
         const li = document.createElement("li");
-        li.textContent = s.name;
-        li.classList.toggle("sel", i === sel);
-        li.classList.toggle("playing", i === playingIdx);
-        li.onclick = () => { sel = i; void loadSong(i, true); };
+        const name = document.createElement("span");
+        name.className = "song-title";
+        name.textContent = song.name;
+        const duration = document.createElement("span");
+        duration.className = "dur";
+        const samples = bgmDurations[index];
+        duration.textContent = samples !== undefined && Number.isFinite(samples)
+            ? fmtTime(samples) : "—";
+        li.append(name, duration);
+        li.classList.toggle("sel", index === sel);
+        li.classList.toggle("playing", index === playingIdx);
+        li.onclick = () => { sel = index; void loadSong(index, true); };
         return li;
     }));
+    viewerRevision++;
+}
+
+async function loadBgmDurations(target: DiscSession): Promise<void> {
+    const durations = bgmDurations;
+    for (let index = 0; index < target.songs.length; index++) {
+        const song = target.songs[index]!;
+        try {
+            const midi = await target.read(`bgm/${song.mid}`);
+            if (!midi) throw new Error(`missing bgm/${song.mid}`);
+            durations[index] = midiDurationSamples(midi);
+        } catch (error) {
+            console.warn(`Could not calculate duration for ${song.name}`, error);
+        }
+    }
+    if (session === target && bgmDurations === durations) renderList();
 }
 
 function scrollSelIntoView(): void {
@@ -161,6 +244,7 @@ function ensurePlayer(): Promise<WorkletPlayer> {
         p.onsnapshot = (s) => {
             if (audioMode === "se") seViz?.ingest(s);
             else viz?.ingest(s);
+            ingestViewerLevels(s);
         };
         return p;
     }, (e) => {
@@ -199,9 +283,12 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         const r = await p.load(assets, engineConfig());
         audioMode = "bgm";
         timeline = buildTimeline(r.events, r.ppqn);
+        bgmDurations[idx] = timeline.lenSamp;
         playingIdx = idx;
         p.snap = null;
         viz?.clearWave();
+        viewerLevelHistory.fill(0);
+        viewerLevelHead = 0;
         $("song-name").textContent = song.name;
         $("time-len").textContent = fmtTime(timeline.lenSamp);
         status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
@@ -337,6 +424,7 @@ function switchTab(t: "bgm" | "streams" | "se"): void {
     $("keys").textContent =
         t === "bgm" ? keysBgmText : t === "streams" ? KEYS_STREAMS : KEYS_SE;
     status("");
+    viewerRevision++;
     if (t === "streams") void ensureStreams();
     if (t === "se") void ensureSeCatalog();
 }
@@ -400,7 +488,11 @@ function sToggleFold(id: string): void {
 
 function renderStreamList(): void {
     const ul = $("streamlist");
-    if (!sCatalog) { ul.replaceChildren(); return; }
+    if (!sCatalog) {
+        ul.replaceChildren();
+        viewerRevision++;
+        return;
+    }
     const q = $<HTMLInputElement>("stream-search").value.toLowerCase();
     const match = (e: StreamEntry): boolean =>
         !q || e.name.toLowerCase().includes(q);
@@ -464,6 +556,7 @@ function renderStreamList(): void {
     }
     if (sSel >= sRows.length) sSel = Math.max(0, sRows.length - 1);
     ul.replaceChildren(...rows);
+    viewerRevision++;
 }
 
 function scrollStreamSelIntoView(): void {
@@ -496,11 +589,8 @@ function renderStreamInfo(): void {
     }
 }
 
-async function loadStream(i: number, autoplay: boolean): Promise<void> {
+async function loadStreamEntry(e: StreamEntry, autoplay: boolean): Promise<void> {
     if (!session || sLoading) return;
-    const row = sRows[i];
-    if (!row || row.kind !== "entry") return;
-    const e = row.entry;
     sLoading = true;
     status(`loading ${e.name}...`);
     try {
@@ -530,6 +620,12 @@ async function loadStream(i: number, autoplay: boolean): Promise<void> {
         sLoading = false;
         renderStreamList();
     }
+}
+
+async function loadStream(i: number, autoplay: boolean): Promise<void> {
+    const row = sRows[i];
+    if (!row || row.kind !== "entry") return;
+    await loadStreamEntry(row.entry, autoplay);
 }
 
 function sTogglePlay(): void {
@@ -780,6 +876,7 @@ function renderSeList(): void {
     });
     $("selist").replaceChildren(...children);
     $("selist").children[seSel]?.scrollIntoView({ block: "nearest" });
+    viewerRevision++;
 }
 
 async function ensureSeCatalog(): Promise<boolean> {
@@ -956,6 +1053,8 @@ async function loadSeCue(
         timeline = null;
         p.snap = null;
         seViz?.clearWave();
+        viewerLevelHistory.fill(0);
+        viewerLevelHead = 0;
         seSequenceViz?.set(info);
         $("se-name").textContent = row.entry.name;
         $("se-coord").textContent = `bank ${row.bank} \u00B7 request ${row.request}`;
@@ -1481,9 +1580,13 @@ function showSeExportMenu(show: boolean): void {
 
 /* ---- keyboard (bgmplay's map) ------------------------------------------- */
 function onKey(e: KeyboardEvent): void {
+    if (document.documentElement.hasAttribute("data-viewer")) return;
     if (!session || $("app").hidden) return;
-    if (e.target === $("stream-search") || e.target === $("se-search")) {
-        if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+    const target = e.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target instanceof HTMLElement && target.isContentEditable) {
+        if (e.key === "Escape" && target instanceof HTMLElement) target.blur();
         return;
     }
     if (tab === "se") {
@@ -1611,6 +1714,276 @@ function onKey(e: KeyboardEvent): void {
     e.preventDefault();
 }
 
+/* ---- asset-viewer bridge ----------------------------------------------- */
+export function viewerVersion(): number {
+    return viewerRevision;
+}
+
+export function viewerLibrary(): ViewerLibrary {
+    const channel: ViewerChannel =
+        tab === "bgm" ? "music" : tab === "streams" ? "streams" : "effects";
+    const items: ViewerItem[] = [];
+    let selectedId: string | null = null;
+
+    if (session && channel === "music") {
+        for (let index = 0; index < session.songs.length; index++) {
+            const song = session.songs[index]!;
+            const id = `music:${index}`;
+            const samples = index === playingIdx && timeline
+                ? timeline.lenSamp : bgmDurations[index];
+            items.push({
+                id,
+                label: song.name,
+                detail: `Sequenced music · authored volume ${song.songvol}/127`,
+                duration: samples !== undefined && Number.isFinite(samples)
+                    ? samples / RATE : null,
+                kind: "media",
+                playing: index === playingIdx,
+            });
+            if (index === sel) selectedId = id;
+        }
+    } else if (session && channel === "streams" && sCatalog) {
+        for (const entry of sCatalog.entries) {
+            const id = `stream:${entry.name}`;
+            items.push({
+                id,
+                label: entry.name.replace(/\.x$/, ""),
+                detail: `${entry.channels === 2 ? "Stereo music" : "Voice"} · `
+                    + `${entry.channels}ch · ${entry.rate} Hz · EXST`,
+                duration: sDur(entry),
+                kind: "media",
+                playing: entry.name === sPlayingName,
+            });
+            if (entry.name === sPlayingName) selectedId = id;
+        }
+        selectedId ??= items[0]?.id ?? null;
+    } else if (session && channel === "effects" && seCatalog) {
+        for (const row of seRows) {
+            if (row.kind === "bank") {
+                const id = `effect-bank:${row.entry.name}`;
+                items.push({
+                    id,
+                    label: row.entry.name,
+                    detail: row.entry.name === seOpenBank && seShape
+                        ? `${seShape.reduce((total, value) => total + value, 0)} requests`
+                        : `${(row.entry.bytes / 1048576).toFixed(1)} MB bank`,
+                    duration: null,
+                    kind: "group",
+                    playing: false,
+                });
+                if (seRows[seSel] === row) selectedId = id;
+            } else {
+                const id = `effect-cue:${row.entry.name}:${row.bank}:${row.request}`;
+                const info = currentSeInfo(row);
+                items.push({
+                    id,
+                    label: `${row.entry.name} · ${row.bank}:${row.request}`,
+                    detail: info ? seDurationLabel(info) : "Sequenced effect request",
+                    duration: info ? seEventFrames(info) / RATE : null,
+                    kind: "media",
+                    playing: sePlaying?.entry.name === row.entry.name
+                        && sePlaying.bank === row.bank
+                        && sePlaying.request === row.request,
+                });
+                if (seRows[seSel] === row) selectedId = id;
+            }
+        }
+        selectedId ??= items[0]?.id ?? null;
+    }
+
+    const statusElement = $("status");
+    return {
+        revision: viewerRevision,
+        connected: session !== null,
+        channel,
+        discLabel: session ? session.serial ?? session.volumeId : "",
+        status: statusElement.textContent ?? "",
+        error: statusElement.classList.contains("err"),
+        items,
+        selectedId,
+        counts: {
+            music: session?.songs.length ?? null,
+            streams: sCatalog?.entries.length ?? null,
+            effects: seCatalog?.entries.length ?? null,
+        },
+    };
+}
+
+export function viewerSetup(): ViewerSetup | null {
+    let label: string;
+    let detail: string;
+    let progressElement: HTMLProgressElement;
+    if (!session) {
+        label = "Tune in with your Ape Escape 3 disc";
+        detail = $("picker-status").textContent
+            || "Choose the disc image. Extraction stays inside this browser.";
+        progressElement = $<HTMLProgressElement>("picker-progress");
+    } else if (tab === "streams" && !sCatalog) {
+        label = "Scan the stream archive";
+        detail = $("s-setup-status").textContent
+            || (session.streams.hasIso()
+                ? "The local disc is ready to scan."
+                : "Reconnect the same disc once to scan streamed audio.");
+        progressElement = $<HTMLProgressElement>("s-progress");
+    } else if (tab === "se" && !seCatalog) {
+        label = "Scan the effects archive";
+        detail = $("se-setup-status").textContent
+            || (session.se.hasIso()
+                ? "The local disc is ready to scan."
+                : "Reconnect the same disc once to scan sound-effect banks.");
+        progressElement = $<HTMLProgressElement>("se-progress");
+    } else {
+        return null;
+    }
+    const progress = progressElement.hidden
+        ? null
+        : progressElement.value / Math.max(progressElement.max, 1);
+    return { label, detail, progress };
+}
+
+export function viewerTransport(): ViewerTransport {
+    let title = "";
+    let current = 0;
+    let duration = 0;
+    let isPlaying = false;
+    let isLoading = false;
+    if (tab === "bgm") {
+        title = session?.songs[playingIdx >= 0 ? playingIdx : sel]?.name ?? "";
+        current = displaySample() / RATE;
+        duration = (timeline?.lenSamp ?? 0) / RATE;
+        isPlaying = audioMode === "bgm" && !!player?.snap?.playing;
+        isLoading = loading;
+    } else if (tab === "streams") {
+        title = sPlayingName?.replace(/\.x$/, "") ?? "";
+        current = sPlayer.pos();
+        duration = sPlayer.dur();
+        isPlaying = sPlayer.playing();
+        isLoading = sLoading || sExtracting;
+    } else {
+        title = sePlaying
+            ? `${sePlaying.entry.name} · ${sePlaying.bank}:${sePlaying.request}`
+            : "";
+        current = audioMode === "se" ? (player?.snap?.pos ?? 0) / RATE : 0;
+        duration = sePlaying ? seSeekDomain() / RATE : 0;
+        isPlaying = audioMode === "se" && !!player?.snap?.playing;
+        isLoading = seLoading || seExtracting;
+    }
+    return {
+        title,
+        current,
+        duration,
+        progress: duration > 0 ? Math.min(current / duration, 1) : 0,
+        playing: isPlaying,
+        loading: isLoading,
+        exporting: exporter.busy || sBusy || seBusy,
+        status: $("status").textContent ?? "",
+        error: $("status").classList.contains("err"),
+    };
+}
+
+
+export function viewerMeterLevels(target: Float32Array): boolean {
+    target.fill(0);
+    if (!session) return false;
+    if (tab === "streams") {
+        const stream = sPlayer.decoded();
+        if (!stream) return false;
+        const channels = stream.header.channels;
+        const frames = Math.floor(stream.pcm.length / channels);
+        const end = Math.max(1, Math.min(frames, Math.floor(sPlayer.pos() * stream.header.rate)));
+        const start = Math.max(0, end - Math.floor(stream.header.rate * 0.08));
+        for (let bar = 0; bar < target.length; bar++) {
+            const from = Math.floor(start + (end - start) * bar / target.length);
+            const to = Math.max(from + 1,
+                Math.floor(start + (end - start) * (bar + 1) / target.length));
+            let peak = 0;
+            for (let frame = from; frame < Math.min(to, frames); frame++) {
+                for (let channel = 0; channel < channels; channel++)
+                    peak = Math.max(peak, Math.abs(stream.pcm[frame * channels + channel]!));
+            }
+            target[bar] = Math.sqrt(peak / 32768);
+        }
+        return true;
+    }
+    for (let bar = 0; bar < target.length; bar++) {
+        const offset = Math.floor(bar * VIEWER_LEVEL_COUNT / target.length);
+        target[bar] = viewerLevelHistory[(viewerLevelHead + offset) % VIEWER_LEVEL_COUNT]!;
+    }
+    return tab === "se" ? sePlaying !== null : timeline !== null;
+}
+
+export function viewerSwitchChannel(channel: ViewerChannel): void {
+    switchTab(channel === "music" ? "bgm" : channel === "streams" ? "streams" : "se");
+}
+
+export function viewerActivate(id: string): void {
+    if (!session) return;
+    if (id.startsWith("music:")) {
+        const index = Number(id.slice(6));
+        if (!Number.isInteger(index) || !session.songs[index]) return;
+        sel = index;
+        renderList();
+        void loadSong(index, true);
+        return;
+    }
+    if (id.startsWith("stream:")) {
+        const name = id.slice(7);
+        const entry = sCatalog?.entries.find((candidate) => candidate.name === name);
+        if (entry) void loadStreamEntry(entry, true);
+        return;
+    }
+    const index = seRows.findIndex((row) => id === (row.kind === "bank"
+        ? `effect-bank:${row.entry.name}`
+        : `effect-cue:${row.entry.name}:${row.bank}:${row.request}`));
+    if (index < 0) return;
+    seSel = index;
+    void seActivate(index, seRows[index]!.kind === "cue");
+}
+
+export function viewerMove(direction: number): void {
+    const library = viewerLibrary();
+    if (!library.items.length) return;
+    const selected = library.items.findIndex((item) => item.id === library.selectedId);
+    const index = (Math.max(selected, 0) + direction + library.items.length)
+        % library.items.length;
+    viewerActivate(library.items[index]!.id);
+}
+
+export function viewerTogglePlayback(): void {
+    if (tab === "streams") sTogglePlay();
+    else if (tab === "se") seTogglePlay();
+    else togglePlay();
+}
+
+export function viewerSeek(ratio: number): void {
+    const clamped = Math.max(0, Math.min(ratio, 1));
+    if (tab === "streams") {
+        if (sPlayer.decoded()) sPlayer.seek(clamped * sPlayer.dur());
+    } else if (tab === "se") {
+        seekSe(clamped * seSeekDomain());
+    } else if (timeline) {
+        seekTimeline(clamped * timeline.lenSamp);
+    }
+}
+
+export function viewerExport(): void {
+    if (tab === "streams") void sExport();
+    else if (tab === "se") void exportSeCue(false);
+    else void exportWav("current");
+}
+
+export function viewerChooseDisc(): void {
+    if (!session) {
+        $<HTMLInputElement>("file").click();
+    } else if (tab === "streams" && !sCatalog) {
+        if (session.streams.hasIso()) void extractStreams();
+        else $<HTMLInputElement>("s-iso").click();
+    } else if (tab === "se" && !seCatalog) {
+        if (session.se.hasIso()) void extractSeBanks();
+        else $<HTMLInputElement>("se-iso").click();
+    }
+}
+
 /* ---- app states --------------------------------------------------------- */
 async function enterPlayer(s: DiscSession): Promise<void> {
     session = s;
@@ -1618,7 +1991,10 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     $("app").hidden = false;
     $("disc-id").textContent =
         s.cached ? (s.serial ?? s.volumeId) : `${s.serial ?? s.volumeId} (no cache)`;
+    bgmDurations = new Float64Array(s.songs.length);
+    bgmDurations.fill(Number.NaN);
     renderList();
+    void loadBgmDurations(s);
     renderDials();
     viz = new Viz($<HTMLCanvasElement>("roll"), $<HTMLCanvasElement>("slots"),
                   $<HTMLCanvasElement>("wave"));

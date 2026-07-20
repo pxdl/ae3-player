@@ -9,7 +9,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23101116'/%3E%3Cpath d='M5 12V5l6-1.5V10' stroke='%23ffc440' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='12' r='1.6' fill='%23ffc440'/%3E%3Ccircle cx='10' cy='10' r='1.6' fill='%23ffc440'/%3E%3C/svg%3E" />
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module" src="/src/entry.ts"></script>
 </head>
 <body>
   <div id="app" hidden>
@@ -31,6 +31,7 @@
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
+        <a id="monkey-tv-link" href="?viewer">Monkey TV</a>
         <button id="forget" title="Wipe the extracted assets from this browser">forget my disc</button>
       </div>
     </aside>
@@ -347,6 +348,7 @@
       </label>
       <p id="picker-status"></p>
       <progress id="picker-progress" max="1" value="0" hidden></progress>
+      <a id="monkey-tv-picker-link" href="?viewer">open the Monkey TV viewer &rarr;</a>
     </div>
   </div>
 </body>

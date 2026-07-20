@@ -16,7 +16,7 @@ import { StreamStore } from "./streams.ts";
 import { SeStore } from "./se.ts";
 import type { SongAssets } from "./player.ts";
 
-const LAST_KEY = "ae3.lastDisc";
+export const LAST_DISC_KEY = "ae3.lastDisc";
 const META = "meta.json";
 
 /** The disc every gate runs against; anything else is best-effort (§4.6). */
@@ -77,7 +77,7 @@ async function assetsFor(session: DiscSession, song: BgmSong,
 
 /** Resume the previous disc from OPFS; null = nothing cached (show picker). */
 export async function resumeSession(): Promise<DiscSession | null> {
-    const last = localStorage.getItem(LAST_KEY);
+    const last = localStorage.getItem(LAST_DISC_KEY);
     if (!last || !OpfsCache.supported()) return null;
     try {
         const cache = await OpfsCache.open(last);
@@ -96,7 +96,7 @@ export async function resumeSession(): Promise<DiscSession | null> {
             songAssets: (song) =>
                 assetsFor(session, song, meta.hasIrx, meta.hasLibsd),
             forget: async () => {
-                localStorage.removeItem(LAST_KEY);
+                localStorage.removeItem(LAST_DISC_KEY);
                 await cache.forget();
             },
         };
@@ -120,6 +120,21 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
     ];
     if (disc.assets.sg2iopm1) jobs.push(["irx/sg2iopm1.irx", disc.assets.sg2iopm1]);
     if (disc.assets.libsd) jobs.push(["irx/libsd.irx", disc.assets.libsd]);
+
+    /* Keep the viewer data-free while still letting its visual language come
+     * from the game: cache three small UI packages verbatim from the user's
+     * disc. The viewer decodes selected TIM2 members at runtime. Missing
+     * packages are soft for untested regions and old OPFS sessions. */
+    const viewerPackages: ReadonlyArray<[string, string]> = [
+        ["viewer/ci_studio.pck.sz", "/cinema/ci_studio/ui.pck.sz"],
+        ["viewer/ui_title.pck.sz", "/etc/title/ui_title.pck.sz"],
+        ["viewer/ui_phone.pck.sz", "/etc/phone/ui_phone.pck.sz"],
+    ];
+    for (const [name, suffix] of viewerPackages) {
+        const entry = disc.vfi.entries.find((candidate) =>
+            candidate.path.endsWith(suffix));
+        if (entry) jobs.push([name, entry]);
+    }
 
     const meta: Meta = {
         v: 1, serial: disc.serial, volumeId: disc.volumeId, songs: disc.songs,
@@ -163,7 +178,7 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
         try {
             await cache.write(META,
                 new TextEncoder().encode(JSON.stringify(meta)));
-            localStorage.setItem(LAST_KEY, disc.cacheKey);
+            localStorage.setItem(LAST_DISC_KEY, disc.cacheKey);
             progress(jobs.length, jobs.length, "done");
         } catch (e) {
             console.warn("OPFS write failed; playing from the ISO", e);
@@ -190,7 +205,7 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
         songAssets: (song) =>
             assetsFor(session, song, meta.hasIrx, meta.hasLibsd),
         forget: async () => {
-            localStorage.removeItem(LAST_KEY);
+            localStorage.removeItem(LAST_DISC_KEY);
             await cache?.forget();
         },
     };
