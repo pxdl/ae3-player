@@ -22,12 +22,25 @@ export interface SeBankFiles { hd: Uint8Array; bd: Uint8Array; }
 export interface SeBytecodeEvent {
     tick: number;
     offset: number;
+    exactFrame: number;
+    consoleFrame: number;
     kind: "note" | "off" | "control" | "loop";
     key?: number;
     velocity?: number;
     program?: number;
     command?: number;
     args?: number[];
+    source?: string;
+    sampleLoop?: boolean;
+    sampleFrames?: number;
+    root?: number;
+    cutGroup?: number;
+    reverb?: boolean;
+    noise?: boolean;
+    adsr1?: number;
+    adsr2?: number;
+    envelopeFrames?: number;
+    indefinite?: boolean;
 }
 
 export interface SeLoopInfo {
@@ -35,12 +48,26 @@ export interface SeLoopInfo {
     endTick: number;
     cycleTicks: number;
     count: number;
+    startExactFrame: number;
+    endExactFrame: number;
+    cycleExactFrames: number;
+    startConsoleFrame: number;
+    endConsoleFrame: number;
+    cycleConsoleFrames: number;
 }
 
 export interface SeRequestInfo {
     durationTicks: number;
+    exactFrames: number;
+    consoleFrames: number;
     notes: number;
     controls: number;
+    activeVoices: number;
+    loopingVoices: number;
+    sustainedVoices: number;
+    sustained: boolean;
+    sourceEndExactFrame: number;
+    sourceEndConsoleFrame: number;
     loop: SeLoopInfo | null;
     events: SeBytecodeEvent[];
 }
@@ -49,6 +76,17 @@ export interface SeInspection {
     requests: Uint16Array;
     details: (SeRequestInfo | null)[][];
     ticksPerSecond: number;
+}
+
+export interface SePlaybackMeasure {
+    frames: number | null;
+    sustained: boolean;
+    estimated: boolean;
+}
+
+export interface SeMeasureFiles extends SeBankFiles {
+    irx: Uint8Array | null;
+    libsd: Uint8Array | null;
 }
 
 export class SeStore {
@@ -181,6 +219,10 @@ export class SeInspector {
         resolve: (value: SeInspection) => void;
         reject: (error: Error) => void;
     }>();
+    private measurePending = new Map<number, {
+        resolve: (value: SePlaybackMeasure) => void;
+        reject: (error: Error) => void;
+    }>();
 
     private ensure(): Worker {
         if (this.worker) return this.worker;
@@ -189,16 +231,23 @@ export class SeInspector {
             { type: "module" });
         this.worker.onmessage = (event) => {
             const message = event.data;
-            const pending = this.pending.get(message.id);
+            const pending = this.pending.get(message.id)
+                ?? this.measurePending.get(message.id);
             if (!pending) return;
             this.pending.delete(message.id);
+            this.measurePending.delete(message.id);
             if (message.t === "error") pending.reject(new Error(message.message));
-            else pending.resolve(message.inspection);
+            else if (message.t === "se-measure-done")
+                pending.resolve(message.measure);
+            else
+                pending.resolve(message.inspection);
         };
         this.worker.onerror = (event) => {
             const error = new Error(event.message || "SE inspector worker failed");
             for (const pending of this.pending.values()) pending.reject(error);
+            for (const pending of this.measurePending.values()) pending.reject(error);
             this.pending.clear();
+            this.measurePending.clear();
         };
         return this.worker;
     }
@@ -209,6 +258,22 @@ export class SeInspector {
         this.pending.set(id, { resolve, reject });
         this.ensure().postMessage({ t: "se-inspect", id, files },
                                   [files.hd.buffer, files.bd.buffer]);
+        return promise;
+    }
+
+    measure(files: SeMeasureFiles, bank: number, request: number,
+            exact: boolean, revDepth: number): Promise<SePlaybackMeasure> {
+        const id = ++this.seq;
+        const { promise, resolve, reject } =
+            Promise.withResolvers<SePlaybackMeasure>();
+        this.measurePending.set(id, { resolve, reject });
+        const buffers = [files.hd, files.bd, files.irx, files.libsd]
+            .filter((file) => file !== null)
+            .map((file) => file.buffer);
+        this.ensure().postMessage({
+            t: "se-measure", id, files,
+            opts: { bank, request, exact, revDepth },
+        }, buffers);
         return promise;
     }
 }

@@ -133,7 +133,7 @@
           </div>
           <div id="dials-se">
             <button class="dial" id="se-vol" title="Caller volume, 1–127 (- and =)">VOL 64</button>
-            <button class="dial" id="se-loop" title="Follow an authored infinite jump, or let the request play through once (L)">LOOP &mdash;</button>
+            <button class="dial" id="se-loop" title="Repeat an authored infinite stream jump or execute that stream once. Source loops can sustain independently (L)">LOOP &mdash;</button>
             <button class="dial on" id="se-timing" title="Exact 480 Hz bytecode timing vs console 60 Hz quantization (T)">EXACT</button>
             <button class="dial on" id="se-kernel" title="SPU2 gaussian kernel vs brighter interpolation (G)">GAUSS</button>
             <button class="dial on" id="se-rev" title="Hardware reverb depth 30; cue flags decide whether a voice enters the bus (R)">REV 30</button>
@@ -142,22 +142,32 @@
             <button id="se-exportbtn" title="Render this assembled request to WAV (E)" disabled>EXPORT WAV</button>
             <div id="se-export-menu" hidden>
               <button class="ex-row" id="se-ex-once">PLAY ONCE</button>
-              <button class="ex-row" id="se-ex-10">AUTHORED LOOP &middot; 10 SECONDS</button>
-              <button class="ex-row" id="se-ex-30">AUTHORED LOOP &middot; 30 SECONDS</button>
-              <button class="ex-row" id="se-ex-60">AUTHORED LOOP &middot; 60 SECONDS</button>
+              <button class="ex-row" id="se-ex-10">10-SECOND CAP</button>
+              <button class="ex-row" id="se-ex-30">30-SECOND CAP</button>
+              <button class="ex-row" id="se-ex-60">60-SECOND CAP</button>
             </div>
           </div>
           <button id="se-bankbtn" title="Save this bank's raw .hd/.bd pair" disabled>EXPORT BANK</button>
         </header>
-        <div id="se-bar">
+        <div id="se-bar" title="Click to seek within the audible request or displayed event domain">
           <div id="se-bar-fill"></div>
           <div id="se-bar-head"></div>
         </div>
         <div id="se-info">Choose a bank, then one bank:request entry.</div>
         <div id="se-stage" hidden>
           <canvas id="se-null" hidden></canvas>
-          <canvas id="se-slots"></canvas>
-          <canvas id="se-events"></canvas>
+          <div class="se-viz-panel">
+            <div class="se-viz-title">LIVE 48-VOICE POOL</div>
+            <canvas id="se-slots"></canvas>
+          </div>
+          <div class="se-viz-panel">
+            <div class="se-viz-title">ROLLING OUTPUT WAVEFORM</div>
+            <canvas id="se-wave" title="Rolling live output; use the transport bar above to seek"></canvas>
+          </div>
+          <div class="se-viz-panel se-viz-events">
+            <div class="se-viz-title">AUTHORED EVENT SCORE <span>click to seek &middot; 1 one-shot &middot; L looped sample &middot; N noise &middot; R reverb</span></div>
+            <canvas id="se-events" title="Click to seek within the event track"></canvas>
+          </div>
         </div>
         <div id="se-setup" hidden>
           <div id="se-setup-card">
@@ -202,14 +212,35 @@
           </section>
           <section>
             <h2>SE requests <small>(SE tab)</small></h2>
-            <p>Each sound-effect bank carries its own two-level sequence table.
-            Expand a bank to see its outer bank and inner request coordinates;
-            selecting one runs the game's complete request bytecode through the
-            same 48-voice synth as BGM. VOL is the gameplay caller's input before
-            positional attenuation. The isolated renderer cannot reproduce scene
-            distance, so an in-game effect may be quieter without being a different
-            sound. Authored infinite requests play until paused and WAV export caps
-            them at ten seconds.</p>
+            <p>Each sound-effect bank carries a two-level sequence table. Expand
+            one bank to see its outer bank and inner request coordinates; selecting
+            one runs the game's complete request bytecode through the same 48-voice
+            synth as BGM. VOL is the gameplay caller's input before positional
+            attenuation. The isolated renderer cannot reproduce scene distance, so
+            an in-game effect may be quieter without being a different sound.</p>
+          </section>
+          <section>
+            <h2>SE event track vs source audio</h2>
+            <p>The event score shows the request's commands, not a decoded waveform.
+            A short track can start a looped sample or SPU2 noise voice that keeps
+            sounding until its authored sustain envelope reaches silence. Some
+            envelopes are extraordinarily slow: the Arabian 25:1 and 28:0 sources
+            run for about 39.8 hours, which is effectively continuous in normal
+            play but is not a repeated event track. Separately, a
+            <strong>STREAM JUMP</strong> can repeat the bytecode itself. The L key
+            only controls an infinite stream jump; it does not disable a sample
+            loop. The live waveform, source markers, event duration, source-envelope
+            endpoint, and playback status distinguish those cases. Click the
+            transport bar or event score to seek.</p>
+          </section>
+          <section>
+            <h2>SE event markers</h2>
+            <p><code>1</code> is a one-shot sample, <code>L</code> is a looped
+            sample, <code>N</code> is the SPU2 noise source, and <code>R</code>
+            means that tone also feeds the reverb send. LFO DEPTH, LFO RATE,
+            VELOCITY, PAN, and GLIDE labels are commands issued by the authored
+            bytecode. Long-lived loop/noise status is amber. Requests whose source
+            outlives a practical export need an explicit 10, 30, or 60 second cap.</p>
           </section>
           <section>
             <h2>Authored volume <small>(VOL NN AUTH, keys - = A)</small></h2>
@@ -237,13 +268,13 @@
           </section>
           <section>
             <h2>Exact vs tick clock <small>(key T)</small></h2>
-            <p>The console's sequencer runs as a callback of the 60&nbsp;Hz sound
-            thread. Every MIDI event due within a tick fires in one burst, so event
-            timing quantizes to a 16.7&nbsp;ms grid. TICK reproduces that, and it
-            reads as notes arriving late, like an emulator with slowdown. EXACT fires
-            events at their exact sample positions and is the default. Use TICK when
-            comparing against a recording of the real game, since the console bakes
-            that timing into any capture.</p>
+            <p>The console's sequencers run as callbacks of the 60&nbsp;Hz sound
+            thread. Events due within a callback fire in one burst, so timing
+            quantizes to a 16.7&nbsp;ms grid. SE bytecode itself uses 480 ticks per
+            second; one console callback spans eight of those ticks. EXACT places
+            each event at its authored 480&nbsp;Hz position and is the listening
+            default. TICK reproduces the console callback bursts and is the right
+            timeline for capture comparison.</p>
           </section>
           <section>
             <h2>Slots <small>(the 48-cell grid)</small></h2>

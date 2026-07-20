@@ -14,10 +14,11 @@ import { groupStreams, StreamDecoder, StreamPlayer,
          type StreamCatalog, type StreamEntry } from "./streams.ts";
 import { StreamViz } from "./sviz.ts";
 import { SeInspector, type SeBankEntry, type SeCatalog,
-         type SeRequestInfo } from "./se.ts";
+         type SeMeasureFiles, type SeRequestInfo } from "./se.ts";
 import { SeSequenceViz } from "./seviz.ts";
 
 const LOOP_FOREVER = 0x7f;
+const SE_SEEK_LIMIT = 5 * 60 * RATE;
 
 const $ = <T extends HTMLElement>(id: string): T =>
     document.getElementById(id) as T;
@@ -83,6 +84,10 @@ let sePlaying: Extract<SeRow, { kind: "cue" }> | null = null;
 let sePlayingInfo: SeRequestInfo | null = null;
 let seGlyph = "";
 let seKnownFrames: number | null = null;
+let seKnownEstimated = false;
+let seMeasuring = false;
+let seMeasureToken = 0;
+let sePastEvents = false;
 let seViz: Viz | null = null;
 let seSequenceViz: SeSequenceViz | null = null;
 const seInspector = new SeInspector();
@@ -153,7 +158,10 @@ function ensurePlayer(): Promise<WorkletPlayer> {
         player = p;
         p.onended = () => { finished = true; };
         p.onerror = (m) => status(m, true);
-        p.onsnapshot = (s) => viz?.ingest(s);
+        p.onsnapshot = (s) => {
+            if (audioMode === "se") seViz?.ingest(s);
+            else viz?.ingest(s);
+        };
         return p;
     }, (e) => {
         playerReady = null;              /* allow a retry on the next click */
@@ -300,8 +308,8 @@ let keysBgmText = "";               /* captured from the DOM at boot */
 const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fold "
     + "· T trim · E wav · X raw · H help · click bar/stage to seek";
 const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u00B7 ENTER load/fold "
-    + "\u00B7 L loop/once \u00B7 - = volume \u00B7 T timing \u00B7 G kernel "
-    + "\u00B7 R reverb \u00B7 E wav \u00B7 X bank \u00B7 H help";
+    + "\u00B7 L stream loop/once \u00B7 - = volume \u00B7 T timing \u00B7 G kernel "
+    + "\u00B7 R reverb \u00B7 E wav \u00B7 X bank \u00B7 click bar/score to seek \u00B7 H help";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -627,22 +635,67 @@ function currentSeInfo(
     return seDetails?.[row.bank]?.[row.request] ?? null;
 }
 
+function seEventFrames(info: SeRequestInfo): number {
+    return seCfg.exact ? info.exactFrames : info.consoleFrames;
+}
+
+function seSourceEndFrames(info: SeRequestInfo): number {
+    return seCfg.exact
+        ? info.sourceEndExactFrame
+        : info.sourceEndConsoleFrame;
+}
+
+function fmtSeTime(frames: number): string {
+    const seconds = Math.max(0, frames) / RATE;
+    if (seconds < 3600) return fmtTime(frames);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds / 60) % 60;
+    const rest = seconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:`
+        + `${rest < 10 ? "0" : ""}${rest.toFixed(1)}`;
+}
+
+function seLoopFrames(info: SeRequestInfo): {
+    start: number; end: number; cycle: number;
+} | null {
+    if (!info.loop) return null;
+    return seCfg.exact
+        ? {
+            start: info.loop.startExactFrame,
+            end: info.loop.endExactFrame,
+            cycle: info.loop.cycleExactFrames,
+        }
+        : {
+            start: info.loop.startConsoleFrame,
+            end: info.loop.endConsoleFrame,
+            cycle: info.loop.cycleConsoleFrames,
+        };
+}
+
 function seDurationLabel(info: SeRequestInfo): string {
-    if (info.loop?.count === 0) {
-        const seconds = info.loop.cycleTicks / 480;
-        const time = seconds < 10
-            ? `${seconds.toFixed(1)}s`
-            : fmtTime(info.loop.cycleTicks * 100);
-        return `\u221E \u00B7 ${time} cycle`;
-    }
-    const seconds = info.durationTicks / 480;
-    const time = seconds < 10
-        ? `${seconds.toFixed(1)}s`
-        : fmtTime(info.durationTicks * 100);
-    return info.loop ? `${time} \u00B7 repeat \u00D7${info.loop.count}` : `${time} seq`;
+    const frames = seEventFrames(info);
+    const seconds = frames / RATE;
+    const time = seconds < 10 ? `${seconds.toFixed(1)}s` : fmtSeTime(frames);
+    if (info.loop?.count === 0)
+        return `stream \u221E \u00B7 ${time} cycle`;
+    if (info.sustained)
+        return `audio \u221E \u00B7 ${time} events`;
+    const sourceEnd = seSourceEndFrames(info);
+    if (info.loopingVoices && sourceEnd > frames + RATE / 10)
+        return `\u2248${fmtSeTime(sourceEnd)} audio`;
+    return info.loop
+        ? `${time} events \u00B7 repeat \u00D7${info.loop.count}`
+        : `${time} events`;
+}
+
+function sameSeRow(a: SeRow, b: SeRow): boolean {
+    if (a.kind !== b.kind || a.entry.name !== b.entry.name) return false;
+    return a.kind === "bank" ||
+        (b.kind === "cue" && a.bank === b.bank && a.request === b.request);
 }
 
 function buildSeRows(): void {
+    const selected = seRows[seSel];
     const q = $<HTMLInputElement>("se-search").value.trim().toLowerCase();
     const rows: SeRow[] = [];
     for (const entry of seCatalog?.entries ?? []) {
@@ -655,7 +708,12 @@ function buildSeRows(): void {
         }
     }
     seRows = rows;
-    seSel = Math.min(seSel, Math.max(0, seRows.length - 1));
+    const preserved = selected
+        ? seRows.findIndex((row) => sameSeRow(row, selected))
+        : -1;
+    seSel = preserved >= 0
+        ? preserved
+        : Math.min(seSel, Math.max(0, seRows.length - 1));
 }
 
 function renderSeList(): void {
@@ -773,12 +831,12 @@ async function seActivate(i: number, play: boolean): Promise<void> {
     }
 }
 
-const seEngineConfig = (): EngineConfig => ({
+const seEngineConfig = (info = currentSeInfo()): EngineConfig => ({
     songvol: seCfg.volume,
     revDepth: seCfg.revDepth,
     exact: seCfg.exact,
     gaussian: seCfg.gaussian,
-    loop: seCfg.loop ? LOOP_FOREVER : 0,
+    loop: info?.loop?.count === 0 && seCfg.loop ? LOOP_FOREVER : 0,
     cueOn: false,
     cueScale: 1,
     duckDemo: false,
@@ -790,9 +848,54 @@ async function seSynthAssets(entry: SeBankEntry) {
     const files = await session.se.bank(entry);
     const [irx, libsd] = await Promise.all([
         session.read("irx/sg2iopm1.irx"),
-        session.read("irx/libsd.bin"),
+        session.read("irx/libsd.irx"),
     ]);
     return { files, assets: { ...files, irx, libsd } };
+}
+
+function cloneSeMeasureFiles(assets: SeMeasureFiles): SeMeasureFiles {
+    return {
+        hd: assets.hd.slice(),
+        bd: assets.bd.slice(),
+        irx: assets.irx?.slice() ?? null,
+        libsd: assets.libsd?.slice() ?? null,
+    };
+}
+
+function startSeMeasurement(
+    row: Extract<SeRow, { kind: "cue" }>, assets: SeMeasureFiles,
+): void {
+    const token = ++seMeasureToken;
+    seKnownFrames = null;
+    seKnownEstimated = false;
+    seMeasuring = true;
+    renderSeLength();
+    void seInspector.measure(
+        cloneSeMeasureFiles(assets), row.bank, row.request,
+        seCfg.exact, seCfg.revDepth,
+    ).then((measure) => {
+        if (token !== seMeasureToken) return;
+        seKnownFrames = measure.frames;
+        seKnownEstimated = measure.estimated;
+    }, (error) => {
+        if (token !== seMeasureToken) return;
+        console.error("SE duration analysis failed", error);
+    }).finally(() => {
+        if (token !== seMeasureToken) return;
+        seMeasuring = false;
+        renderSeLength();
+        renderSeInfo();
+    });
+}
+
+async function refreshSeMeasurement(): Promise<void> {
+    if (!session || !sePlaying) return;
+    try {
+        const { assets } = await seSynthAssets(sePlaying.entry);
+        startSeMeasurement(sePlaying, assets);
+    } catch (error) {
+        console.error("SE duration analysis failed", error);
+    }
 }
 
 async function loadSeCue(
@@ -814,12 +917,14 @@ async function loadSeCue(
     try {
         const info = currentSeInfo(row);
         const { assets } = await seSynthAssets(row.entry);
-        const r = await p.loadSe(assets, row.bank, row.request, seEngineConfig());
-        audioMode = "se";
-        timeline = null;
+        startSeMeasurement(row, assets);
+        const r = await p.loadSe(
+            assets, row.bank, row.request, seEngineConfig(info));
         sePlaying = row;
         sePlayingInfo = info;
-        seKnownFrames = null;
+        sePastEvents = false;
+        audioMode = "se";
+        timeline = null;
         p.snap = null;
         seViz?.clearWave();
         seSequenceViz?.set(info);
@@ -833,6 +938,9 @@ async function loadSeCue(
         if (autoplay) p.play();
     } catch (e) {
         status(friendlyError(e), true);
+        seKnownEstimated = false;
+        seMeasureToken++;
+        seMeasuring = false;
     } finally {
         seLoading = false;
         renderSeList();
@@ -868,27 +976,57 @@ function renderSeLength(): void {
     if (!info) {
         $("se-len").textContent = "\u2014";
     } else if (info.loop?.count === 0 && seCfg.loop) {
+        const loop = seLoopFrames(info)!;
         $("se-len").textContent =
-            `\u221E \u00B7 ${fmtTime(info.loop.cycleTicks * 100)} cycle`;
+            `\u221E \u00B7 ${fmtSeTime(loop.cycle)} stream cycle`;
+    } else if (info.sustained) {
+        $("se-len").textContent = "\u221E \u00B7 non-decaying source";
     } else if (seKnownFrames !== null) {
-        $("se-len").textContent = fmtTime(seKnownFrames);
+        $("se-len").textContent =
+            `${seKnownEstimated ? "\u2248" : ""}${fmtSeTime(seKnownFrames)} audio`;
+    } else if (seMeasuring) {
+        $("se-len").textContent = "measuring audio\u2026";
     } else {
-        $("se-len").textContent = `seq ${fmtTime(info.durationTicks * 100)}`;
+        $("se-len").textContent = `${fmtSeTime(seEventFrames(info))} events`;
     }
+    const seekLimited = seSeekDomain() > SE_SEEK_LIMIT;
+    $("se-bar").classList.toggle("seek-limited", seekLimited);
+    $("se-bar").title = seekLimited
+        ? "This source exceeds the five-minute rebuild/fast-forward seek limit; click the event score to seek its authored commands"
+        : "Click to seek within the audible request or displayed stream cycle";
 }
-
 function renderSeInfo(): void {
     if (!sePlaying) return;
     const info = currentSeInfo();
-    const sequence = info
-        ? `${info.notes} note events \u00B7 ${info.controls} controls \u00B7 `
+    const stream = info
+        ? `${info.notes} note event${info.notes === 1 ? "" : "s"} \u00B7 `
+          + `${info.controls} control${info.controls === 1 ? "" : "s"} \u00B7 `
           + (info.loop
-              ? `authored ${info.loop.count === 0 ? "infinite" : `\u00D7${info.loop.count} repeat`} `
-                + `${fmtTime(info.loop.cycleTicks * 100)} cycle`
-              : `${fmtTime(info.durationTicks * 100)} sequence`)
-        : "sequence metadata unavailable";
+              ? `${info.loop.count === 0 ? "infinite jump" : `jump \u00D7${info.loop.count}`} `
+                + `${fmtSeTime(seLoopFrames(info)!.cycle)} cycle`
+              : `${fmtSeTime(seEventFrames(info))} event track`)
+        : "event metadata unavailable";
+    const sourceEnd = info ? seSourceEndFrames(info) : 0;
+    const sources = info
+        ? (info.sustained
+            ? `${info.sustainedVoices} non-decaying loop/noise `
+              + `voice${info.sustainedVoices === 1 ? "" : "s"} remain after the event track`
+            : info.loopingVoices && sourceEnd > seEventFrames(info)
+                ? `${info.loopingVoices} loop/noise source `
+                  + `voice${info.loopingVoices === 1 ? "" : "s"} `
+                  + `${info.loopingVoices === 1 ? "remains" : "remain"} after events; `
+                  + `envelope endpoint \u2248${fmtSeTime(sourceEnd)}`
+                : info.activeVoices
+                    ? `${info.activeVoices} note${info.activeVoices === 1 ? "" : "s"} `
+                      + `${info.activeVoices === 1 ? "has" : "have"} no explicit note-off; `
+                      + "waveform/envelope lifetime ends the source"
+                    : "all notes receive an explicit note-off")
+        : "";
+    const now = sePastEvents && info?.loopingVoices
+        ? "\nplayback now: event track ended; loop/noise source envelope is still sounding"
+        : "";
     $("se-info").textContent =
-        `${sePlaying.entry.hd} + ${sePlaying.entry.bd}\n${sequence}\n`
+        `${sePlaying.entry.hd} + ${sePlaying.entry.bd}\n${stream}\n${sources}${now}\n`
         + `isolated caller volume ${seCfg.volume}/127 \u00B7 `
         + `${seCfg.exact ? "exact 480 Hz" : "console 60 Hz"} dispatch \u00B7 `
         + `${seCfg.gaussian ? "SPU2 gaussian" : "bright"} resampling \u00B7 `
@@ -902,14 +1040,18 @@ function renderSeDials(): void {
     const hostLoop = info?.loop?.count === 0;
     loop.disabled = !hostLoop;
     loop.textContent = hostLoop
-        ? (seCfg.loop ? "LOOP \u221E" : "PLAY ONCE")
-        : (info?.loop ? `REPEAT \u00D7${info.loop.count}` : "ONE SHOT");
+        ? (seCfg.loop ? "LOOP STREAM" : "STREAM ONCE")
+        : (info?.loop
+            ? `REPEAT \u00D7${info.loop.count}`
+            : info?.sustained
+                ? "SUSTAINED SOURCE"
+                : info?.loopingVoices ? "SOURCE LOOP" : "ONE SHOT");
     loop.classList.toggle("on", !!hostLoop && seCfg.loop);
     $("se-timing").textContent = seCfg.exact ? "EXACT" : "TICK";
     $("se-timing").classList.toggle("on", seCfg.exact);
     $("se-kernel").textContent = seCfg.gaussian ? "GAUSS" : "BRIGHT";
     $("se-kernel").classList.toggle("on", seCfg.gaussian);
-    $("se-rev").textContent = `REV ${seCfg.revDepth}`;
+    $("se-rev").textContent = seCfg.revDepth > 0 ? `REV ${seCfg.revDepth}` : "REV OFF";
     $("se-rev").classList.toggle("on", seCfg.revDepth > 0);
     renderSeLength();
     renderSeInfo();
@@ -924,8 +1066,8 @@ function setSeVolume(value: number): void {
 function seToggleLoop(): void {
     if (currentSeInfo()?.loop?.count !== 0) return;
     seCfg.loop = !seCfg.loop;
-    seKnownFrames = null;
     finished = false;
+    sePastEvents = false;
     if (audioMode === "se") {
         player?.set("loop", seCfg.loop ? LOOP_FOREVER : 0);
         player?.seek(0);
@@ -935,12 +1077,17 @@ function seToggleLoop(): void {
 
 function seToggleExact(): void {
     seCfg.exact = !seCfg.exact;
+    seKnownFrames = null;
+    seKnownEstimated = false;
+    sePastEvents = false;
     if (audioMode === "se") {
         finished = false;
         player?.set("exact", seCfg.exact ? 1 : 0);
         player?.seek(0);
+        void refreshSeMeasurement();
     }
     renderSeDials();
+    renderSeList();
 }
 
 function seToggleKernel(): void {
@@ -949,19 +1096,50 @@ function seToggleKernel(): void {
     renderSeDials();
 }
 
+function seekSe(frame: number): void {
+    if (!player || audioMode !== "se") return;
+    finished = false;
+    sePastEvents = false;
+    player.seek(Math.max(0, Math.round(frame)));
+}
+
+function seSeekDomain(): number {
+    const info = currentSeInfo();
+    if (!info) return RATE / 4;
+    if (info.loop?.count === 0 && seCfg.loop)
+        return seLoopFrames(info)!.end;
+    return seKnownFrames
+        ?? Math.max(seEventFrames(info), seSourceEndFrames(info));
+}
+
 function seToggleReverb(): void {
     seCfg.revDepth = seCfg.revDepth > 0 ? 0 : 30;
-    if (audioMode === "se") player?.set("revDepth", seCfg.revDepth);
+    seKnownFrames = null;
+    seKnownEstimated = false;
+    if (audioMode === "se") {
+        player?.set("revDepth", seCfg.revDepth);
+        void refreshSeMeasurement();
+    }
     renderSeDials();
+}
+
+function seNeedsExportCap(info: SeRequestInfo | null): boolean {
+    return !!info && (info.sustained
+        || seSourceEndFrames(info) > SE_SEEK_LIMIT);
 }
 
 function updateSeExportBtn(): void {
     const button = $<HTMLButtonElement>("se-exportbtn");
     button.disabled = !sePlaying || seBusy || exporter.busy;
     button.textContent = seBusy || exporter.busy ? "EXPORTING" : "EXPORT WAV";
-    const canLoop = currentSeInfo()?.loop?.count === 0;
+    const info = currentSeInfo();
+    const needsCap = seNeedsExportCap(info);
+    const once = $<HTMLButtonElement>("se-ex-once");
+    once.disabled = needsCap;
+    once.textContent = needsCap ? "FULL DURATION TOO LONG" : "PLAY ONCE";
+    const canCap = info?.loop?.count === 0 || needsCap;
     for (const id of ["se-ex-10", "se-ex-30", "se-ex-60"])
-        $<HTMLButtonElement>(id).disabled = !canLoop;
+        $<HTMLButtonElement>(id).disabled = !canCap;
 }
 
 async function exportSeCue(
@@ -972,10 +1150,19 @@ async function exportSeCue(
     const row = sePlaying;
     const info = currentSeInfo();
     looping = looping && info?.loop?.count === 0;
-    const cap = looping
+    const needsCap = seNeedsExportCap(info);
+    const capped = looping || needsCap;
+    const fullFrames = Math.max(
+        seKnownFrames ?? 0,
+        seEventFrames(info!),
+        seSourceEndFrames(info!),
+    );
+    const cap = capped
         ? seconds
-        : Math.max(seconds, Math.ceil((info?.durationTicks ?? 0) / 480) + 10);
-    const mode = looping ? `loop${seconds}s` : "once";
+        : Math.max(seconds, Math.ceil(fullFrames / RATE) + 1);
+    const mode = looping
+        ? `loop${seconds}s`
+        : needsCap ? `${seconds}s` : "once";
     seBusy = true;
     $("se-export-menu").hidden = true;
     updateSeExportBtn();
@@ -1041,19 +1228,28 @@ function tick(): void {
         const pos = s?.pos ?? 0;
         if (finished && pos > 0 && pos !== seKnownFrames) {
             seKnownFrames = pos;
+            seKnownEstimated = false;
+            seMeasuring = false;
             renderSeLength();
         }
         $("se-cur").textContent = fmtTime(pos);
         const info = currentSeInfo();
+        const eventFrames = info ? seEventFrames(info) : RATE / 4;
+        const pastEvents = !!info?.loopingVoices
+            && !(info.loop?.count === 0 && seCfg.loop)
+            && pos >= eventFrames;
+        if (pastEvents !== sePastEvents) {
+            sePastEvents = pastEvents;
+            renderSeInfo();
+        }
         let display = pos;
-        let duration = seKnownFrames
-            ?? Math.max((info?.durationTicks ?? 0) * 100, RATE / 4);
+        let duration = seKnownFrames ?? Math.max(eventFrames, RATE / 4);
         if (info?.loop?.count === 0 && seCfg.loop) {
-            const start = info.loop.startTick * 100;
-            const end = info.loop.endTick * 100;
-            const cycle = Math.max(100, info.loop.cycleTicks * 100);
-            if (display > end) display = start + (display - start) % cycle;
-            duration = Math.max(100, end);
+            const loop = seLoopFrames(info)!;
+            const cycle = Math.max(100, loop.cycle);
+            if (display > loop.end)
+                display = loop.start + (display - loop.start) % cycle;
+            duration = Math.max(100, loop.end);
         }
         const frac = Math.min(display / duration, 1);
         $("se-bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
@@ -1079,7 +1275,8 @@ function tick(): void {
         $("clip-flash").hidden =
             !(clipFlash && performance.now() - clipFlash < 700);
         seViz?.draw(s, null, pos, false);
-        seSequenceViz?.draw(s, info?.loop?.count === 0 && seCfg.loop);
+        seSequenceViz?.draw(
+            s, info?.loop?.count === 0 && seCfg.loop, seCfg.exact);
         return;
     }
     if (!player || !timeline || audioMode !== "bgm") {
@@ -1383,7 +1580,7 @@ async function enterPlayer(s: DiscSession): Promise<void> {
                   $<HTMLCanvasElement>("wave"));
     seViz = new Viz($<HTMLCanvasElement>("se-null"),
                     $<HTMLCanvasElement>("se-slots"),
-                    $<HTMLCanvasElement>("se-null"));
+                    $<HTMLCanvasElement>("se-wave"));
     seSequenceViz = new SeSequenceViz($<HTMLCanvasElement>("se-events"));
     /* no audio yet: the whole stack is built inside the first click/key
      * (ensurePlayer) so Safari associates the AudioContext with a gesture */
@@ -1530,6 +1727,15 @@ async function main(): Promise<void> {
     $("se-timing").onclick = seToggleExact;
     $("se-kernel").onclick = seToggleKernel;
     $("se-rev").onclick = seToggleReverb;
+    $("se-bar").onclick = (e) => {
+        const domain = seSeekDomain();
+        if (domain > SE_SEEK_LIMIT) {
+            status("Audio seek is capped at five minutes for this long-lived source; click the event score to seek its commands");
+            return;
+        }
+        const rect = $("se-bar").getBoundingClientRect();
+        seekSe((e.clientX - rect.left) / rect.width * domain);
+    };
     $("se-exportbtn").onclick = (e) => {
         e.stopPropagation();
         showExportMenu(false);

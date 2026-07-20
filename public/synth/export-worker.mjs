@@ -6,7 +6,7 @@
 import { renderWavFile, renderSeWavFile } from "./exporter.mjs";
 import { buildSampleKit } from "./kit.mjs";
 import { decodeStream, streamWav } from "./stream.mjs";
-import { inspectSeBank } from "./se.mjs";
+import { inspectSeBank, measureSePlayback } from "./se.mjs";
 
 let wasmBytes = null;
 
@@ -25,6 +25,11 @@ onmessage = async (e) => {
             const inspection = await inspectSeBank(wasmBytes, m.files);
             postMessage({ t: "se-inspect-done", id: m.id, inspection },
                         [inspection.requests.buffer]);
+            return;
+        }
+        if (m.t === "se-measure") {
+            const measure = await measureSePlayback(wasmBytes, m.files, m.opts);
+            postMessage({ t: "se-measure-done", id: m.id, measure });
             return;
         }
         if (m.t === "stream") {
