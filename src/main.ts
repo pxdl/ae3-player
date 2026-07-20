@@ -768,6 +768,14 @@ function seLoopFrames(info: SeRequestInfo): {
         };
 }
 
+function seDisplayFrame(frame: number, info: SeRequestInfo | null): number {
+    if (info?.loop?.count !== 0 || !seCfg.loop) return frame;
+    const loop = seLoopFrames(info);
+    if (!loop || frame <= loop.end) return frame;
+    const cycle = Math.max(100, loop.cycle);
+    return loop.start + (frame - loop.start) % cycle;
+}
+
 function seNoteCounts(info: SeRequestInfo): { starts: number; stops: number } {
     let starts = 0, stops = 0;
     for (const event of info.events) {
@@ -1248,7 +1256,7 @@ function seSeekDomain(): number {
     const info = currentSeInfo();
     if (!info) return RATE / 4;
     if (info.loop?.count === 0 && seCfg.loop)
-        return seLoopFrames(info)!.end;
+        return Math.max(100, seLoopFrames(info)!.end);
     if (seHasLingeringSource(info))
         return Math.max(RATE / 4, seEventFrames(info));
     return seKnownFrames
@@ -1385,15 +1393,8 @@ function tick(): void {
             sePastEvents = pastEvents;
             renderSeInfo();
         }
-        let display = pos;
-        let duration = seSeekDomain();
-        if (info?.loop?.count === 0 && seCfg.loop) {
-            const loop = seLoopFrames(info)!;
-            const cycle = Math.max(100, loop.cycle);
-            if (display > loop.end)
-                display = loop.start + (display - loop.start) % cycle;
-            duration = Math.max(100, loop.end);
-        }
+        const display = seDisplayFrame(pos, info);
+        const duration = seSeekDomain();
         const frac = Math.min(display / duration, 1);
         $("se-bar-fill").style.width = `${(frac * 100).toFixed(3)}%`;
         $("se-bar-head").style.left =
@@ -1863,7 +1864,8 @@ export function viewerTransport(): ViewerTransport {
         title = sePlaying
             ? `${sePlaying.entry.name} · ${sePlaying.bank}:${sePlaying.request}`
             : "";
-        current = audioMode === "se" ? (player?.snap?.pos ?? 0) / RATE : 0;
+        const frame = audioMode === "se" ? (player?.snap?.pos ?? 0) : 0;
+        current = seDisplayFrame(frame, currentSeInfo()) / RATE;
         duration = sePlaying ? seSeekDomain() / RATE : 0;
         isPlaying = audioMode === "se" && !!player?.snap?.playing;
         isLoading = seLoading || seExtracting;
