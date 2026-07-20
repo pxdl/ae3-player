@@ -9,7 +9,7 @@
  * per snapshot at bgmplay's 0.86-per-callback rate -- the ~47 Hz snapshot
  * cadence matches its 1024-sample audio callback. */
 
-import type { Snapshot } from "./player.ts";
+import { VoiceField, VOICE_STATE_SIZE, type Snapshot } from "./player.ts";
 import type { Timeline } from "./timeline.ts";
 import { RATE } from "./timeline.ts";
 
@@ -99,12 +99,14 @@ export class Viz {
         if (s) {
             const v = s.voices;
             for (let i = 0; i < NVOICES; i++) {
-                const f = v[i * 4]!;
+                const base = i * VOICE_STATE_SIZE;
+                const f = v[base + VoiceField.Flags]!;
                 if (f & 1) {
                     used++;
-                    const idx = (v[i * 4 + 1]! & 15) * 128 + (v[i * 4 + 2]! & 127);
-                    if ((f & 2) && v[i * 4 + 3]! > this.act[idx]!)
-                        this.act[idx] = v[i * 4 + 3]!;
+                    const idx = (v[base + VoiceField.Channel]! & 15) * 128
+                              + (v[base + VoiceField.Key]! & 127);
+                    if ((f & 2) && v[base + VoiceField.Envelope]! > this.act[idx]!)
+                        this.act[idx] = v[base + VoiceField.Envelope]!;
                 }
             }
         }
@@ -202,11 +204,14 @@ export class Viz {
             g.fillStyle = "#22242d";
             g.fillRect(x, y, cw - 2, bh);
             if (!s) continue;
-            const f = s.voices[i * 4]!;
+            const base = i * VOICE_STATE_SIZE;
+            const f = s.voices[base + VoiceField.Flags]!;
             if (!(f & 1)) continue;
-            const env = s.voices[i * 4 + 3]!;
+            const env = s.voices[base + VoiceField.Envelope]!;
             const lv = Math.sqrt(env / 32767);
-            let [r, gg, b] = CH_RGB[s.voices[i * 4 + 1]! & 15]!;
+            let [r, gg, b] = CH_RGB[
+                s.voices[base + VoiceField.Channel]! & 15
+            ]!;
             if (f & 4) {           /* released: bgmplay's warm fade tint */
                 r = Math.min(255, r * 0.6 + 90);
                 gg = gg * 0.5;

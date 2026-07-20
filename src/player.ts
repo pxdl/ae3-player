@@ -11,6 +11,37 @@
 import type { DisplayClock } from "./timeline.ts";
 
 export const RATE = 48000;
+export const VOICE_STATE_SIZE = 12;
+
+export const VoiceField = {
+    Flags: 0,
+    Channel: 1,
+    Key: 2,
+    Envelope: 3,
+    EnvelopePhase: 4,
+    SeProgram: 5,
+    SourceKind: 6,
+    Waveform: 7,
+    SourceSamples: 8,
+    SourceLoopStart: 9,
+    SourcePhaseQ12: 10,
+    SourceLoops: 11,
+} as const;
+
+export const VoiceEnvelopePhase = {
+    Attack: 0,
+    Decay: 1,
+    Sustain: 2,
+    Release: 3,
+    Off: 4,
+} as const;
+
+export const VoiceSourceKind = {
+    None: 0,
+    OneShot: 1,
+    Looped: 2,
+    Noise: 3,
+} as const;
 
 export interface SnapshotStats {   /* the display subset of ae3_stats */
     voices_started: number;
@@ -27,7 +58,8 @@ export interface Snapshot {
     pos: number;               /* absolute samples rendered */
     ctxFrame: number;          /* worklet currentFrame at snapshot */
     clock: DisplayClock;
-    voices: Int32Array;        /* [flags,ch,key,env] x 48 */
+    voices: Float64Array;      /* VoiceField layout x 48 */
+    voiceStride: number;       /* must equal VOICE_STATE_SIZE */
     stats: SnapshotStats;
     wcols: Float32Array;       /* [lmin,lmax,rmin,rmax,clip] x n new columns */
     peakL: number;
@@ -123,6 +155,14 @@ export class WorkletPlayer {
             this.pendingLoad = null;
             break;
         case "snapshot":
+            if (m.voiceStride !== VOICE_STATE_SIZE ||
+                !(m.voices instanceof Float64Array) ||
+                m.voices.length !== 48 * VOICE_STATE_SIZE) {
+                this.onerror?.(
+                    `worklet voice schema mismatch: expected stride ${VOICE_STATE_SIZE}, `
+                    + `received ${String(m.voiceStride)}`);
+                break;
+            }
             this.snap = m as Snapshot;
             if (this.snap.done) this.snap.playing = false;
             this.onsnapshot?.(this.snap);

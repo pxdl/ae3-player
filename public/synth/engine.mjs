@@ -15,9 +15,13 @@
  * Defaults are the settled listening verdicts (ae3synth.h, memory
  * project_ae3_bgm_findings): EXACT event timing, GAUSSIAN kernel, reverb
  * depth 30, authored song volume, loop forever like the console. */
-import { AE3Synth, LOOP_FOREVER } from "./ae3synth.mjs";
+import {
+    AE3Synth, LOOP_FOREVER, NVOICES, VOICE_STATE_SIZE,
+} from "./ae3synth.mjs";
 
-export { RATE, NVOICES, LOOP_FOREVER, TICK_SAMPLES } from "./ae3synth.mjs";
+export {
+    RATE, NVOICES, LOOP_FOREVER, TICK_SAMPLES, VOICE_STATE_SIZE,
+} from "./ae3synth.mjs";
 
 /* Frames fast-forwarded per render() call while seeking: ~2 ms of compute at
  * the WASM core's >150x real time, inside the 2.67 ms quantum budget. */
@@ -53,7 +57,7 @@ export class PlayerEngine {
         this.busy = false;              /* rebuilding: render silence */
         this.warning = "";              /* nonfatal load issues (bgmplay P.err) */
         this.ffbuf = new Float32Array(SEEK_CHUNK * 2);
-        this.voicebuf = new Int32Array(48 * 4);
+        this.voicebuf = new Float64Array(NVOICES * VOICE_STATE_SIZE);
     }
 
     /* Fresh synth from the cached buffers, full config re-applied. BGM follows
@@ -182,27 +186,25 @@ export class PlayerEngine {
         }
     }
 
-    /** Playback state for the UI: position, display clock, packed voice
-     *  states [flags,ch,key,env]x48 (flags: 1 in_use, 2 active, 4 released),
-     *  and the display stats bgmplay's slot label + footer read. */
+    /** Playback state for the UI. Voice rows use VOICE_STATE_SIZE scalars:
+     *  flags,ch,key,env,envPhase,seProg,sourceKind,waveform,sourceSamples,
+     *  sourceLoopStart,sourcePhaseQ12,sourceLoops. Flags are 1 in_use,
+     *  2 active, 4 released; the first four fields preserve the slot view ABI. */
     snapshot() {
         const s = this.synth;
         if (!s || this.busy)
             return null;
         const v = this.voicebuf;
-        for (let i = 0; i < 48; i++) {
-            const st = s.voice(i);
-            v[i * 4] = (st.in_use ? 1 : 0) | (st.active ? 2 : 0)
-                     | (st.released ? 4 : 0);
-            v[i * 4 + 1] = st.ch;
-            v[i * 4 + 2] = st.key;
-            v[i * 4 + 3] = st.env;
+        for (let i = 0; i < NVOICES; i++) {
+            if (!s.voiceInto(i, v, i * VOICE_STATE_SIZE))
+                throw new RangeError(`voice slot ${i}`);
         }
         const st = s.stats();
         return {
             pos: s.pos(),
             clock: s.clock(),
             voices: v,
+            voiceStride: VOICE_STATE_SIZE,
             stats: {
                 voices_started: st.voices_started,
                 peak_voices: st.peak_voices,

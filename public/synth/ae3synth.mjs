@@ -18,6 +18,7 @@ export const NVOICES = 48;
 export const TICK_HZ = 60;
 export const TICK_SAMPLES = RATE / TICK_HZ;
 export const LOOP_FOREVER = 0x7f;
+export const VOICE_STATE_SIZE = 12;
 
 /* AE3_DUCK_* (cue layer) */
 export const DUCK_DEMO = 0, DUCK_PHONE = 1;
@@ -176,12 +177,40 @@ export class AE3Synth {
     done() { return !!this.#ex.ae3_synth_done(this.#s); }
     pos()  { return this.#ex.ae3w_pos(this.#s); }
 
+    voiceInto(i, output, offset = 0) {
+        if (!(output instanceof Float64Array) ||
+            offset < 0 || offset + VOICE_STATE_SIZE > output.length)
+            throw new RangeError("voiceInto output range");
+        if (!this.#ex.ae3w_voice(this.#s, i, this.#scratch))
+            return false;
+        const v = this.#mem().f64;
+        let src = this.#scratch >> 3;
+        for (let field = 0; field < VOICE_STATE_SIZE; field++)
+            output[offset + field] = v[src + field];
+        return true;
+    }
+
     voice(i) {
         if (!this.#ex.ae3w_voice(this.#s, i, this.#scratch))
             return null;
-        const v = this.#mem().i32, b = this.#scratch >> 2;
-        return { in_use: !!v[b], active: !!v[b + 1], released: !!v[b + 2],
-                 ch: v[b + 3], key: v[b + 4], env: v[b + 5] };
+        const v = this.#mem().f64, b = this.#scratch >> 3;
+        const flags = v[b];
+        return {
+            in_use: !!(flags & 1),
+            active: !!(flags & 2),
+            released: !!(flags & 4),
+            ch: v[b + 1],
+            key: v[b + 2],
+            env: v[b + 3],
+            env_phase: v[b + 4],
+            se_prog: v[b + 5],
+            source_kind: v[b + 6],
+            waveform: v[b + 7],
+            source_samples: v[b + 8],
+            source_loop_start: v[b + 9],
+            source_phase_q12: v[b + 10],
+            source_loops: v[b + 11],
+        };
     }
 
     seqEvents() { return this.#ex.ae3_synth_seq_events(this.#s); }

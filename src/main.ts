@@ -15,7 +15,7 @@ import { groupStreams, StreamDecoder, StreamPlayer,
 import { StreamViz } from "./sviz.ts";
 import { SeInspector, type SeBankEntry, type SeCatalog,
          type SeMeasureFiles, type SeRequestInfo } from "./se.ts";
-import { SeSequenceViz } from "./seviz.ts";
+import { SeSequenceViz, SeSourceLoopViz } from "./seviz.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects";
 
@@ -150,6 +150,7 @@ let seMeasureToken = 0;
 let sePastEvents = false;
 let seViz: Viz | null = null;
 let seSequenceViz: SeSequenceViz | null = null;
+let seSourceLoopViz: SeSourceLoopViz | null = null;
 const seInspector = new SeInspector();
 const seCfg = {
     volume: 64, exact: true, gaussian: true, revDepth: 30, loop: true,
@@ -275,6 +276,7 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
     p.resume();
     sPlayer.pause();                    /* one thing plays at a time */
     loading = true;
+    seSourceLoopViz?.clear();
     finished = false;
     status(`loading ${song.name}...`);
     try {
@@ -409,6 +411,7 @@ function fmtSec(t: number): string {
 }
 
 function switchTab(t: "bgm" | "streams" | "se"): void {
+    if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
     $("tab-streams").classList.toggle("on", t === "streams");
@@ -1049,6 +1052,8 @@ async function loadSeCue(
     seLoading = true;
     finished = false;
     status(`loading ${row.entry.name} ${row.bank}:${row.request}...`);
+    p.snap = null;
+    seSourceLoopViz?.clear();
     try {
         const info = currentSeInfo(row);
         const { assets } = await seSynthAssets(row.entry);
@@ -1062,6 +1067,7 @@ async function loadSeCue(
         timeline = null;
         p.snap = null;
         seViz?.clearWave();
+        seSourceLoopViz?.clear();
         viewerLevelHistory.fill(0);
         viewerLevelHead = 0;
         seSequenceViz?.set(info);
@@ -1220,7 +1226,7 @@ function seToggleLoop(): void {
     sePastEvents = false;
     if (audioMode === "se") {
         player?.set("loop", seCfg.loop ? LOOP_FOREVER : 0);
-        player?.seek(0);
+        rebuildSe(0);
     }
     renderSeDials();
 }
@@ -1233,7 +1239,7 @@ function seToggleExact(): void {
     if (audioMode === "se") {
         finished = false;
         player?.set("exact", seCfg.exact ? 1 : 0);
-        player?.seek(0);
+        rebuildSe(0);
         void refreshSeMeasurement();
     }
     renderSeDials();
@@ -1246,11 +1252,18 @@ function seToggleKernel(): void {
     renderSeDials();
 }
 
+function rebuildSe(frame: number): void {
+    if (!player || audioMode !== "se") return;
+    player.snap = null;
+    seSourceLoopViz?.clear();
+    player.seek(Math.max(0, Math.round(frame)));
+}
+
 function seekSe(frame: number): void {
     if (!player || audioMode !== "se") return;
     finished = false;
     sePastEvents = false;
-    player.seek(Math.max(0, Math.round(frame)));
+    rebuildSe(frame);
 }
 
 function seSeekDomain(): number {
@@ -1420,6 +1433,7 @@ function tick(): void {
         $("clip-flash").hidden =
             !(clipFlash && performance.now() - clipFlash < 700);
         seViz?.draw(s, null, pos, false);
+        seSourceLoopViz?.draw(s);
         seSequenceViz?.draw(
             s, info?.loop?.count === 0 && seCfg.loop, seCfg.exact);
         return;
@@ -2022,6 +2036,8 @@ async function enterPlayer(s: DiscSession): Promise<void> {
                     $<HTMLCanvasElement>("se-slots"),
                     $<HTMLCanvasElement>("se-wave"));
     seSequenceViz = new SeSequenceViz($<HTMLCanvasElement>("se-events"));
+    seSourceLoopViz = new SeSourceLoopViz(
+        $<HTMLCanvasElement>("se-source-loops"));
     /* no audio yet: the whole stack is built inside the first click/key
      * (ensurePlayer) so Safari associates the AudioContext with a gesture */
     $<HTMLButtonElement>("playbtn").disabled = false;

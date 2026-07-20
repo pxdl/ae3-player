@@ -18,13 +18,15 @@ decode, waveform/spectrogram transport, raw `.x`, and WAV export. SE includes
 exact or console-tick request timing, caller volume, gaussian/bright
 resampling, reverb, transport and event-score seeking, a 48-voice grid, a live
 output waveform, and a 480 Hz bytecode score with command values and sample,
-noise, source-loop, and reverb-source markers. It reports event-track/cycle
-duration separately from measured audible completion and authored
-source-envelope lifetime. Infinite stream jumps can loop or execute once;
-sample loops remain identified even when their envelopes are technically
-finite. Velocity-zero voice-stop requests are labeled as control-only rather
-than silent effects. WAV export offers one pass or 10/30/60-second caps,
-alongside raw `.hd`/`.bd` bank export.
+noise, source-loop, and reverb-source markers. A separate live source-loop
+panel gives every active looped SE voice its own stable slot row, intro/loop
+boundaries, decoder phase and seam count, plus an ADSR display that continues
+across source seams. It reports event-track/cycle duration separately from
+measured audible completion and authored source-envelope lifetime. Infinite
+stream jumps can loop or execute once; sample loops remain identified even when
+their envelopes are technically finite. Velocity-zero voice-stop requests are
+labeled as control-only rather than silent effects. WAV export offers one pass
+or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
 
 The app is a PWA: after the first visit its code works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left

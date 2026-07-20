@@ -686,6 +686,7 @@ button.ex-row:disabled {
     margin-left: 8px;
 }
 #se-slots { height: 68px; }
+#se-source-loops { height: 54px; }
 #se-wave { height: 112px; }
 #se-events {
     height: 250px;
@@ -876,4 +877,58 @@ button.ex-row:disabled {
 #monkey-tv-picker-link:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 4px;
+}
+
+@media (max-width: 600px) {
+    html, body { overflow: hidden; }
+    #app {
+        width: 100%;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    #side {
+        width: 100%;
+        height: 36vh;
+        min-height: 250px;
+    }
+    #side h1 { padding-block: 8px 6px; }
+    #side-foot { padding-block: 6px; }
+    #main {
+        width: 100%;
+        min-height: 0;
+    }
+    #head, #s-head, #se-head {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px;
+    }
+    #now, #s-now, #se-now { min-width: 140px; }
+    #dials, #dials-s, #dials-se {
+        order: 3;
+        flex: 1 1 100%;
+        overflow-x: auto;
+    }
+    #bar, #s-bar, #se-bar { margin-inline: 10px; }
+    #stage, #s-stage, #se-stage { margin-inline: 10px; }
+    #se-info { padding-inline: 10px; }
+    .se-viz-title {
+        line-height: 1.4;
+        overflow-wrap: break-word;
+    }
+    .se-viz-title span {
+        display: block;
+        margin-inline-start: 0;
+    }
+    #foot {
+        padding: 6px 10px 8px;
+        overflow: hidden;
+    }
+    #foot-stats {
+        white-space: normal;
+        font-size: 9px;
+    }
+    #foot-main {
+        flex-direction: column;
+        gap: 4px;
+    }
 }

@@ -162,6 +162,10 @@
             <canvas id="se-slots"></canvas>
           </div>
           <div class="se-viz-panel">
+            <div class="se-viz-title">LIVE SOURCE LOOPS <span>intro &middot; embedded loop &middot; decoder phase &middot; continuous envelope</span></div>
+            <canvas id="se-source-loops"></canvas>
+          </div>
+          <div class="se-viz-panel">
             <div class="se-viz-title">ROLLING OUTPUT WAVEFORM</div>
             <canvas id="se-wave" title="Rolling live output; use the transport bar above to seek"></canvas>
           </div>
@@ -289,6 +293,17 @@
             60&nbsp;Hz tick, once their envelope has fallen below 2. This game's
             music peaks at 31 of 48 voices (33 on the tick clock), so it never
             actually drops a note.</p>
+          </section>
+          <section>
+            <h2>SE source loops <small>(the live source-loop rows)</small></h2>
+            <p>An SE request can repeat its 480&nbsp;Hz bytecode stream while each
+            hardware voice independently loops its own ADPCM source and advances
+            its own ADSR envelope. The live rows use decoder state, not wall time:
+            the source marker jumps from the waveform end to its embedded loop
+            start and the seam count rises, while the envelope bar continues
+            without restarting. These rows are a monitor, not a seek control.
+            The request bar and <code>STREAM JUMP</code> remain separate
+            request-level coordinates.</p>
           </section>
           <section>
             <h2>Looping <small>(key L)</small></h2>

@@ -1,4 +1,7 @@
-import { RATE, type Snapshot } from "./player.ts";
+import {
+    RATE, VoiceEnvelopePhase, VoiceField, VoiceSourceKind, VOICE_STATE_SIZE,
+    type Snapshot,
+} from "./player.ts";
 import type { SeBytecodeEvent, SeRequestInfo } from "./se.ts";
 
 const BG = "#101116";
@@ -11,6 +14,28 @@ const GOLD = "#ffc440";
 const GREEN = "#6f9a76";
 const BLUE = "#6e93b8";
 const PURPLE = "#a88ac2";
+
+const MONO_9 = "9px 'SFMono-Regular', Menlo, monospace";
+const MONO_10 = "10px 'SFMono-Regular', Menlo, monospace";
+const ENV_PHASE_LABELS = ["A", "D", "S", "R", "\u2013"] as const;
+
+function canvasContext(canvas: HTMLCanvasElement): {
+    ctx: CanvasRenderingContext2D; w: number; h: number;
+} | null {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (!w || !h) return null;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width = pw;
+        canvas.height = ph;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+}
 
 function commandLabel(event: SeBytecodeEvent): string {
     const command = event.command ?? 0;
@@ -42,6 +67,151 @@ function durationLabel(frames: number): string {
     if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)}h`;
     if (seconds >= 60) return `${(seconds / 60).toFixed(1)}m`;
     return secondsLabel(seconds);
+}
+
+/** Live monitor for the independent PS-ADPCM loop owned by each active SE
+ * voice. Coordinates come only from the packed synth snapshot. */
+export class SeSourceLoopViz {
+    private readonly canvas: HTMLCanvasElement;
+    private rows = -1;
+    private rebuilding = false;
+
+    constructor(canvas: HTMLCanvasElement) {
+        this.canvas = canvas;
+        this.resizeRows(0);
+    }
+
+    clear(): void {
+        this.rebuilding = true;
+        this.draw(null);
+    }
+
+    draw(snapshot: Snapshot | null): void {
+        let rows = 0;
+        if (snapshot) {
+            const voices = snapshot.voices;
+            for (let slot = 0; slot < 48; slot++) {
+                const base = slot * VOICE_STATE_SIZE;
+                if (this.isLoopRow(voices, base)) rows++;
+            }
+            this.rebuilding = false;
+        }
+        this.resizeRows(rows);
+        const surface = canvasContext(this.canvas);
+        if (!surface) return;
+        const { ctx, w, h } = surface;
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, w, h);
+        if (!snapshot || rows === 0) {
+            ctx.fillStyle = DIM;
+            ctx.font = MONO_10;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(
+                this.rebuilding
+                    ? "REBUILDING LIVE SOURCE STATE"
+                    : "NO LIVE LOOPED SOURCE VOICES",
+                w / 2, h / 2,
+            );
+            return;
+        }
+
+        let row = 0;
+        const voices = snapshot.voices;
+        for (let slot = 0; slot < 48; slot++) {
+            const base = slot * VOICE_STATE_SIZE;
+            if (!this.isLoopRow(voices, base)) continue;
+            this.drawRow(ctx, w, row++, slot, voices, base);
+        }
+    }
+
+    private resizeRows(rows: number): void {
+        if (rows === this.rows) return;
+        this.rows = rows;
+        this.canvas.style.height = `${rows === 0 ? 54 : rows * 62}px`;
+    }
+
+    private isLoopRow(voices: Float64Array, base: number): boolean {
+        const flags = voices[base + VoiceField.Flags]!;
+        const samples = voices[base + VoiceField.SourceSamples]!;
+        const loopStart = voices[base + VoiceField.SourceLoopStart]!;
+        return !!(flags & 2)
+            && voices[base + VoiceField.SeProgram] !== 0xff
+            && voices[base + VoiceField.SourceKind] === VoiceSourceKind.Looped
+            && samples > 0
+            && loopStart >= 0
+            && loopStart < samples
+            && voices[base + VoiceField.SourcePhaseQ12]! >= 0;
+    }
+
+    private drawRow(
+        ctx: CanvasRenderingContext2D,
+        width: number,
+        row: number,
+        slot: number,
+        voices: Float64Array,
+        base: number,
+    ): void {
+        const y = row * 62;
+        const samples = voices[base + VoiceField.SourceSamples]!;
+        const loopStart = voices[base + VoiceField.SourceLoopStart]!;
+        const phase = voices[base + VoiceField.SourcePhaseQ12]! / 4096;
+        const env = voices[base + VoiceField.Envelope]!;
+        const envPhase = voices[base + VoiceField.EnvelopePhase]!;
+        const program = voices[base + VoiceField.SeProgram]!;
+        const key = voices[base + VoiceField.Key]!;
+        const waveform = voices[base + VoiceField.Waveform]!;
+        const loops = voices[base + VoiceField.SourceLoops]!;
+        const left = 8, right = width - 8;
+        const laneW = Math.max(1, right - left);
+        const split = left + loopStart / samples * laneW;
+        const marker = left + Math.max(0, Math.min(1, phase / samples)) * laneW;
+
+        if (row > 0) {
+            ctx.fillStyle = GRID;
+            ctx.fillRect(left, y, laneW, 1);
+        }
+        ctx.font = MONO_10;
+        ctx.textBaseline = "top";
+        ctx.textAlign = "left";
+        ctx.fillStyle = TEXT;
+        ctx.fillText(
+            `V${slot.toString().padStart(2, "0")}  P${program.toString().padStart(2, "0")} `
+            + `K${key.toString().padStart(2, "0")}  W${waveform}`,
+            left, y + 5,
+        );
+        ctx.textAlign = "right";
+        ctx.fillStyle = GOLD;
+        ctx.fillText(`\u00D7${loops}`, right, y + 5);
+
+        ctx.fillStyle = "#242731";
+        ctx.fillRect(left, y + 20, Math.max(1, split - left), 12);
+        ctx.fillStyle = "rgba(110, 147, 184, 0.34)";
+        ctx.fillRect(split, y + 20, Math.max(1, right - split), 12);
+        ctx.strokeStyle = BLUE;
+        ctx.strokeRect(split + 0.5, y + 20.5, Math.max(0, right - split - 1), 11);
+        ctx.fillStyle = "#f4f6fb";
+        ctx.fillRect(Math.round(marker) - 1, y + 17, 2, 18);
+
+        ctx.font = MONO_9;
+        ctx.fillStyle = DIM;
+        ctx.textAlign = "left";
+        ctx.fillText(`INTRO [0,${loopStart})`, left, y + 34);
+        ctx.fillStyle = BLUE;
+        ctx.textAlign = "right";
+        ctx.fillText(`LOOP [${loopStart},${samples})`, right, y + 34);
+
+        const envLabel = ENV_PHASE_LABELS[envPhase]
+            ?? (envPhase === VoiceEnvelopePhase.Off ? "\u2013" : "?");
+        ctx.fillStyle = DIM;
+        ctx.textAlign = "left";
+        ctx.fillText(`ENV ${envLabel}`, left, y + 49);
+        const envX = left + 42, envW = Math.max(1, right - envX);
+        ctx.fillStyle = "#242731";
+        ctx.fillRect(envX, y + 49, envW, 7);
+        ctx.fillStyle = PURPLE;
+        ctx.fillRect(envX, y + 49, Math.max(0, Math.min(1, env / 32767)) * envW, 7);
+    }
 }
 
 /** Event-score view for one embedded SE request. Unlike the BGM piano roll,
@@ -78,21 +248,6 @@ export class SeSequenceViz {
         this.draw(null, false, this.exact);
     }
 
-    private context(): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
-        const w = this.canvas.clientWidth;
-        const h = this.canvas.clientHeight;
-        if (!w || !h) return null;
-        const dpr = Math.min(devicePixelRatio || 1, 2);
-        const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
-        if (this.canvas.width !== pw || this.canvas.height !== ph) {
-            this.canvas.width = pw;
-            this.canvas.height = ph;
-        }
-        const ctx = this.canvas.getContext("2d");
-        if (!ctx) return null;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        return { ctx, w, h };
-    }
 
     /** Map a pointer coordinate onto the currently displayed event domain. */
     frameAt(clientX: number): number | null {
@@ -135,7 +290,7 @@ export class SeSequenceViz {
 
     draw(snapshot: Snapshot | null, looping: boolean, exact = true): void {
         this.exact = exact;
-        const surface = this.context();
+        const surface = canvasContext(this.canvas);
         if (!surface) return;
         const { ctx, w, h } = surface;
         ctx.fillStyle = BG;
