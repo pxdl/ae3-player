@@ -694,6 +694,11 @@ function seIsStopOnly(info: SeRequestInfo): boolean {
     return starts === 0 && stops > 0 && info.controls === 0 && !info.loop;
 }
 
+function seHasLingeringSource(info: SeRequestInfo): boolean {
+    return info.loopingVoices > 0
+        && seSourceEndFrames(info) > seEventFrames(info) + RATE / 10;
+}
+
 function seDurationLabel(info: SeRequestInfo): string {
     const { stops } = seNoteCounts(info);
     if (seIsStopOnly(info))
@@ -705,9 +710,8 @@ function seDurationLabel(info: SeRequestInfo): string {
         return `stream ∞ · ${time} cycle`;
     if (info.sustained)
         return `source loop ∞ · ${time} events`;
-    const sourceEnd = seSourceEndFrames(info);
-    if (info.loopingVoices && sourceEnd > frames + RATE / 10)
-        return `source loop · envelope ≈${fmtSeTime(sourceEnd)}`;
+    if (seHasLingeringSource(info))
+        return `source loop · ${time} events`;
     return info.loop
         ? `${time} events · repeat ×${info.loop.count}`
         : `${time} events`;
@@ -1008,6 +1012,9 @@ function renderSeLength(): void {
             `∞ · ${fmtSeTime(loop.cycle)} stream cycle`;
     } else if (info.sustained) {
         $("se-len").textContent = "∞ · non-decaying source";
+    } else if (seHasLingeringSource(info)) {
+        $("se-len").textContent =
+            `${fmtSeTime(seEventFrames(info))} event track · source loop`;
     } else if (seKnownFrames !== null) {
         $("se-len").textContent =
             `${seKnownEstimated ? "≈" : ""}${fmtSeTime(seKnownFrames)} audio`;
@@ -1016,11 +1023,14 @@ function renderSeLength(): void {
     } else {
         $("se-len").textContent = `${fmtSeTime(seEventFrames(info))} events`;
     }
+    const sourceSeek = info !== null && seHasLingeringSource(info);
     const seekLimited = seSeekDomain() > SE_SEEK_LIMIT;
     $("se-bar").classList.toggle("seek-limited", seekLimited);
     $("se-bar").title = seekLimited
         ? "This source exceeds the five-minute rebuild/fast-forward seek limit; click the event score to seek its authored commands"
-        : "Click to seek within the audible request or displayed stream cycle";
+        : sourceSeek
+            ? "Click to seek within the authored event track; the source loop continues afterward"
+            : "Click to seek within the audible request or displayed stream cycle";
 }
 function renderSeInfo(): void {
     if (!sePlaying) return;
@@ -1140,6 +1150,8 @@ function seSeekDomain(): number {
     if (!info) return RATE / 4;
     if (info.loop?.count === 0 && seCfg.loop)
         return seLoopFrames(info)!.end;
+    if (seHasLingeringSource(info))
+        return Math.max(RATE / 4, seEventFrames(info));
     return seKnownFrames
         ?? Math.max(seEventFrames(info), seSourceEndFrames(info));
 }
@@ -1275,7 +1287,7 @@ function tick(): void {
             renderSeInfo();
         }
         let display = pos;
-        let duration = seKnownFrames ?? Math.max(eventFrames, RATE / 4);
+        let duration = seSeekDomain();
         if (info?.loop?.count === 0 && seCfg.loop) {
             const loop = seLoopFrames(info)!;
             const cycle = Math.max(100, loop.cycle);
@@ -1767,6 +1779,10 @@ async function main(): Promise<void> {
         }
         const rect = $("se-bar").getBoundingClientRect();
         seekSe((e.clientX - rect.left) / rect.width * domain);
+    };
+    $("se-events").onclick = (e) => {
+        const frame = seSequenceViz?.frameAt(e.clientX);
+        if (frame !== null && frame !== undefined) seekSe(frame);
     };
     $("se-exportbtn").onclick = (e) => {
         e.stopPropagation();
