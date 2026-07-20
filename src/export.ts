@@ -24,6 +24,7 @@ export interface SeExportOpts {
     bank: number;
     request: number;
     seconds: number;
+    loop: boolean;
 }
 
 const base = import.meta.env.BASE_URL;
@@ -126,7 +127,7 @@ export class Exporter {
             volume: o.volume,
             revDepth: withRev ? o.revDepth : null,
             exact: o.exact, bright: o.bright,
-            bank: o.bank, request: o.request, seconds: o.seconds,
+            bank: o.bank, request: o.request, seconds: o.seconds, loop: o.loop,
         };
         this.worker.postMessage({ t: "se-render", files, opts },
             [assets.hd.buffer, assets.bd.buffer,

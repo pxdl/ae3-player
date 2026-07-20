@@ -19,6 +19,38 @@ export interface SeBankEntry {
 export interface SeCatalog { v: 1; entries: SeBankEntry[]; }
 export interface SeBankFiles { hd: Uint8Array; bd: Uint8Array; }
 
+export interface SeBytecodeEvent {
+    tick: number;
+    offset: number;
+    kind: "note" | "off" | "control" | "loop";
+    key?: number;
+    velocity?: number;
+    program?: number;
+    command?: number;
+    args?: number[];
+}
+
+export interface SeLoopInfo {
+    startTick: number;
+    endTick: number;
+    cycleTicks: number;
+    count: number;
+}
+
+export interface SeRequestInfo {
+    durationTicks: number;
+    notes: number;
+    controls: number;
+    loop: SeLoopInfo | null;
+    events: SeBytecodeEvent[];
+}
+
+export interface SeInspection {
+    requests: Uint16Array;
+    details: (SeRequestInfo | null)[][];
+    ticksPerSecond: number;
+}
+
 export class SeStore {
     private cache: OpfsCache | null;
     private vfi: Vfi | null;
@@ -146,7 +178,7 @@ export class SeInspector {
     private worker: Worker | null = null;
     private seq = 0;
     private pending = new Map<number, {
-        resolve: (value: Uint16Array) => void;
+        resolve: (value: SeInspection) => void;
         reject: (error: Error) => void;
     }>();
 
@@ -161,7 +193,7 @@ export class SeInspector {
             if (!pending) return;
             this.pending.delete(message.id);
             if (message.t === "error") pending.reject(new Error(message.message));
-            else pending.resolve(message.requests);
+            else pending.resolve(message.inspection);
         };
         this.worker.onerror = (event) => {
             const error = new Error(event.message || "SE inspector worker failed");
@@ -171,9 +203,9 @@ export class SeInspector {
         return this.worker;
     }
 
-    inspect(files: SeBankFiles): Promise<Uint16Array> {
+    inspect(files: SeBankFiles): Promise<SeInspection> {
         const id = ++this.seq;
-        const { promise, resolve, reject } = Promise.withResolvers<Uint16Array>();
+        const { promise, resolve, reject } = Promise.withResolvers<SeInspection>();
         this.pending.set(id, { resolve, reject });
         this.ensure().postMessage({ t: "se-inspect", id, files },
                                   [files.hd.buffer, files.bd.buffer]);

@@ -76,7 +76,7 @@ export class PlayerEngine {
         s.setReverbDepth(c.revDepth);
         s.setEventTiming(c.exact);
         s.setGaussian(c.gaussian);
-        if (kind !== "se") s.setLoop(c.loop);
+        s.setLoop(c.loop);
         s.setSongVolume(c.songvol);
         if (kind !== "se" && c.cueOn) {
             /* Fresh instance: duck levels restart from 1.0, like bgmplay

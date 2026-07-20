@@ -64,7 +64,8 @@ export async function renderWavFile(wasmSource, files, opts, onprogress) {
 }
 
 /* Embedded SE export follows serender: one selected bank/request, caller
- * volume, no synthetic tail. Infinite B0 60 streams stop at opts.seconds. */
+ * volume, no synthetic tail. The host chooses whether count=0 authored jumps
+ * loop; opts.seconds remains the hard safety/output cap. */
 export async function renderSeWavFile(wasmSource, files, opts, onprogress) {
     const s = await AE3Synth.instantiate(wasmSource);
     try {
@@ -73,6 +74,7 @@ export async function renderSeWavFile(wasmSource, files, opts, onprogress) {
         if (files.irx) s.loadPitchIrx(files.irx);
         s.loadBank(files.hd, files.bd);
         s.loadSe(opts.bank, opts.request);
+        s.setLoop(opts.loop ? 0x7f : 0);
         if (files.libsd) s.loadReverbIrx(files.libsd);
         if (opts.revDepth != null) s.setReverbDepth(opts.revDepth);
         const volume = opts.volume ?? 64;

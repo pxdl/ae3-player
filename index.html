@@ -110,8 +110,8 @@
             <h2>STREAMED AUDIO</h2>
             <p>The disc carries 1158 streamed tracks &mdash; monkey-phone calls,
             cutscene voice-over, minigame speech and music &mdash; 341&nbsp;MB of
-            <code>sound/stream</code> data. Extract them once from your own disc
-            into this browser's private storage, like the music assets.</p>
+            <code>sound/stream</code> data. The first visit starts extraction
+            automatically when this tab opens; files stay in private browser storage.</p>
             <button id="s-extract">extract streams (341 MB)</button>
             <label id="s-iso-pick" hidden>
               <input id="s-iso" type="file" accept=".iso" />
@@ -128,16 +128,25 @@
           <button id="se-playbtn" title="Play/pause (Space)" disabled><span>&#9654;</span></button>
           <div id="se-now">
             <div id="se-name">&mdash;</div>
-            <div id="se-time"><span id="se-cur">0:00.0</span> / <span id="se-len">&le; 0:10.0</span>
+            <div id="se-time"><span id="se-cur">0:00.0</span> / <span id="se-len">&mdash;</span>
               <span id="se-coord"></span></div>
           </div>
           <div id="dials-se">
             <button class="dial" id="se-vol" title="Caller volume, 1–127 (- and =)">VOL 64</button>
+            <button class="dial" id="se-loop" title="Follow an authored infinite jump, or let the request play through once (L)">LOOP &mdash;</button>
             <button class="dial on" id="se-timing" title="Exact 480 Hz bytecode timing vs console 60 Hz quantization (T)">EXACT</button>
             <button class="dial on" id="se-kernel" title="SPU2 gaussian kernel vs brighter interpolation (G)">GAUSS</button>
             <button class="dial on" id="se-rev" title="Hardware reverb depth 30; cue flags decide whether a voice enters the bus (R)">REV 30</button>
           </div>
-          <button id="se-exportbtn" title="Render this assembled request to WAV (E)" disabled>EXPORT WAV</button>
+          <div id="se-export-wrap">
+            <button id="se-exportbtn" title="Render this assembled request to WAV (E)" disabled>EXPORT WAV</button>
+            <div id="se-export-menu" hidden>
+              <button class="ex-row" id="se-ex-once">PLAY ONCE</button>
+              <button class="ex-row" id="se-ex-10">AUTHORED LOOP &middot; 10 SECONDS</button>
+              <button class="ex-row" id="se-ex-30">AUTHORED LOOP &middot; 30 SECONDS</button>
+              <button class="ex-row" id="se-ex-60">AUTHORED LOOP &middot; 60 SECONDS</button>
+            </div>
+          </div>
           <button id="se-bankbtn" title="Save this bank's raw .hd/.bd pair" disabled>EXPORT BANK</button>
         </header>
         <div id="se-bar">
@@ -148,15 +157,16 @@
         <div id="se-stage" hidden>
           <canvas id="se-null" hidden></canvas>
           <canvas id="se-slots"></canvas>
-          <canvas id="se-wave"></canvas>
+          <canvas id="se-events"></canvas>
         </div>
         <div id="se-setup" hidden>
           <div id="se-setup-card">
             <h2>SEQUENCED SOUND EFFECTS</h2>
             <p>The disc carries 101 embedded sound banks: 2,699 assembled
             requests built from shared PS-ADPCM waveforms, positional programs,
-            and the game's 480&nbsp;Hz <code>seseq</code> bytecode. Extract the
-            20&nbsp;MB bank set once into this browser's private storage.</p>
+            and the game's 480&nbsp;Hz <code>seseq</code> bytecode. The first
+            visit extracts the 20&nbsp;MB bank set automatically when this tab
+            opens, into private browser storage.</p>
             <button id="se-extract">extract SE banks (20 MB)</button>
             <label id="se-iso-pick" hidden>
               <input id="se-iso" type="file" accept=".iso" />

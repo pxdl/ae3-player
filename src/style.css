@@ -238,7 +238,7 @@ button, #songlist, #bar {
 #loopx { margin-left: 10px; color: var(--good); }
 
 /* ---- export dropdown + help button -------------------------------------- */
-#export-wrap, #bank-wrap { position: relative; flex: none; }
+#export-wrap, #bank-wrap, #se-export-wrap { position: relative; flex: none; }
 #exportbtn, #midibtn, #bankbtn {
     padding: 5px 10px;
     font-size: 11px;
@@ -248,7 +248,7 @@ button, #songlist, #bar {
 }
 #midibtn, #bankbtn { flex: none; }
 #exportbtn:disabled { color: var(--dim); cursor: default; }
-#export-menu, #bank-menu {
+#export-menu, #bank-menu, #se-export-menu {
     position: absolute;
     top: calc(100% + 4px);
     right: 0;
@@ -262,7 +262,7 @@ button, #songlist, #bar {
     flex-direction: column;
     gap: 2px;
 }
-#export-menu[hidden], #bank-menu[hidden] { display: none; }
+#export-menu[hidden], #bank-menu[hidden], #se-export-menu[hidden] { display: none; }
 .ex-row {
     display: flex;
     gap: 4px;
@@ -277,6 +277,11 @@ button.ex-row, .ex-row > button {
     text-align: left;     /* buttons center by UA default; keep rows uniform */
 }
 button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
+button.ex-row:disabled {
+    color: var(--dim);
+    background: transparent;
+    cursor: default;
+}
 #ex-loop { flex: 1; }
 #ex-dec, #ex-inc {
     width: 26px;
@@ -633,7 +638,7 @@ button.ex-row:hover, .ex-row > button:hover { background: #3c4254; }
 }
 #se-stage[hidden], #se-null[hidden] { display: none; }
 #se-slots { flex: none; height: 58px; }
-#se-wave { flex: 1; min-height: 160px; }
+#se-events { flex: 1; min-height: 190px; }
 #se-stage canvas {
     display: block;
     width: 100%;

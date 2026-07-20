@@ -22,9 +22,9 @@ onmessage = async (e) => {
             return;
         }
         if (m.t === "se-inspect") {
-            const requests = await inspectSeBank(wasmBytes, m.files);
-            postMessage({ t: "se-inspect-done", id: m.id, requests },
-                        [requests.buffer]);
+            const inspection = await inspectSeBank(wasmBytes, m.files);
+            postMessage({ t: "se-inspect-done", id: m.id, inspection },
+                        [inspection.requests.buffer]);
             return;
         }
         if (m.t === "stream") {

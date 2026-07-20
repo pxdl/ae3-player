@@ -16,8 +16,10 @@ piano roll, voice slots, waveform and clip meters, Worker-rendered WAV, raw
 MIDI, bank-pair, and decoded sample-kit export. Streams include pad-aware
 decode, waveform/spectrogram transport, raw `.x`, and WAV export. SE includes
 exact or console-tick request timing, caller volume, gaussian/bright
-resampling, reverb, voice/wave views, ten-second-capped assembled WAV export,
-and raw `.hd`/`.bd` bank export.
+resampling, reverb, a 48-voice grid, and a 480 Hz bytecode event score with
+measured sequence/cycle durations. Authored infinite requests can loop or play
+once; WAV export offers one pass or 10/30/60-second loop captures, alongside
+raw `.hd`/`.bd` bank export.
 
 The app is a PWA: after the first visit its code works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
