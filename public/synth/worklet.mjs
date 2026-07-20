@@ -21,6 +21,8 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
         this.peakL = 0;
         this.peakR = 0;
         this.wasDone = false;
+        this.commands = [];
+        this.draining = false;
         /* waveform history: one min/max/clip column per 60 Hz tick (800
          * samples), like bgmplay's audio_cb -- finished columns ship with the
          * next snapshot as [lmin,lmax,rmin,rmax,clip] x n; the main thread
@@ -28,51 +30,80 @@ registerProcessor("ae3-player", class extends AudioWorkletProcessor {
          * returns silence while seeking), matching bgmplay's headless seek. */
         this.wcur = { lmin: 0, lmax: 0, rmin: 0, rmax: 0, clip: 0, n: 0 };
         this.wcols = [];
-        this.port.onmessage = (e) => { this.#onmessage(e.data); };
+        this.port.onmessage = (e) => { this.#enqueue(e.data); };
     }
 
-    async #onmessage(m) {
+    #enqueue(message) {
+        if (message.t === "seek") {
+            const pending = this.commands.at(-1);
+            if (pending?.t === "seek") {
+                pending.sample = message.sample;
+                return;
+            }
+        } else if (message.t === "load") {
+            this.commands = this.commands.filter(
+                (command) => command.t !== "seek");
+        }
+        this.commands.push(message);
+        if (!this.draining) void this.#drain();
+    }
+
+    async #drain() {
+        this.draining = true;
         try {
-            switch (m.t) {
-            case "init": {
-                /* m.module: wasm BYTES, compiled here. Chrome silently drops
-                 * a postMessage'd WebAssembly.Module on the way into an
-                 * AudioWorkletGlobalScope (no error, no delivery -- measured
-                 * 2026-07-18), so the compile-on-main-thread plan does not
-                 * work; bytes clone fine. A precompiled Module is still
-                 * accepted for the Node gate, which drives PlayerEngine
-                 * directly anyway. */
-                const module = m.module instanceof WebAssembly.Module
-                    ? m.module
-                    : await WebAssembly.compile(m.module);
-                this.engine = new PlayerEngine(module);
-                this.port.postMessage({ t: "ready" });
-                break;
+            while (this.commands.length) {
+                const message = this.commands.shift();
+                try {
+                    await this.#handle(message);
+                } catch (e) {
+                    this.port.postMessage(
+                        { t: "error", message: String(e.message ?? e) });
+                }
             }
-            case "load": {
-                const { ppqn, events } = await this.engine.load(
-                    { kind: m.mode === "se" ? "se" : "bgm",
-                      hd: m.hd, bd: m.bd, mid: m.mid,
-                      bank: m.bank, request: m.request,
-                      irx: m.irx, libsd: m.libsd }, m.config);
-                this.wasDone = false;
-                this.wcur.n = 0;        /* bgmplay clears wcol on song load */
-                this.wcols.length = 0;
-                this.port.postMessage(
-                    { t: "loaded", ppqn, events,
-                      warning: this.engine.warning }, [events.buffer]);
-                break;
-            }
-            case "play":  this.engine.playing = true;  break;
-            case "pause": this.engine.playing = false; break;
-            case "seek":
-                await this.engine.seek(m.sample);
-                this.wasDone = false;
-                break;
-            case "set": this.engine.set(m.key, m.value); break;
-            }
-        } catch (e) {
-            this.port.postMessage({ t: "error", message: String(e.message ?? e) });
+        } finally {
+            this.draining = false;
+            if (this.commands.length) void this.#drain();
+        }
+    }
+
+    async #handle(m) {
+        switch (m.t) {
+        case "init": {
+            /* m.module: wasm BYTES, compiled here. Chrome silently drops
+             * a postMessage'd WebAssembly.Module on the way into an
+             * AudioWorkletGlobalScope (no error, no delivery -- measured
+             * 2026-07-18), so the compile-on-main-thread plan does not
+             * work; bytes clone fine. A precompiled Module is still
+             * accepted for the Node gate, which drives PlayerEngine
+             * directly anyway. */
+            const module = m.module instanceof WebAssembly.Module
+                ? m.module
+                : await WebAssembly.compile(m.module);
+            this.engine = new PlayerEngine(module);
+            this.port.postMessage({ t: "ready" });
+            break;
+        }
+        case "load": {
+            const { ppqn, events } = await this.engine.load(
+                { kind: m.mode === "se" ? "se" : "bgm",
+                  hd: m.hd, bd: m.bd, mid: m.mid,
+                  bank: m.bank, request: m.request,
+                  irx: m.irx, libsd: m.libsd }, m.config);
+            this.wasDone = false;
+            this.wcur.n = 0;        /* bgmplay clears wcol on song load */
+            this.wcols.length = 0;
+            this.port.postMessage(
+                { t: "loaded", ppqn, events,
+                  warning: this.engine.warning }, [events.buffer]);
+            break;
+        }
+        case "play":  this.engine.playing = true;  break;
+        case "pause": this.engine.playing = false; break;
+        case "seek":
+            await this.engine.seek(m.sample);
+            this.wasDone = false;
+            break;
+        case "set": this.engine.set(m.key, m.value); break;
         }
     }
 
