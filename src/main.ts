@@ -53,6 +53,7 @@ export interface ViewerTransport {
     progress: number;
     playing: boolean;
     loading: boolean;
+    canExport: boolean;
     exporting: boolean;
     status: string;
     error: boolean;
@@ -1842,6 +1843,20 @@ export function viewerSetup(): ViewerSetup | null {
     return { label, detail, progress };
 }
 
+function viewerCanExport(): boolean {
+    if (!session) return false;
+    if (tab === "bgm")
+        return !loading && playingIdx >= 0 && sel === playingIdx
+            && session.songs[playingIdx] !== undefined;
+    if (tab === "streams") {
+        const stream = sPlayer.decoded();
+        return !sLoading && stream !== null && stream.name === sPlayingName;
+    }
+    const selected = seRows[seSel];
+    return !seLoading && selected?.kind === "cue" && sePlaying !== null
+        && sameSeRow(selected, sePlaying);
+}
+
 export function viewerTransport(): ViewerTransport {
     let title = "";
     let current = 0;
@@ -1877,6 +1892,7 @@ export function viewerTransport(): ViewerTransport {
         progress: duration > 0 ? Math.min(current / duration, 1) : 0,
         playing: isPlaying,
         loading: isLoading,
+        canExport: viewerCanExport(),
         exporting: exporter.busy || sBusy || seBusy,
         status: $("status").textContent ?? "",
         error: $("status").classList.contains("err"),
@@ -1969,6 +1985,8 @@ export function viewerSeek(ratio: number): void {
 }
 
 export function viewerExport(): void {
+    const state = viewerTransport();
+    if (!state.canExport || state.exporting) return;
     if (tab === "streams") void sExport();
     else if (tab === "se") void exportSeCue(false);
     else void exportWav("current");

@@ -128,7 +128,7 @@ function broadcastTransport(selected: ViewerItem | null): string {
         <span class="time-readout"><b data-current-time>${formatTime(state.current)}</b> /
             <span data-duration>${formatTime(state.duration)}</span></span>
         <button type="button" class="export-action" data-action="export"
-            ${state.title ? "" : "disabled"}>${icon("download")} Export</button>
+            ${state.canExport && !state.exporting ? "" : "disabled"}>${icon("download")} Export</button>
     </section>`;
 }
 
@@ -193,7 +193,7 @@ function viewerMarkup(): string {
                 ${selected ? "" : "disabled"}>${icon(transportState.playing ? "pause" : "play")}
                 ${selected?.kind === "group" ? "Open bank" : transportState.playing ? "Pause transmission" : "Play transmission"}</button>
                 <button type="button" class="round-action" data-action="export"
-                    aria-label="Export current asset" ${transportState.title ? "" : "disabled"}>${icon("download")}</button></div>`;
+                    aria-label="Export current asset" ${transportState.canExport && !transportState.exporting ? "" : "disabled"}>${icon("download")}</button></div>`;
     const channelNumber =
         library.channel === "music" ? "01" : library.channel === "streams" ? "02" : "03";
     const channels: ReadonlyArray<{ label: string; channel: ViewerChannel }> = [
@@ -268,14 +268,14 @@ function updateFunctionalUi(now: number): void {
     }
     viewerRoot.querySelectorAll<HTMLElement>("[data-player-title]")
         .forEach((element) => { element.textContent = state.title || "Waiting for signal"; });
-    const nextExportUiKey = `${state.exporting}:${state.title}`;
+    const nextExportUiKey = `${state.exporting}:${state.canExport}:${state.title}`;
     if (nextExportUiKey !== exportUiKey) {
         viewerRoot.querySelectorAll<HTMLButtonElement>("[data-action='export']").forEach((button) => {
             const roundButton = button.classList.contains("round-action");
             button.innerHTML = roundButton
                 ? icon("download")
                 : `${icon("download")} ${state.exporting ? "Exporting…" : "Export"}`;
-            button.disabled = state.exporting || !state.title;
+            button.disabled = state.exporting || !state.canExport;
             button.setAttribute("aria-busy", String(state.exporting));
             button.setAttribute("aria-label", state.exporting
                 ? `Exporting ${state.title}` : `Export ${state.title}`);
