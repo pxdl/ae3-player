@@ -1,0 +1,49 @@
+ae3-player third-party notices
+================================
+
+The ae3-player source code is licensed under the MIT License except where an
+individual file says otherwise. The optional Cinema conversion engine contains
+separately licensed software. It is downloaded only after a user first prepares
+or converts a movie; it is not part of the initial PWA precache.
+
+No Ape Escape 3 game data is included in this distribution.
+
+@ffmpeg/core 0.12.10
+-------------------
+License: GNU General Public License, version 2 or any later version
+Package: https://www.npmjs.com/package/@ffmpeg/core/v/0.12.10
+License text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+This single-thread WebAssembly build contains FFmpeg and GPL components,
+including x264/x265. It is used as a separate command-line conversion program
+through the MIT-licensed @ffmpeg/ffmpeg message API. The rest of ae3-player
+remains MIT-licensed; the deployed distribution also conveys this GPL program
+under the GPL terms above.
+
+Complete build source and scripts for the exact published package revision:
+https://github.com/ffmpegwasm/ffmpeg.wasm/tree/794b84884f1e23cb6241689b3563190d138bbd9a
+Archive:
+https://github.com/ffmpegwasm/ffmpeg.wasm/archive/794b84884f1e23cb6241689b3563190d138bbd9a.tar.gz
+
+The source link and archive must remain available alongside every deployment
+that conveys ffmpeg-core-CgUfceKH.wasm or a successor build. When the package is
+updated, update this notice to the new exact source revision and retain the old
+source for as long as the old binary remains distributed or cached.
+
+@ffmpeg/ffmpeg 0.12.15 and @ffmpeg/util 0.12.2
+------------------------------------------------
+License: MIT
+Source: https://github.com/ffmpegwasm/ffmpeg.wasm
+Copyright: Jerome Wu and ffmpeg.wasm contributors
+
+Mediabunny 1.50.9
+-----------------
+License: Mozilla Public License 2.0
+License text: https://www.mozilla.org/MPL/2.0/
+Exact source: https://github.com/Vanilagy/mediabunny/tree/v1.50.9
+Source archive: https://github.com/Vanilagy/mediabunny/archive/refs/tags/v1.50.9.tar.gz
+Copyright: Vanilagy and Mediabunny contributors
+
+The deployed movie-converter JavaScript contains unmodified compiled portions
+of Mediabunny. The corresponding Source Code Form is available at the exact
+source link above under MPL-2.0.

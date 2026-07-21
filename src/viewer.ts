@@ -3,19 +3,26 @@ import { loadViewerArt } from "./viewer-assets.ts";
 import type { ViewerArt } from "./viewer-assets.ts";
 import {
     viewerActivate,
+    viewerBindMovieVideo,
+    viewerCancelMovieWork,
     viewerChooseDisc,
     viewerExport,
+    viewerExportMovie,
     viewerLibrary,
+    viewerMeterLevels,
+    viewerMovieDetails,
     viewerMove,
+    viewerPrepareMovie,
+    viewerRemoveMovie,
     viewerSeek,
     viewerSetup,
     viewerSwitchChannel,
     viewerTogglePlayback,
     viewerTransport,
-    viewerMeterLevels,
     viewerVersion,
 } from "./main.ts";
 import type { ViewerChannel, ViewerItem, ViewerLibrary } from "./main.ts";
+import type { MovieExportKind } from "./movies.ts";
 
 let viewerArt: ViewerArt | null = null;
 let artDiscAttempt = "";
@@ -71,15 +78,22 @@ function escapeHtml(value: string): string {
 }
 
 function broadcastGuide(library: ViewerLibrary): string {
+    let previousGroup = "";
     const rows = library.items.length
-        ? `${library.items.map((item, index) => `<button type="button"
-            class="track-row${item.kind === "group" ? " group-row" : ""}"
-            data-track="${encodeURIComponent(item.id)}"
-            aria-current="${item.id === library.selectedId ? "true" : "false"}">
-            <span class="track-index">${String(index + 1).padStart(2, "0")}</span>
-            <span class="track-copy"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span>
-            <span class="track-duration">${item.duration === null ? item.kind === "group" ? "OPEN" : "—" : formatTime(item.duration)}</span>
-        </button>`).join("")}
+        ? `${library.items.map((item, index) => {
+            const heading = item.group && item.group !== previousGroup
+                ? `<div class="guide-group" data-guide-group>${escapeHtml(item.group)}</div>`
+                : "";
+            previousGroup = item.group ?? previousGroup;
+            return `${heading}<button type="button"
+                class="track-row${item.kind === "group" ? " group-row" : ""}"
+                data-track="${encodeURIComponent(item.id)}"
+                aria-current="${item.id === library.selectedId ? "true" : "false"}">
+                <span class="track-index">${String(index + 1).padStart(2, "0")}</span>
+                <span class="track-copy"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span>
+                <span class="track-duration">${item.duration === null ? item.kind === "group" ? "OPEN" : "—" : formatTime(item.duration)}</span>
+            </button>`;
+        }).join("")}
         <div class="guide-no-signal guide-filter-empty tv-static" hidden>
             <span>No matching broadcast</span>
         </div>`
@@ -100,6 +114,16 @@ function filterGuideRows(): void {
         row.hidden = query.length > 0
             && !(row.textContent ?? "").toLowerCase().includes(query);
         if (!row.hidden) visible++;
+    });
+    viewerRoot.querySelectorAll<HTMLElement>("[data-guide-group]").forEach((heading) => {
+        let next = heading.nextElementSibling;
+        let groupVisible = false;
+        while (next && !next.hasAttribute("data-guide-group")) {
+            if (next.classList.contains("track-row")
+                && !(next as HTMLElement).hidden) groupVisible = true;
+            next = next.nextElementSibling;
+        }
+        heading.hidden = query.length > 0 && !groupVisible;
     });
     const empty = viewerRoot.querySelector<HTMLElement>(".guide-filter-empty");
     if (empty) empty.hidden = visible > 0;
@@ -132,6 +156,109 @@ function broadcastTransport(selected: ViewerItem | null): string {
     </section>`;
 }
 
+function formatBytes(bytes: number): string {
+    if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(bytes >= 10485760 ? 1 : 2)} MiB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${bytes} B`;
+}
+
+function cinemaFeature(library: ViewerLibrary): string {
+    const details = viewerMovieDetails();
+    const entry = details.entry;
+    if (!entry) return "";
+    const state = viewerTransport();
+    const busy = state.loading || state.exporting;
+    let fieldOrder: string;
+    if (entry.video.fieldOrder === "progressive") {
+        fieldOrder = "Progressive · 29.97 fps";
+    } else {
+        const firstField = entry.video.fieldOrder === "tt" ? "Top" : "Bottom";
+        fieldOrder = `${firstField} field first · bobbed to 59.94 fps`;
+    }
+    let liveState: string;
+    if (state.playing) liveState = "Live";
+    else if (busy) liveState = "Tuning";
+    else liveState = "Ready";
+    let groupLabel = "Station presentation";
+    if (entry.group === "story") groupLabel = "Story scene";
+    else if (entry.group === "gameplay") groupLabel = "Gameplay reel";
+    const cached = details.cache?.totalBytes ?? 0;
+    const captions = entry.subtitleCues > 0;
+    let captionDetails = "None on disc";
+    if (captions) {
+        captionDetails = `${entry.subtitleCues} cues · UTF-8`;
+        if (entry.subtitleEnd !== null)
+            captionDetails += ` · ${formatTime(entry.subtitleEnd)}`;
+    }
+    return `<section class="broadcast-feature cinema-feature">
+        <div class="cinema-stage">
+            <span class="feature-kicker" data-live-state data-channel-number="04"
+                data-off-air="false">${liveState} · Ch. 04</span>
+            <div class="cinema-screen" style="--movie-aspect:${entry.video.displayAspect[0]}/${entry.video.displayAspect[1]}">
+                <video id="cinema-video" playsinline preload="metadata"
+                    aria-label="${escapeHtml(entry.label)}"></video>
+                ${details.prepared ? "" : `<button type="button" class="cinema-prepare"
+                    data-action="movie-prepare" ${busy ? "disabled" : ""}>
+                    ${icon("play")}<strong>Prepare local playback</strong>
+                    <small>Decode only this movie · cached privately</small>
+                </button>`}
+            </div>
+            <div class="cinema-now">
+                <span class="eyebrow">${escapeHtml(groupLabel)}</span>
+                <h2>${escapeHtml(entry.label)}</h2>
+                <p>${escapeHtml(entry.name)} · ${formatTime(entry.duration)} · ${formatBytes(entry.sourceBytes)}</p>
+            </div>
+        </div>
+        <div class="cinema-inspector">
+            <div class="cinema-details">
+                <span class="eyebrow">Source inspection</span>
+                <dl>
+                    <div><dt>Picture</dt><dd>${entry.video.width}×${entry.video.height}</dd></div>
+                    <div><dt>Scan</dt><dd>${fieldOrder}</dd></div>
+                    <div><dt>Shape</dt><dd>SAR ${entry.video.sampleAspect.join(":")} · DAR ${entry.video.displayAspect.join(":")}</dd></div>
+                    <div><dt>Audio</dt><dd>${entry.header.channels}ch · ${entry.header.sampleRate / 1000} kHz · PS-ADPCM</dd></div>
+                    <div><dt>Captions</dt><dd>${captionDetails}</dd></div>
+                    <div><dt>Original</dt><dd>${formatBytes(entry.sourceBytes + entry.subtitleBytes)} · untouched</dd></div>
+                </dl>
+            </div>
+            <div class="conversion-studio">
+                <div class="conversion-head"><span class="eyebrow">Local export lab</span>
+                    <label class="caption-toggle"><input type="checkbox" data-action="movie-captions"
+                        ${captions ? "checked" : "disabled"} /> Include English captions</label></div>
+                <div class="movie-export-grid">
+                    <button type="button" data-movie-export="original" ${busy ? "disabled" : ""}>
+                        <b>Original ZIP</b><small>.str / .bin / .sbt · byte-exact</small></button>
+                    <button type="button" data-movie-export="masters" ${busy ? "disabled" : ""}>
+                        <b>Masters ZIP</b><small>MPEG-2 / PCM WAV / SRT</small></button>
+                    <button type="button" data-movie-export="mkv" ${busy ? "disabled" : ""}>
+                        <b>Lossless MKV</b><small>MPEG-2 / FLAC / SubRip</small></button>
+                    <button type="button" data-movie-export="mp4" ${busy ? "disabled" : ""}>
+                        <b>Compatible MP4</b><small>H.264 / AAC${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
+                    <button type="button" data-movie-export="webm" ${busy ? "disabled" : ""}>
+                        <b>Open WebM</b><small>VP9 / Opus / VTT sidecar</small></button>
+                </div>
+                <progress data-movie-progress max="1" value="${details.progress}"
+                    ${busy ? "" : "hidden"}></progress>
+                <p class="movie-status${details.error ? " error" : ""}" data-movie-status>
+                    ${escapeHtml(details.status || "Nothing leaves this browser.")}</p>
+                <div class="cache-actions">
+                    ${busy ? `<button type="button" data-action="movie-cancel">Cancel current job</button>` : ""}
+                    ${details.hasIso ? "" : `<button type="button" data-action="tune">Reconnect source disc</button>`}
+                    <button type="button" data-action="movie-remove" ${cached && !busy ? "" : "disabled"}>
+                        Remove ${cached ? formatBytes(cached) : "cached copies"}</button>
+                </div>
+                <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
+                    · watch ${formatBytes(details.cache?.playbackBytes ?? 0)}
+                    · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
+                <p class="converter-license">The GPL FFmpeg conversion core loads only after first use.
+                    Original disc data remains local. <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
+                    target="_blank" rel="license">Licenses &amp; source</a>.</p>
+            </div>
+        </div>
+        ${broadcastGuide(library)}
+    </section>`;
+}
+
 function broadcastCards(library: ViewerLibrary): string {
     const cards: ReadonlyArray<{
         title: string;
@@ -143,6 +270,7 @@ function broadcastCards(library: ViewerLibrary): string {
         { title: "Music studio", detail: library.counts.music === null ? "Awaiting disc" : `${library.counts.music} sequenced cues`, color: "card-blue", art: "music", channel: "music" },
         { title: "Monkey phone", detail: library.counts.streams === null ? "Scan local streams" : `${library.counts.streams} local streams`, color: "card-red", art: "monkey", channel: "streams" },
         { title: "Sound effects", detail: library.counts.effects === null ? "Scan effect banks" : `${library.counts.effects} effect banks`, color: "card-ink", art: "effects", channel: "effects" },
+        { title: "Cinema vault", detail: library.counts.cinema === null ? "Scan local movies" : `${library.counts.cinema} local movies`, color: "card-cinema", art: "monkey", channel: "cinema" },
     ];
     return `<div class="channel-grid">${cards.map((card) => {
         const image = library.connected ? viewerArt?.images[card.art] : null;
@@ -155,6 +283,24 @@ function broadcastCards(library: ViewerLibrary): string {
             <i>Open channel ${icon("forward")}</i>
         </button>`;
     }).join("")}</div>`;
+}
+
+function viewerChannelNumber(channel: ViewerChannel): string {
+    switch (channel) {
+    case "music": return "01";
+    case "streams": return "02";
+    case "effects": return "03";
+    case "cinema": return "04";
+    }
+}
+
+function channelEyebrow(channel: ViewerChannel): string {
+    switch (channel) {
+    case "music": return "Live from the music studio";
+    case "streams": return "Monkey phone archive";
+    case "effects": return "Sound effects desk";
+    case "cinema": return "Local cinema vault";
+    }
 }
 
 function viewerMarkup(): string {
@@ -178,14 +324,17 @@ function viewerMarkup(): string {
             <span class="wave-wait">Levels waiting for playback</span>
            </div>`
         : '<div class="feature-wave static-wave tv-static" aria-hidden="true"></div>';
+    let tuneLabel = "Choose disc image";
+    if (library.connected)
+        tuneLabel = library.channel === "cinema" ? "Reconnect source disc" : "Scan this channel";
     const setupMarkup = setup
         ? `<span class="eyebrow">Station setup</span><h2>${escapeHtml(setup.label)}</h2>
             <p data-setup-detail>${escapeHtml(setup.detail)}</p>
             <div class="tuning-progress${setup.progress === null ? "" : " active"}"
                 style="--tuning:${(setup.progress ?? 0) * 100}%"><i></i></div>
             <div class="feature-actions"><button type="button" class="broadcast-play tune-button"
-                data-action="tune">${icon("forward")} ${library.connected ? "Scan this channel" : "Choose disc image"}</button></div>`
-        : `<span class="eyebrow">${library.channel === "music" ? "Live from the music studio" : library.channel === "streams" ? "Monkey phone archive" : "Sound effects desk"}</span>
+                data-action="tune">${icon("forward")} ${tuneLabel}</button></div>`
+        : `<span class="eyebrow">${channelEyebrow(library.channel)}</span>
             <h2>${selected ? escapeHtml(selected.label) : "No broadcast found"}</h2>
             <p>${selected ? escapeHtml(selected.detail) : "This channel has no entries."}</p>
             <div class="feature-actions"><button type="button" class="broadcast-play"
@@ -194,18 +343,34 @@ function viewerMarkup(): string {
                 ${selected?.kind === "group" ? "Open bank" : transportState.playing ? "Pause transmission" : "Play transmission"}</button>
                 <button type="button" class="round-action" data-action="export"
                     aria-label="Export current asset" ${transportState.canExport && !transportState.exporting ? "" : "disabled"}>${icon("download")}</button></div>`;
-    const channelNumber =
-        library.channel === "music" ? "01" : library.channel === "streams" ? "02" : "03";
+    const channelNumber = viewerChannelNumber(library.channel);
     const channels: ReadonlyArray<{ label: string; channel: ViewerChannel }> = [
         { label: "Music", channel: "music" },
         { label: "Streams", channel: "streams" },
         { label: "Effects", channel: "effects" },
+        { label: "Cinema", channel: "cinema" },
     ];
     const nav = channels.map(({ label, channel }) => `<button type="button"
         data-channel="${channel}" aria-current="${channel === library.channel ? "page" : "false"}">
         ${label}<small>${library.counts[channel] ?? "scan"}</small>
     </button>`).join("");
-    return `<main id="viewer" class="viewer-main monkey-tv${library.connected ? " on-air" : " off-air"}">
+    const standardFeature = `<section class="broadcast-feature${setup ? " needs-tuning" : ""}">
+        <div class="feature-art${hasGameArt ? " has-game-art" : " tv-static"}">
+            <span class="feature-kicker" data-live-state data-channel-number="${channelNumber}"
+                data-off-air="${setup !== null}">${transportState.playing ? "Live"
+                    : setup ? "Off air" : "Ready"} · Ch. ${channelNumber}</span>
+            ${hero}${waveformMarkup}
+            <span class="feature-caption">${hasGameArt ? "Original game UI · decoded locally"
+                : library.connected ? "Local disc mounted · visual feed unavailable"
+                : "Insert disc to tune the station"}</span>
+        </div>
+        <div class="feature-copy">${setupMarkup}</div>
+        ${broadcastGuide(library)}
+    </section>`;
+    const feature = library.channel === "cinema" && !setup
+        ? cinemaFeature(library) : standardFeature;
+    const transport = broadcastTransport(selected);
+    return `<main id="viewer" class="viewer-main monkey-tv${library.connected ? " on-air" : " off-air"}${library.channel === "cinema" ? " cinema-on" : ""}">
         <section class="broadcast-shell">
             <header class="broadcast-mast">
                 <div><span class="live-pill"><i></i> ${library.connected ? "Specter TV · Local" : "Specter TV · Off air"}</span>
@@ -213,18 +378,11 @@ function viewerMarkup(): string {
                 <div class="broadcast-bug"><span>${library.connected ? escapeHtml(library.discLabel) : "Awaiting local disc"}</span><b>${channelNumber}</b></div>
             </header>
             <nav class="broadcast-nav" aria-label="Asset channels">${nav}</nav>
-            <section class="broadcast-feature${setup ? " needs-tuning" : ""}">
-                <div class="feature-art${hasGameArt ? " has-game-art" : " tv-static"}">
-                    <span class="feature-kicker" data-live-state data-channel-number="${channelNumber}" data-off-air="${setup !== null}">${transportState.playing ? "Live" : setup ? "Off air" : "Ready"} · Ch. ${channelNumber}</span>
-                    ${hero}${waveformMarkup}
-                    <span class="feature-caption">${hasGameArt ? "Original game UI · decoded locally" : library.connected ? "Local disc mounted · visual feed unavailable" : "Insert disc to tune the station"}</span>
-                </div>
-                <div class="feature-copy">${setupMarkup}</div>
-                ${broadcastGuide(library)}
-            </section>
+            ${feature}
+            ${library.channel === "cinema" ? transport : ""}
             <section class="channels"><header><div><span class="eyebrow">Browse the backlot</span><h2>Choose a department</h2></div>
-                <span>Music, streams and effects share one local station</span></header>${broadcastCards(library)}</section>
-            ${broadcastTransport(selected)}
+                <span>Music, streams, effects and cinema share one local station</span></header>${broadcastCards(library)}</section>
+            ${library.channel === "cinema" ? "" : transport}
         </section>
     </main>`;
 }
@@ -237,6 +395,8 @@ function render(): void {
     document.body.className = "viewer";
     viewerRoot.innerHTML = `<a class="skip-link" href="#viewer">Skip to viewer</a>
         <div class="viewer-page">${viewerHeader()}${viewerMarkup()}</div>`;
+    const movieVideo = viewerRoot.querySelector<HTMLVideoElement>("#cinema-video");
+    if (movieVideo) viewerBindMovieVideo(movieVideo);
     playUiKey = "";
     exportUiKey = "";
     const nextGuide = viewerRoot.querySelector<HTMLElement>(".guide-list");
@@ -302,6 +462,13 @@ function updateFunctionalUi(now: number): void {
         .forEach((time) => { time.textContent = formatTime(state.current); });
     viewerRoot.querySelectorAll<HTMLElement>("[data-duration]")
         .forEach((duration) => { duration.textContent = formatTime(state.duration); });
+    const movie = viewerMovieDetails();
+    viewerRoot.querySelectorAll<HTMLElement>("[data-movie-status]").forEach((element) => {
+        if (element.textContent !== movie.status) element.textContent = movie.status;
+        element.classList.toggle("error", movie.error);
+    });
+    viewerRoot.querySelectorAll<HTMLProgressElement>("[data-movie-progress]")
+        .forEach((progress) => { progress.value = movie.progress; });
 
     const levels = viewerRoot.querySelector<HTMLElement>("#broadcast-levels");
     if (levels) {
@@ -328,6 +495,75 @@ function updateFunctionalUi(now: number): void {
 
 
 
+function interactiveKeyTarget(target: EventTarget | null): target is HTMLElement {
+    return target instanceof HTMLElement && (
+        target.matches("input, select, textarea, video, [contenteditable='true']")
+        || target.closest(".movie-export-grid") !== null
+    );
+}
+
+function toggleMovieCaptions(): boolean {
+    const video = viewerRoot.querySelector<HTMLVideoElement>("#cinema-video");
+    const track = video?.textTracks[0];
+    if (!track) return false;
+    track.mode = track.mode === "showing" ? "disabled" : "showing";
+    return true;
+}
+
+function focusMovieExports(): boolean {
+    const button = viewerRoot.querySelector<HTMLButtonElement>(
+        ".movie-export-grid button:not(:disabled)",
+    );
+    if (!button) return false;
+    button.focus({ preventScroll: true });
+    button.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return true;
+}
+
+function onViewerKey(event: KeyboardEvent): void {
+    if (interactiveKeyTarget(event.target)) {
+        if (event.key === "Escape" && event.target instanceof HTMLElement)
+            event.target.blur();
+        return;
+    }
+    const library = viewerLibrary();
+    let handled = true;
+    switch (event.key) {
+    case " ":
+        viewerTogglePlayback();
+        break;
+    case "ArrowLeft":
+    case "ArrowUp":
+        viewerMove(-1);
+        break;
+    case "ArrowRight":
+    case "ArrowDown":
+        viewerMove(1);
+        break;
+    case "Enter":
+        if (library.channel === "cinema") viewerTogglePlayback();
+        else if (library.selectedId) viewerActivate(library.selectedId);
+        else handled = false;
+        break;
+    case "c":
+    case "C":
+        handled = library.channel === "cinema" && toggleMovieCaptions();
+        break;
+    case "e":
+    case "E":
+        handled = library.channel === "cinema" && focusMovieExports();
+        break;
+    case "Escape":
+        if (library.channel === "cinema" && viewerTransport().exporting)
+            viewerCancelMovieWork();
+        else handled = false;
+        break;
+    default:
+        handled = false;
+    }
+    if (handled) event.preventDefault();
+}
+
 function wireInteractions(): void {
     viewerRoot.addEventListener("click", (event) => {
         const target = event.target as HTMLElement;
@@ -343,12 +579,22 @@ function wireInteractions(): void {
             viewerActivate(decodeURIComponent(trackButton.dataset.track ?? ""));
             return;
         }
+        const movieExport = target.closest<HTMLButtonElement>("[data-movie-export]");
+        if (movieExport?.dataset.movieExport) {
+            const captions = viewerRoot
+                .querySelector<HTMLInputElement>("[data-action='movie-captions']")?.checked ?? false;
+            viewerExportMovie(movieExport.dataset.movieExport as MovieExportKind, captions);
+            return;
+        }
         const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
         if (action === "play") viewerTogglePlayback();
         if (action === "previous") viewerMove(-1);
         if (action === "next") viewerMove(1);
         if (action === "export") viewerExport();
         if (action === "tune") viewerChooseDisc();
+        if (action === "movie-prepare") viewerPrepareMovie();
+        if (action === "movie-cancel") viewerCancelMovieWork();
+        if (action === "movie-remove") viewerRemoveMovie();
         if (action === "activate-selected") {
             const library = viewerLibrary();
             if (library.selectedId) viewerActivate(library.selectedId);
@@ -370,6 +616,7 @@ function wireInteractions(): void {
         if (guide instanceof HTMLElement && guide.classList.contains("guide-list"))
             guideScrollTop = guide.scrollTop;
     }, true);
+    window.addEventListener("keydown", onViewerKey);
 }
 
 function syncViewer(now: number): void {

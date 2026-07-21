@@ -80,6 +80,30 @@ export class OpfsCache {
         }
     }
 
+    async size(name: string): Promise<number | null> {
+        try {
+            const fh = await this.fileHandle(name, false);
+            return (await fh.getFile()).size;
+        } catch (e) {
+            if (isMissing(e)) return null;
+            throw e;
+        }
+    }
+
+    /** Remove one cached file or directory. Missing entries are already gone. */
+    async remove(name: string, recursive = false): Promise<void> {
+        const parts = name.split("/").filter(part => part.length > 0);
+        if (parts.length === 0) throw new Error(`bad cache entry name: ${name}`);
+        try {
+            let dir = this.dir;
+            for (const part of parts.slice(0, -1))
+                dir = await dir.getDirectoryHandle(part, { create: false });
+            await dir.removeEntry(parts[parts.length - 1], { recursive });
+        } catch (e) {
+            if (!isMissing(e)) throw e;
+        }
+    }
+
     /** Drop this disc's whole cache subtree. */
     async forget(): Promise<void> {
         const base = await baseDir();

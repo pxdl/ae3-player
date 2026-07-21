@@ -16,8 +16,11 @@ import { StreamViz } from "./sviz.ts";
 import { SeInspector, type SeBankEntry, type SeCatalog,
          type SeMeasureFiles, type SeRequestInfo } from "./se.ts";
 import { SeSequenceViz, SeSourceLoopViz } from "./seviz.ts";
+import type {
+    MovieCacheInfo, MovieCatalog, MovieEntry, MovieExportKind,
+} from "./movies.ts";
 
-export type ViewerChannel = "music" | "streams" | "effects";
+export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
 export interface ViewerItem {
     id: string;
@@ -26,6 +29,7 @@ export interface ViewerItem {
     duration: number | null;
     kind: "media" | "group";
     playing: boolean;
+    group?: string;
 }
 
 export interface ViewerSetup {
@@ -55,6 +59,16 @@ export interface ViewerTransport {
     loading: boolean;
     canExport: boolean;
     exporting: boolean;
+    status: string;
+    error: boolean;
+}
+
+export interface ViewerMovieDetails {
+    entry: MovieEntry | null;
+    cache: MovieCacheInfo | null;
+    prepared: boolean;
+    hasIso: boolean;
+    progress: number;
     status: string;
     error: boolean;
 }
@@ -156,6 +170,23 @@ const seCfg = {
     volume: 64, exact: true, gaussian: true, revDepth: 30, loop: true,
 };
 
+
+/* Cinema is a viewer-only channel. Its video element lives in viewer.ts while
+ * this controller owns source selection, conversion, cache, and transport. */
+let viewerChannel: ViewerChannel = "music";
+let movieCatalog: MovieCatalog | null = null;
+let movieSelectedName: string | null = null;
+let moviePreparedName: string | null = null;
+let movieVideo: HTMLVideoElement | null = null;
+let movieVideoUrl: string | null = null;
+let movieVttUrl: string | null = null;
+let movieCache: MovieCacheInfo | null = null;
+let movieLoading = false;
+let movieExporting = false;
+let movieProgress = 0;
+let movieStatus = "";
+let movieError = false;
+let movieAbort: AbortController | null = null;
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
     gaussian: cfg.gaussian, loop: cfg.loop ? LOOP_FOREVER : 0,
@@ -1730,14 +1761,256 @@ function onKey(e: KeyboardEvent): void {
     e.preventDefault();
 }
 
+function selectedMovieEntry(): MovieEntry | null {
+    return movieCatalog?.entries.find(entry => entry.name === movieSelectedName) ?? null;
+}
+
+function movieScanLabel(entry: MovieEntry): string {
+    if (entry.video.fieldOrder === "progressive") return "29.97p";
+    const fieldOrder = entry.video.fieldOrder === "tt" ? "TFF" : "BFF";
+    return `59.94p · source ${fieldOrder}`;
+}
+
+function movieGroupLabel(entry: MovieEntry): string {
+    switch (entry.group) {
+    case "opening": return "Station IDs & openings";
+    case "story": return "Story scenes";
+    case "gameplay": return "Gameplay reels";
+    }
+}
+
+function reportMovieProgress(progress: number, stage: string): void {
+    movieProgress = progress;
+    movieStatus = stage;
+}
+
+function reportMovieError(error: unknown, cancelledStatus: string): void {
+    if (movieAbort?.signal.aborted) {
+        movieStatus = cancelledStatus;
+        movieError = false;
+        return;
+    }
+    movieStatus = friendlyError(error);
+    movieError = true;
+}
+
+function releaseMovieUrls(): void {
+    movieVideo?.pause();
+    movieVideo = null;
+    if (movieVideoUrl) URL.revokeObjectURL(movieVideoUrl);
+    if (movieVttUrl) URL.revokeObjectURL(movieVttUrl);
+    movieVideoUrl = null;
+    movieVttUrl = null;
+    moviePreparedName = null;
+}
+
+function movieObjectUrl(bytes: Uint8Array, type: string): string {
+    let part: ArrayBuffer;
+    if (bytes.buffer instanceof ArrayBuffer) {
+        part = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+            ? bytes.buffer
+            : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    } else {
+        part = Uint8Array.from(bytes).buffer;
+    }
+    return URL.createObjectURL(new Blob([part], { type }));
+}
+
+async function refreshMovieCache(name: string): Promise<void> {
+    const target = session;
+    if (!target) return;
+    const cache = await target.movies.cacheInfo(name);
+    if (session !== target || movieSelectedName !== name) return;
+    movieCache = cache;
+    viewerRevision++;
+}
+
+async function loadMovieCatalog(target: DiscSession): Promise<void> {
+    try {
+        const catalog = await target.movies.catalog();
+        if (session !== target) return;
+        movieCatalog = catalog;
+        movieSelectedName = catalog?.entries[0]?.name ?? null;
+        movieStatus = catalog
+            ? `${catalog.entries.length} movies indexed locally`
+            : "Reconnect the same disc once to scan its movie archive.";
+        movieError = false;
+        viewerRevision++;
+        if (movieSelectedName) await refreshMovieCache(movieSelectedName);
+    } catch (error) {
+        if (session !== target) return;
+        movieStatus = friendlyError(error);
+        movieError = true;
+        viewerRevision++;
+    }
+}
+
+async function chooseMovieDisc(): Promise<void> {
+    if (!session || movieLoading || movieExporting) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".iso,application/x-iso9660-image";
+    input.hidden = true;
+    document.body.append(input);
+    input.onchange = async () => {
+        const file = input.files?.[0];
+        input.remove();
+        if (!file || !session) return;
+        const target = session;
+        movieLoading = true;
+        movieProgress = 0;
+        movieStatus = "reading disc image";
+        movieError = false;
+        viewerRevision++;
+        try {
+            await target.movies.attachIso(file, reportMovieProgress);
+            if (session !== target) return;
+            movieCatalog = await target.movies.catalog();
+            movieSelectedName ??= movieCatalog?.entries[0]?.name ?? null;
+            movieStatus = `${movieCatalog?.entries.length ?? 0} movies indexed locally`;
+            if (movieSelectedName) await refreshMovieCache(movieSelectedName);
+        } catch (error) {
+            movieStatus = friendlyError(error);
+            movieError = true;
+        } finally {
+            movieLoading = false;
+            viewerRevision++;
+        }
+    };
+    input.click();
+}
+
+async function prepareSelectedMovie(): Promise<void> {
+    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
+    const target = session;
+    const name = movieSelectedName;
+    movieLoading = true;
+    movieProgress = 0;
+    movieStatus = "preparing local playback";
+    movieError = false;
+    movieAbort = new AbortController();
+    viewerRevision++;
+    try {
+        const prepared = await target.movies.prepare(
+            name, reportMovieProgress, movieAbort.signal);
+        if (session !== target || movieSelectedName !== name) return;
+        releaseMovieUrls();
+        movieVideoUrl = movieObjectUrl(prepared.mp4, "video/mp4");
+        movieVttUrl = prepared.vtt
+            ? URL.createObjectURL(new Blob([prepared.vtt], { type: "text/vtt" }))
+            : null;
+        moviePreparedName = name;
+        movieCache = prepared.cache;
+        movieProgress = 1;
+        movieStatus = "Ready. Press play; playback stays on this device.";
+    } catch (error) {
+        reportMovieError(error, "Preparation cancelled.");
+    } finally {
+        movieAbort = null;
+        movieLoading = false;
+        viewerRevision++;
+    }
+}
+
+async function exportSelectedMovie(kind: MovieExportKind, captions: boolean): Promise<void> {
+    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
+    const target = session;
+    const name = movieSelectedName;
+    movieExporting = true;
+    movieProgress = 0;
+    movieStatus = `preparing ${kind} export`;
+    movieError = false;
+    movieAbort = new AbortController();
+    viewerRevision++;
+    try {
+        const output = await target.movies.export(
+            name, kind, captions, reportMovieProgress, movieAbort.signal);
+        if (session !== target) return;
+        download(output.bytes, output.filename, output.mime);
+        movieCache = await target.movies.cacheInfo(name);
+        movieProgress = 1;
+        movieStatus = `${output.filename} ready`;
+    } catch (error) {
+        reportMovieError(error, "Export cancelled.");
+    } finally {
+        movieAbort = null;
+        movieExporting = false;
+        viewerRevision++;
+    }
+}
+
+export function viewerMovieDetails(): ViewerMovieDetails {
+    return {
+        entry: selectedMovieEntry(),
+        cache: movieCache,
+        prepared: moviePreparedName === movieSelectedName && movieVideoUrl !== null,
+        hasIso: session?.movies.hasIso() ?? false,
+        progress: movieProgress,
+        status: movieStatus,
+        error: movieError,
+    };
+}
+
+export function viewerBindMovieVideo(video: HTMLVideoElement): void {
+    movieVideo = video;
+    if (moviePreparedName !== movieSelectedName || !movieVideoUrl) return;
+    video.src = movieVideoUrl;
+    if (movieVttUrl) {
+        const track = document.createElement("track");
+        track.kind = "subtitles";
+        track.label = "English";
+        track.srclang = "en";
+        track.src = movieVttUrl;
+        track.default = true;
+        video.append(track);
+    }
+    video.onerror = () => {
+        movieStatus = "The browser could not play the cached MP4.";
+        movieError = true;
+    };
+    video.load();
+}
+
+export function viewerPrepareMovie(): void {
+    void prepareSelectedMovie();
+}
+
+export function viewerExportMovie(kind: MovieExportKind, captions: boolean): void {
+    void exportSelectedMovie(kind, captions);
+}
+
+export function viewerCancelMovieWork(): void {
+    if (!movieAbort) return;
+    movieStatus = "Cancelling…";
+    movieAbort.abort();
+}
+
+export function viewerRemoveMovie(): void {
+    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
+    const target = session;
+    const name = movieSelectedName;
+    void (async () => {
+        if (moviePreparedName === name) releaseMovieUrls();
+        await target.movies.remove(name);
+        if (session !== target) return;
+        movieCache = await target.movies.cacheInfo(name);
+        movieStatus = "Cached copies removed. Original disc files were untouched.";
+        movieError = false;
+        viewerRevision++;
+    })().catch((error) => {
+        movieStatus = friendlyError(error);
+        movieError = true;
+        viewerRevision++;
+    });
+}
+
 /* ---- asset-viewer bridge ----------------------------------------------- */
 export function viewerVersion(): number {
     return viewerRevision;
 }
 
 export function viewerLibrary(): ViewerLibrary {
-    const channel: ViewerChannel =
-        tab === "bgm" ? "music" : tab === "streams" ? "streams" : "effects";
+    const channel = viewerChannel;
     const items: ViewerItem[] = [];
     let selectedId: string | null = null;
 
@@ -1805,6 +2078,23 @@ export function viewerLibrary(): ViewerLibrary {
             }
         }
         selectedId ??= items[0]?.id ?? null;
+    } else if (session && channel === "cinema" && movieCatalog) {
+        for (const entry of movieCatalog.entries) {
+            const id = `movie:${entry.name}`;
+            const field = movieScanLabel(entry);
+            items.push({
+                id,
+                label: entry.label,
+                detail: `${entry.video.width}×${entry.video.height} · ${field}`
+                    + `${entry.subtitleCues ? ` · ${entry.subtitleCues} captions` : ""}`,
+                duration: entry.duration,
+                kind: "media",
+                playing: entry.name === moviePreparedName && !!movieVideo && !movieVideo.paused,
+                group: movieGroupLabel(entry),
+            });
+            if (entry.name === movieSelectedName) selectedId = id;
+        }
+        selectedId ??= items[0]?.id ?? null;
     }
 
     const statusElement = $("status");
@@ -1813,19 +2103,29 @@ export function viewerLibrary(): ViewerLibrary {
         connected: session !== null,
         channel,
         discLabel: session ? session.serial ?? session.volumeId : "",
-        status: statusElement.textContent ?? "",
-        error: statusElement.classList.contains("err"),
+        status: channel === "cinema" ? movieStatus : statusElement.textContent ?? "",
+        error: channel === "cinema" ? movieError : statusElement.classList.contains("err"),
         items,
         selectedId,
         counts: {
             music: session?.songs.length ?? null,
             streams: sCatalog?.entries.length ?? null,
             effects: seCatalog?.entries.length ?? null,
+            cinema: movieCatalog?.entries.length ?? null,
         },
     };
 }
 
 export function viewerSetup(): ViewerSetup | null {
+    if (session && viewerChannel === "cinema" && !movieCatalog) {
+        return {
+            label: "Reconnect the movie archive",
+            detail: movieStatus || (session.movies.hasIso()
+                ? "Scan the attached disc for its 22 local movies."
+                : "Choose the same disc once to index its movie archive."),
+            progress: movieLoading ? movieProgress : null,
+        };
+    }
     let label: string;
     let detail: string;
     let progressElement: HTMLProgressElement;
@@ -1859,6 +2159,8 @@ export function viewerSetup(): ViewerSetup | null {
 
 function viewerCanExport(): boolean {
     if (!session) return false;
+    if (viewerChannel === "cinema")
+        return !!selectedMovieEntry() && !movieLoading && !movieExporting;
     if (tab === "bgm")
         return !loading && playingIdx >= 0 && sel === playingIdx
             && session.songs[playingIdx] !== undefined;
@@ -1877,7 +2179,16 @@ export function viewerTransport(): ViewerTransport {
     let duration = 0;
     let isPlaying = false;
     let isLoading = false;
-    if (tab === "bgm") {
+    if (viewerChannel === "cinema") {
+        const entry = selectedMovieEntry();
+        title = entry?.label ?? "";
+        current = movieVideo?.currentTime ?? 0;
+        const videoDuration = movieVideo?.duration;
+        duration = videoDuration !== undefined && Number.isFinite(videoDuration)
+            ? videoDuration : entry?.duration ?? 0;
+        isPlaying = !!movieVideo && !movieVideo.paused;
+        isLoading = movieLoading;
+    } else if (tab === "bgm") {
         title = session?.songs[playingIdx >= 0 ? playingIdx : sel]?.name ?? "";
         current = displaySample() / RATE;
         duration = (timeline?.lenSamp ?? 0) / RATE;
@@ -1907,9 +2218,10 @@ export function viewerTransport(): ViewerTransport {
         playing: isPlaying,
         loading: isLoading,
         canExport: viewerCanExport(),
-        exporting: exporter.busy || sBusy || seBusy,
-        status: $("status").textContent ?? "",
-        error: $("status").classList.contains("err"),
+        exporting: viewerChannel === "cinema"
+            ? movieExporting : exporter.busy || sBusy || seBusy,
+        status: viewerChannel === "cinema" ? movieStatus : $("status").textContent ?? "",
+        error: viewerChannel === "cinema" ? movieError : $("status").classList.contains("err"),
     };
 }
 
@@ -1917,6 +2229,7 @@ export function viewerTransport(): ViewerTransport {
 export function viewerMeterLevels(target: Float32Array): boolean {
     target.fill(0);
     if (!session) return false;
+    if (viewerChannel === "cinema") return false;
     if (tab === "streams") {
         const stream = sPlayer.decoded();
         if (!stream) return false;
@@ -1945,7 +2258,20 @@ export function viewerMeterLevels(target: Float32Array): boolean {
 }
 
 export function viewerSwitchChannel(channel: ViewerChannel): void {
-    switchTab(channel === "music" ? "bgm" : channel === "streams" ? "streams" : "se");
+    if (viewerChannel === "cinema" && channel !== "cinema") {
+        movieVideo?.pause();
+        movieVideo = null;
+    }
+    viewerChannel = channel;
+    if (channel === "cinema") {
+        player?.pause();
+        sPlayer.pause();
+        viewerRevision++;
+        return;
+    }
+    if (channel === "music") switchTab("bgm");
+    else if (channel === "streams") switchTab("streams");
+    else switchTab("se");
 }
 
 export function viewerActivate(id: string): void {
@@ -1962,6 +2288,25 @@ export function viewerActivate(id: string): void {
         const name = id.slice(7);
         const entry = sCatalog?.entries.find((candidate) => candidate.name === name);
         if (entry) void loadStreamEntry(entry, true);
+        return;
+    }
+    if (id.startsWith("movie:")) {
+        const name = id.slice(6);
+        if (!movieCatalog?.entries.some(entry => entry.name === name)) return;
+        movieVideo?.pause();
+        movieVideo = null;
+        movieSelectedName = name;
+        movieCache = null;
+        movieStatus = moviePreparedName === name
+            ? "Ready. Press play; playback stays on this device."
+            : "Prepare this movie for local playback, or choose an export.";
+        movieError = false;
+        viewerRevision++;
+        void refreshMovieCache(name).catch((error) => {
+            movieStatus = friendlyError(error);
+            movieError = true;
+            viewerRevision++;
+        });
         return;
     }
     const index = seRows.findIndex((row) => id === (row.kind === "bank"
@@ -1982,6 +2327,24 @@ export function viewerMove(direction: number): void {
 }
 
 export function viewerTogglePlayback(): void {
+    if (viewerChannel === "cinema") {
+        if (moviePreparedName !== movieSelectedName || !movieVideoUrl) {
+            void prepareSelectedMovie();
+            return;
+        }
+        if (!movieVideo) return;
+        if (movieVideo.paused) {
+            player?.pause();
+            sPlayer.pause();
+            void movieVideo.play().catch((error) => {
+                movieStatus = friendlyError(error);
+                movieError = true;
+            });
+        } else {
+            movieVideo.pause();
+        }
+        return;
+    }
     if (tab === "streams") sTogglePlay();
     else if (tab === "se") seTogglePlay();
     else togglePlay();
@@ -1989,7 +2352,10 @@ export function viewerTogglePlayback(): void {
 
 export function viewerSeek(ratio: number): void {
     const clamped = Math.max(0, Math.min(ratio, 1));
-    if (tab === "streams") {
+    if (viewerChannel === "cinema") {
+        if (movieVideo && Number.isFinite(movieVideo.duration))
+            movieVideo.currentTime = clamped * movieVideo.duration;
+    } else if (tab === "streams") {
         if (sPlayer.decoded()) sPlayer.seek(clamped * sPlayer.dur());
     } else if (tab === "se") {
         seekSe(clamped * seSeekDomain());
@@ -2001,7 +2367,10 @@ export function viewerSeek(ratio: number): void {
 export function viewerExport(): void {
     const state = viewerTransport();
     if (!state.canExport || state.exporting) return;
-    if (tab === "streams") void sExport();
+    if (viewerChannel === "cinema") {
+        const captions = (selectedMovieEntry()?.subtitleCues ?? 0) > 0;
+        void exportSelectedMovie("mp4", captions);
+    } else if (tab === "streams") void sExport();
     else if (tab === "se") void exportSeCue(false);
     else void exportWav("current");
 }
@@ -2009,6 +2378,8 @@ export function viewerExport(): void {
 export function viewerChooseDisc(): void {
     if (!session) {
         $<HTMLInputElement>("file").click();
+    } else if (viewerChannel === "cinema") {
+        void chooseMovieDisc();
     } else if (tab === "streams" && !sCatalog) {
         if (session.streams.hasIso()) void extractStreams();
         else $<HTMLInputElement>("s-iso").click();
@@ -2021,6 +2392,13 @@ export function viewerChooseDisc(): void {
 /* ---- app states --------------------------------------------------------- */
 async function enterPlayer(s: DiscSession): Promise<void> {
     session = s;
+    releaseMovieUrls();
+    movieCatalog = null;
+    movieSelectedName = null;
+    movieCache = null;
+    movieStatus = "Loading movie catalog…";
+    movieError = false;
+    void loadMovieCatalog(s);
     $("picker").hidden = true;
     $("app").hidden = false;
     $("disc-id").textContent =

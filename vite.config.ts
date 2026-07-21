@@ -5,4 +5,7 @@ import { defineConfig } from "vite";
  * between local testing and production. */
 export default defineConfig({
     base: "/ae3-player/",
+    optimizeDeps: {
+        exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util", "mediabunny"],
+    },
 });
