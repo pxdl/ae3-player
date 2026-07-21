@@ -12,7 +12,6 @@ import {
     viewerMeterLevels,
     viewerMovieDetails,
     viewerMove,
-    viewerPrepareMovie,
     viewerReportMovieError,
     viewerRemoveMovie,
     viewerSeek,
@@ -134,12 +133,13 @@ function filterGuideRows(): void {
     if (empty) empty.hidden = visible > 0;
 }
 
-function broadcastTransport(selected: ViewerItem | null): string {
+function broadcastTransport(selected: ViewerItem | null, cinema = false): string {
     const state = viewerTransport();
     const title = state.title || selected?.label || "Waiting for signal";
     const percent = state.progress * 100;
     const canPlay = selected?.kind === "media";
-    return `<section class="broadcast-transport" aria-label="Player transport">
+    return `<section class="broadcast-transport${cinema ? " cinema-transport" : ""}"
+        aria-label="${cinema ? "Cinema player" : "Player"} transport">
         <div class="transport-buttons">
             <button type="button" class="icon-button" data-action="previous"
                 aria-label="Previous asset" ${selected ? "" : "disabled"}>${icon("back")}</button>
@@ -189,6 +189,9 @@ function cinemaFeature(library: ViewerLibrary): string {
     else if (entry.group === "gameplay") groupLabel = "Gameplay reel";
     const cached = details.cache?.totalBytes ?? 0;
     const captions = entry.subtitleCues > 0;
+    const selected = library.items.find(item => item.id === library.selectedId) ?? null;
+    const displayAspect = entry.video.displayAspect[0] / entry.video.displayAspect[1];
+    const cinemaTransport = details.prepared ? broadcastTransport(selected, true) : "";
     let captionDetails = "None on disc";
     if (captions) {
         captionDetails = `${entry.subtitleCues} cues · UTF-8`;
@@ -199,20 +202,25 @@ function cinemaFeature(library: ViewerLibrary): string {
         <div class="cinema-stage">
             <span class="feature-kicker" data-live-state data-channel-number="04"
                 data-off-air="false">${liveState} · Ch. 04</span>
-            <div class="cinema-screen" style="--movie-aspect:${entry.video.displayAspect[0]}/${entry.video.displayAspect[1]}">
-                <canvas id="cinema-canvas" aria-label="${escapeHtml(entry.label)}"></canvas>
-                <div class="cinema-caption" data-movie-caption
-                    ${details.captionsEnabled && details.caption !== null ? "" : "hidden"}>${escapeHtml(details.caption ?? "")}</div>
-                ${details.prepared ? `<div class="cinema-screen-actions">
-                    ${captions ? `<button type="button" data-action="movie-caption-toggle"
-                        aria-pressed="${details.captionsEnabled}">CC</button>` : ""}
-                    <button type="button" data-action="movie-fullscreen"
-                        aria-label="Full screen">${icon("fullscreen")}</button>
-                </div>` : `<button type="button" class="cinema-prepare"
-                    data-action="movie-prepare" ${busy ? "disabled" : ""}>
-                    ${icon("play")}<strong>Prepare local playback</strong>
-                    <small>Original MPEG-2 · starts after a short buffer</small>
-                </button>`}
+            <div class="cinema-player" style="--movie-aspect:${entry.video.displayAspect[0]}/${entry.video.displayAspect[1]};--movie-aspect-value:${displayAspect}">
+                <div class="cinema-screen">
+                    <div class="cinema-picture">
+                        <canvas id="cinema-canvas" aria-label="${escapeHtml(entry.label)}"></canvas>
+                        <div class="cinema-caption" data-movie-caption
+                            ${details.captionsEnabled && details.caption !== null ? "" : "hidden"}>${escapeHtml(details.caption ?? "")}</div>
+                        ${details.prepared ? `<div class="cinema-screen-actions">
+                            ${captions ? `<button type="button" data-action="movie-caption-toggle"
+                                aria-pressed="${details.captionsEnabled}">CC</button>` : ""}
+                            <button type="button" data-action="movie-fullscreen"
+                                aria-label="Full screen">${icon("fullscreen")}</button>
+                        </div>` : `<button type="button" class="cinema-prepare"
+                            data-action="play" ${busy ? "disabled" : ""}>
+                            ${icon("play")}<strong>${busy ? "Starting original MPEG-2…" : "Play original movie"}</strong>
+                            <small>${busy ? "Preparing source and decoder" : "Original MPEG-2 · starts after a short buffer"}</small>
+                        </button>`}
+                    </div>
+                </div>
+                ${cinemaTransport}
             </div>
             <div class="cinema-now">
                 <span class="eyebrow">${escapeHtml(groupLabel)}</span>
@@ -260,7 +268,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                 </div>
                 <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
                     · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
-                <p class="converter-license">The LGPL MPEG-2 playback decoder loads only when a movie is prepared.
+                <p class="converter-license">The LGPL MPEG-2 playback decoder loads only after Play is requested.
                     The GPL conversion core loads only for converted exports. Original disc data remains local.
                     <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
                     target="_blank" rel="license">Licenses</a> ·
@@ -382,7 +390,7 @@ function viewerMarkup(): string {
     </section>`;
     const feature = library.channel === "cinema" && !setup
         ? cinemaFeature(library) : standardFeature;
-    const transport = broadcastTransport(selected);
+    const transport = library.channel === "cinema" ? "" : broadcastTransport(selected);
     return `<main id="viewer" class="viewer-main monkey-tv${library.connected ? " on-air" : " off-air"}${library.channel === "cinema" ? " cinema-on" : ""}">
         <section class="broadcast-shell">
             <header class="broadcast-mast">
@@ -392,10 +400,9 @@ function viewerMarkup(): string {
             </header>
             <nav class="broadcast-nav" aria-label="Asset channels">${nav}</nav>
             ${feature}
-            ${library.channel === "cinema" ? transport : ""}
             <section class="channels"><header><div><span class="eyebrow">Browse the backlot</span><h2>Choose a department</h2></div>
                 <span>Music, streams, effects and cinema share one local station</span></header>${broadcastCards(library)}</section>
-            ${library.channel === "cinema" ? "" : transport}
+            ${transport}
         </section>
     </main>`;
 }
@@ -432,9 +439,18 @@ function updateFunctionalUi(now: number): void {
     if (nextPlayUiKey !== playUiKey) {
         viewerRoot.querySelectorAll<HTMLButtonElement>("[data-action='play']").forEach((button) => {
             const featureButton = button.classList.contains("broadcast-play");
-            button.innerHTML = `${icon(state.playing ? "pause" : "play")}${featureButton
-                ? ` ${state.playing ? "Pause transmission" : "Play transmission"}` : ""}`;
-            button.setAttribute("aria-label", `${state.playing ? "Pause" : "Play"} ${state.title}`);
+            const cinemaButton = button.classList.contains("cinema-prepare");
+            if (cinemaButton) {
+                button.innerHTML = `${icon("play")}<strong>${state.loading
+                    ? "Starting original MPEG-2…" : "Play original movie"}</strong>
+                    <small>${state.loading ? "Preparing source and decoder"
+                        : "Original MPEG-2 · starts after a short buffer"}</small>`;
+            } else {
+                button.innerHTML = `${icon(state.playing ? "pause" : "play")}${featureButton
+                    ? ` ${state.playing ? "Pause transmission" : "Play transmission"}` : ""}`;
+            }
+            button.setAttribute("aria-label", cinemaButton && state.loading
+                ? `Starting ${state.title}` : `${state.playing ? "Pause" : "Play"} ${state.title}`);
             button.setAttribute("aria-busy", String(state.loading));
         });
         playUiKey = nextPlayUiKey;
@@ -542,11 +558,11 @@ function toggleMovieCaptions(): boolean {
 }
 
 function toggleMovieFullscreen(): boolean {
-    const screen = viewerRoot.querySelector<HTMLElement>(".cinema-screen");
-    if (!screen) return false;
+    const player = viewerRoot.querySelector<HTMLElement>(".cinema-player");
+    if (!player) return false;
     const movieName = viewerMovieDetails().entry?.name;
     const entering = document.fullscreenElement === null;
-    const operation = entering ? screen.requestFullscreen() : document.exitFullscreen();
+    const operation = entering ? player.requestFullscreen() : document.exitFullscreen();
     void operation.catch((error) => {
         console.error("movie fullscreen request failed", error);
         if (viewerMovieDetails().entry?.name !== movieName)
@@ -554,6 +570,19 @@ function toggleMovieFullscreen(): boolean {
         viewerReportMovieError(entering
             ? "Full screen was blocked. Allow full-screen access for this site or use the browser's full-screen command."
             : "Could not leave full screen. Press Escape or use the browser's full-screen command.");
+    });
+    return true;
+}
+
+function exitMovieFullscreen(): boolean {
+    const fullscreen = document.fullscreenElement;
+    if (!(fullscreen instanceof HTMLElement) || !fullscreen.matches(".cinema-player"))
+        return false;
+    void document.exitFullscreen().catch((error) => {
+        console.error("movie fullscreen exit failed", error);
+        viewerReportMovieError(
+            "Could not leave full screen. Press Escape or use the browser's full-screen command.",
+        );
     });
     return true;
 }
@@ -569,6 +598,10 @@ function focusMovieExports(): boolean {
 }
 
 function onViewerKey(event: KeyboardEvent): void {
+    if (event.key === "Escape" && exitMovieFullscreen()) {
+        event.preventDefault();
+        return;
+    }
     const library = viewerLibrary();
     if (interactiveKeyTarget(event.target)) {
         if (event.key === "Escape" && event.target instanceof HTMLElement) {
@@ -648,7 +681,6 @@ function wireInteractions(): void {
         if (action === "next") viewerMove(1);
         if (action === "export") viewerExport();
         if (action === "tune") viewerChooseDisc();
-        if (action === "movie-prepare") viewerPrepareMovie();
         if (action === "movie-cancel") viewerCancelMovieWork();
         if (action === "movie-remove") viewerRemoveMovie();
         if (action === "movie-caption-toggle") toggleMovieCaptions();

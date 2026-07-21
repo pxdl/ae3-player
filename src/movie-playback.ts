@@ -515,7 +515,7 @@ export class MoviePlaybackSession {
             this.#contextRestoreTimer = null;
             if (this.#renderer === renderer && renderer.contextLost) {
                 this.#rendererContextError(renderer, new Error(
-                    "Movie graphics did not recover. Re-prepare the movie or reload the page.",
+                    "Movie graphics did not recover. Press Play to try again, or reload the page.",
                 ));
             }
         }, CONTEXT_RESTORE_TIMEOUT_MS);
@@ -650,7 +650,7 @@ export class MoviePlaybackSession {
         if (this.currentTime < this.duration - tolerance) {
             this.#fail(new Error(
                 `Movie audio ended at ${this.currentTime.toFixed(2)}s, before `
-                    + `${this.duration.toFixed(2)}s. Re-prepare the movie or reconnect the disc.`,
+                    + `${this.duration.toFixed(2)}s. Press Play to try again, or reconnect the disc.`,
             ));
             return;
         }

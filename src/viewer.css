@@ -1077,25 +1077,42 @@
     pointer-events: none;
 }
 
-.cinema-screen {
+.cinema-player {
     position: relative;
     z-index: 1;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    flex-direction: column;
+}
+
+.cinema-screen {
     display: grid;
     width: 100%;
-    aspect-ratio: var(--movie-aspect);
+    min-width: 0;
     place-items: center;
-    overflow: hidden;
     background: oklch(0.04 0.015 278);
     border: 6px solid var(--cream);
     border-radius: 15px;
     box-shadow: 8px 8px 0 var(--yellow), 15px 15px 0 oklch(0.07 0.03 280 / 0.4);
 }
 
-.cinema-screen canvas {
+.cinema-picture {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    aspect-ratio: var(--movie-aspect);
+    overflow: hidden;
+    background: black;
+    border-radius: 9px;
+}
+
+.cinema-picture canvas {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
     height: 100%;
-    object-fit: contain;
     background: black;
 }
 
@@ -1131,8 +1148,8 @@
     transition: opacity 140ms ease;
 }
 
-.cinema-screen:hover .cinema-screen-actions,
-.cinema-screen:focus-within .cinema-screen-actions {
+.cinema-picture:hover .cinema-screen-actions,
+.cinema-picture:focus-within .cinema-screen-actions {
     opacity: 1;
 }
 
@@ -1158,14 +1175,31 @@
     height: 20px;
 }
 
-.cinema-screen:fullscreen {
+.cinema-player:fullscreen {
+    display: grid;
     width: 100vw;
     height: 100vh;
-    aspect-ratio: auto;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 16px;
+    background: black;
+}
+
+.cinema-player:fullscreen .cinema-screen {
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
     background: black;
     border: 0;
     border-radius: 0;
     box-shadow: none;
+    container-type: size;
+}
+
+.cinema-player:fullscreen .cinema-picture {
+    width: min(100cqw, calc(100cqh * var(--movie-aspect-value)));
+    max-width: none;
+    border-radius: 0;
 }
 
 .cinema-prepare {
@@ -1379,10 +1413,29 @@
     box-shadow: 6px 6px 0 var(--red), 12px 12px 0 var(--indigo);
 }
 
-.cinema-on .broadcast-transport {
+.cinema-transport.broadcast-transport {
     position: relative;
     inset-block-end: auto;
-    max-width: min(920px, calc(100% - 32px));
+    grid-template-areas:
+        "buttons title time export"
+        "scrubber scrubber scrubber scrubber";
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 8px 14px;
+    width: 100%;
+    max-width: none;
+    margin: 14px 0 0;
+}
+
+.cinema-transport .transport-buttons { grid-area: buttons; }
+.cinema-transport .transport-title { grid-area: title; }
+.cinema-transport .scrubber { grid-area: scrubber; }
+.cinema-transport .time-readout { grid-area: time; }
+.cinema-transport .export-action { grid-area: export; }
+
+.cinema-player:fullscreen .cinema-transport {
+    margin: 0;
+    border-color: oklch(1 0 0 / 0.45);
+    box-shadow: none;
 }
 
 .broadcast-transport .scrubber { color: var(--yellow); }
@@ -1430,6 +1483,19 @@
     .transport-title,
     .time-readout,
     .export-action { display: none; }
+    .cinema-transport.broadcast-transport {
+        grid-template-areas:
+            "buttons time"
+            "scrubber scrubber";
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px 12px;
+    }
+    .cinema-transport .transport-title,
+    .cinema-transport .export-action { display: none; }
+    .cinema-transport .time-readout {
+        display: inline;
+        justify-self: end;
+    }
 }
 
 @media (max-width: 680px) {
@@ -1444,6 +1510,12 @@
     .feature-art { min-height: 360px; }
     .cinema-stage { padding: 72px 18px 28px; }
     .cinema-screen { border-width: 4px; box-shadow: 5px 5px 0 var(--yellow); }
+    .cinema-player:fullscreen { gap: 8px; padding: 8px; }
+    .cinema-transport.broadcast-transport {
+        margin-inline: 0;
+        padding: 8px 10px;
+        border-width: 3px;
+    }
     .cinema-inspector { padding: 24px 16px; }
     .feature-copy { padding: 28px 22px 34px; }
     .up-next { display: flex; }
@@ -1454,6 +1526,13 @@
     .channel-grid { grid-template-columns: 1fr; }
     .channel-card { min-height: 170px; }
     .broadcast-transport { inset-block-end: 10px; margin-inline: 7px; border-width: 3px; }
+}
+
+@media (pointer: coarse) {
+    .cinema-screen-actions button {
+        min-width: 44px;
+        min-height: 44px;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {

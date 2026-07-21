@@ -29,15 +29,20 @@ their envelopes are technically finite. Velocity-zero voice-stop requests are
 labeled as control-only rather than silent effects. WAV export offers one pass
 or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
 Cinema performs a lightweight 22-movie catalog scan, then reads, validates, and
-caches only the movie the user chooses. Playback sends the disc's original
-MPEG-2 elementary stream to a dedicated worker, decodes bounded frame batches
-with a custom LGPL libav.js/FFmpeg WebAssembly build, and presents packed I420
-through WebGL2 with the decoded WAV as the master clock. It preserves the game's
-7:6 sample aspect ratio, bobs interlaced sources to 59.94 fps, and exposes local
-captions for the ten subtitled scenes. Exports include byte-exact original
-`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters;
-lossless MPEG-2/FLAC/SubRip MKV; quality H.264/AAC MP4; and VP9/Opus WebM with
-a WebVTT sidecar. The GPL conversion engine is never loaded for playback.
+caches only the movie the user chooses. One Play action retains intent through
+source reading, decoder startup, canvas attachment, and priming; playback begins
+without a second click. The disc's original MPEG-2 elementary stream goes to a
+dedicated worker, which decodes bounded frame batches with a custom LGPL
+libav.js/FFmpeg WebAssembly build and presents packed I420 through WebGL2 with
+the decoded WAV as the master clock. The SDK's 7:6 sample aspect ratio controls
+an explicit display-aspect picture box while the WebGL backing store stays at
+the coded source dimensions. A two-row Cinema transport sits directly below the
+picture and remains with captions and picture controls in fullscreen.
+Interlaced sources are bobbed to 59.94 fps, and local captions cover the ten
+subtitled scenes. Exports include byte-exact original `.str`/`.bin`/`.sbt` ZIPs;
+bit-exact MPEG-2, decoded WAV, and SRT masters; lossless MPEG-2/FLAC/SubRip MKV;
+quality H.264/AAC MP4; and VP9/Opus WebM with a WebVTT sidecar. The GPL
+conversion engine is never loaded for playback.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
@@ -58,8 +63,11 @@ visit.
 
 As of 2026-07-21, original MPEG-2 Cinema playback and conversion are verified
 in Chrome 150, Firefox 152, and Safari 26.4 with progressive, bobbed
-interlaced, caption, seek, cache-resume, and full-movie flows. Conversion uses
-the single-thread core because Pages does not provide the COOP/COEP isolation
+interlaced, caption, seek, cache-resume, and full-movie flows. The one-click
+startup path was additionally exercised in all three browsers with a delayed
+source read and cold decoder initialization; each reached `playing` without a
+stable `ready` pause or a suppressed autoplay rejection. Conversion uses the
+single-thread core because Pages does not provide the COOP/COEP isolation
 required by `SharedArrayBuffer`.
 
 This repository never contains or serves game data. Your disc stays on your

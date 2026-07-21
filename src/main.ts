@@ -188,6 +188,8 @@ let movieProgress = 0;
 let movieStatus = "";
 let movieError = false;
 let movieAbort: AbortController | null = null;
+let moviePlaybackAbort: AbortController | null = null;
+let moviePlayIntentGeneration = 0;
 let moviePlaybackDisposal: Promise<void> = Promise.resolve();
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -1811,15 +1813,29 @@ function moviePlaybackStatus(state: MoviePlaybackState): string {
     case "idle": return "Attaching original movie source…";
     case "initializing-decoder": return "Starting the MPEG-2 decoder…";
     case "priming": return "Buffering original movie frames…";
-    case "ready": return "Ready. Press play; playback stays on this device.";
+    case "ready": return "Press Play to start the original movie.";
     case "playing": return "Playing the original MPEG-2 stream.";
     case "paused": return "Paused.";
     case "seeking": return "Seeking to the nearest source keyframe…";
-    case "buffering": return "Buffering original movie frames…";
-    case "ended": return "Movie ended.";
+    case "buffering": return "Buffering…";
+    case "ended": return "Movie ended. Press Play to watch again.";
     case "error": return movieStatus;
     case "disposed": return "";
     }
+}
+
+function invalidateMoviePlayIntent(): void {
+    moviePlayIntentGeneration++;
+    moviePlaybackAbort?.abort();
+}
+
+function movieStartIsCurrent(target: DiscSession, name: string,
+                             controller: AbortController, generation: number,
+                             playback?: MoviePlaybackSession): boolean {
+    return moviePlaybackAbort === controller && !controller.signal.aborted
+        && session === target && movieSelectedName === name
+        && viewerChannel === "cinema" && moviePlayIntentGeneration === generation
+        && (playback === undefined || moviePlayback === playback);
 }
 
 function disposeMoviePlayback(): Promise<void> {
@@ -1882,6 +1898,9 @@ async function chooseMovieDisc(): Promise<void> {
         const file = input.files?.[0];
         input.remove();
         if (!file || !session) return;
+        invalidateMoviePlayIntent();
+        await disposeMoviePlayback();
+        if (!session) return;
         const target = session;
         const controller = new AbortController();
         movieAbort = controller;
@@ -1916,27 +1935,30 @@ async function chooseMovieDisc(): Promise<void> {
     input.click();
 }
 
-async function prepareSelectedMovie(): Promise<void> {
-    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
+async function startSelectedMovie(): Promise<void> {
+    if (!session || !movieSelectedName || movieLoading || movieExporting
+            || viewerChannel !== "cinema")
+        return;
     const target = session;
     const name = movieSelectedName;
+    const generation = ++moviePlayIntentGeneration;
+    const controller = new AbortController();
+    moviePlaybackAbort = controller;
     movieLoading = true;
     movieProgress = 0;
-    movieStatus = "preparing local playback";
+    movieStatus = "Starting original MPEG-2…";
     movieError = false;
-    const controller = new AbortController();
-    movieAbort = controller;
     viewerRevision++;
     const progress = (value: number, stage: string): void => {
-        if (movieAbort === controller && session === target && movieSelectedName === name)
+        if (movieStartIsCurrent(target, name, controller, generation))
             reportMovieProgress(value, stage);
     };
     try {
         const prepared = await target.movies.prepare(name, progress, controller.signal);
         controller.signal.throwIfAborted();
-        if (session !== target || movieSelectedName !== name) return;
+        if (!movieStartIsCurrent(target, name, controller, generation)) return;
         await disposeMoviePlayback();
-        if (session !== target || movieSelectedName !== name) return;
+        if (!movieStartIsCurrent(target, name, controller, generation)) return;
         let playback: MoviePlaybackSession;
         playback = new MoviePlaybackSession(prepared, {
             stateChanged() {},
@@ -1947,15 +1969,28 @@ async function prepareSelectedMovie(): Promise<void> {
                 movieError = true;
             },
         });
+        if (!movieStartIsCurrent(target, name, controller, generation)) {
+            await playback.dispose();
+            return;
+        }
         moviePlayback = playback;
         movieCache = prepared.cache;
         movieProgress = 1;
+        player?.pause();
+        sPlayer.pause();
+        if (!movieStartIsCurrent(target, name, controller, generation, playback))
+            return;
+        await playback.play();
+        if (!movieStartIsCurrent(target, name, controller, generation, playback)) {
+            playback.pause();
+            return;
+        }
         movieStatus = moviePlaybackStatus(playback.state);
     } catch (error) {
-        if (movieAbort === controller && session === target && movieSelectedName === name)
-            reportMovieError(error, controller.signal, "Preparation cancelled.");
+        if (movieStartIsCurrent(target, name, controller, generation))
+            reportMovieError(error, controller.signal, "Playback start cancelled.");
     } finally {
-        if (movieAbort === controller) movieAbort = null;
+        if (moviePlaybackAbort === controller) moviePlaybackAbort = null;
         movieLoading = false;
         viewerRevision++;
     }
@@ -2012,7 +2047,7 @@ export function viewerMovieDetails(): ViewerMovieDetails {
         cache: movieCache,
         prepared: playback !== null && playback.state !== "error",
         hasIso: session?.movies.hasIso() ?? false,
-        cancellable: movieAbort !== null,
+        cancellable: movieAbort !== null || moviePlaybackAbort !== null,
         progress: movieProgress,
         status: currentMovieStatus(playback),
         error: movieError || playback?.state === "error",
@@ -2037,9 +2072,6 @@ export function viewerToggleMovieCaptions(): void {
     playback.setCaptionsEnabled(!playback.captionsEnabled);
 }
 
-export function viewerPrepareMovie(): void {
-    void prepareSelectedMovie();
-}
 
 export function viewerExportMovie(kind: MovieExportKind, captions: boolean): void {
     void exportSelectedMovie(kind, captions);
@@ -2047,6 +2079,13 @@ export function viewerExportMovie(kind: MovieExportKind, captions: boolean): voi
 
 export function viewerCancelMovieWork(): void {
     let cancelling = false;
+    const cancellingStart = moviePlaybackAbort !== null;
+    if (cancellingStart) {
+        invalidateMoviePlayIntent();
+        cancelling = true;
+    } else {
+        moviePlayIntentGeneration++;
+    }
     if (movieAbort !== null) {
         movieAbort.abort();
         cancelling = true;
@@ -2060,7 +2099,7 @@ export function viewerCancelMovieWork(): void {
         void disposeMoviePlayback().then(() => {
             if (movieSelectedName !== name)
                 return;
-            movieStatus = "Playback cancelled. Prepare the movie to try again.";
+            movieStatus = "Playback cancelled. Press Play to try again.";
             movieError = false;
             viewerRevision++;
         }).catch(error => {
@@ -2074,7 +2113,9 @@ export function viewerCancelMovieWork(): void {
     }
     if (!cancelling)
         return;
-    movieStatus = "Cancelling…";
+    movieStatus = cancellingStart && playback === null
+        ? "Playback start cancelled. Press Play to try again."
+        : "Cancelling…";
     viewerRevision++;
 }
 
@@ -2087,6 +2128,7 @@ export function viewerRemoveMovie(): void {
     if (!session || !movieSelectedName || movieLoading || movieExporting) return;
     const target = session;
     const name = movieSelectedName;
+    invalidateMoviePlayIntent();
     void (async () => {
         if (moviePlayback?.name === name) await disposeMoviePlayback();
         await target.movies.remove(name);
@@ -2367,6 +2409,7 @@ export function viewerMeterLevels(target: Float32Array): boolean {
 
 export function viewerSwitchChannel(channel: ViewerChannel): void {
     if (viewerChannel === "cinema" && channel !== "cinema") {
+        invalidateMoviePlayIntent();
         moviePlayback?.pause();
         moviePlayback?.detach();
     }
@@ -2402,13 +2445,14 @@ export function viewerActivate(id: string): void {
         const name = id.slice(6);
         if (!movieCatalog?.entries.some(entry => entry.name === name)) return;
         if (name === movieSelectedName) return;
+        invalidateMoviePlayIntent();
         movieAbort?.abort();
         void disposeMoviePlayback().catch((error) => {
             console.error("movie playback disposal failed", error);
         });
         movieSelectedName = name;
         movieCache = null;
-        movieStatus = "Prepare this movie for original-stream playback, or choose an export.";
+        movieStatus = "Press Play to start original-stream playback, or choose an export.";
         movieError = false;
         viewerRevision++;
         void refreshMovieCache(name);
@@ -2435,7 +2479,7 @@ export function viewerTogglePlayback(): void {
     if (viewerChannel === "cinema") {
         const playback = selectedMoviePlayback();
         if (!playback || playback.state === "error") {
-            void prepareSelectedMovie();
+            void startSelectedMovie();
             return;
         }
         if (playback.playing) {
@@ -2502,6 +2546,8 @@ export function viewerChooseDisc(): void {
 
 /* ---- app states --------------------------------------------------------- */
 async function enterPlayer(s: DiscSession): Promise<void> {
+    invalidateMoviePlayIntent();
+    movieAbort?.abort();
     await disposeMoviePlayback();
     session = s;
     movieCatalog = null;
@@ -2774,6 +2820,7 @@ async function main(): Promise<void> {
         const target = session;
         player?.pause();
         movieAbort?.abort();
+        invalidateMoviePlayIntent();
         try {
             await disposeMoviePlayback();
             await target.forget();
@@ -2788,6 +2835,7 @@ async function main(): Promise<void> {
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("pagehide", () => {
+        invalidateMoviePlayIntent();
         movieAbort?.abort();
         viewerRevision++;
         void disposeMoviePlayback().catch((error) => {
