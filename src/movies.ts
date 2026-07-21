@@ -5,7 +5,9 @@ import {
     type SubtitleCue, type Vfi, type VfiEntry,
 } from "./vendor/extract/index.ts";
 import { storeZip } from "./zip.ts";
-import type { MovieConversionInput, MovieOutputFormat } from "./movie-converter.ts";
+import type {
+    MovieConversionInput, MovieConversionProfile, MovieOutputFormat,
+} from "./movie-converter.ts";
 
 const META = "movie_meta.json";
 const CACHE_VERSION = "v1-ffmpeg-0.12.10-mediabunny-1.50.9";
@@ -172,6 +174,11 @@ export class MovieStore {
 
     hasIso(): boolean { return this.vfi !== null; }
 
+    async preloadConverter(): Promise<void> {
+        const converter = await import("./movie-converter.ts");
+        await converter.preloadMovieConverter();
+    }
+
     async catalog(): Promise<MovieCatalog | null> {
         if (this.catalogValue) return this.catalogValue;
         if (this.cache) {
@@ -299,10 +306,11 @@ export class MovieStore {
     }
 
     private async convert(entry: MovieEntry, format: MovieOutputFormat,
-                          captions: boolean, progress: MovieProgress,
+                          profile: MovieConversionProfile, captions: boolean,
+                          progress: MovieProgress,
                           signal?: AbortSignal): Promise<Uint8Array> {
         const embeddedCaptions = format !== "webm" && captions;
-        const key = format === "mp4" && !embeddedCaptions
+        const key = profile === "playback"
             ? `${movieRoot(entry.name)}/playback.mp4`
             : exportKey(entry.name, format, embeddedCaptions);
         const cached = await this.cachedRead(key);
@@ -312,9 +320,10 @@ export class MovieStore {
         }
         const { demuxed, subtitles } = await this.demux(entry, progress);
         // Deliberate lazy boundary: this chunk pulls in the 30 MiB GPL FFmpeg core.
+        progress(0.1, "loading conversion engine");
         const converter = await import("./movie-converter.ts");
         const converted = await converter.convertMovie(
-            this.conversionInput(demuxed, subtitles.cues, captions), format,
+            this.conversionInput(demuxed, subtitles.cues, captions), format, profile,
             (value, stage) => progress(0.1 + value * 0.9, stage), signal);
         await this.cacheWrite(key, converted);
         return converted;
@@ -323,7 +332,7 @@ export class MovieStore {
     async prepare(name: string, progress: MovieProgress,
                   signal?: AbortSignal): Promise<PreparedMovie> {
         const entry = await this.entry(name);
-        const mp4 = await this.convert(entry, "mp4", false, progress, signal);
+        const mp4 = await this.convert(entry, "mp4", "playback", false, progress, signal);
         let vtt: string | null = null;
         if (entry.subtitleCues > 0) {
             const key = `${movieRoot(name)}/captions.vtt`;
@@ -400,7 +409,8 @@ export class MovieStore {
             progress(1, "master archive ready");
             return { filename: `${name}-masters.zip`, bytes: storeZip(files), mime: "application/zip" };
         }
-        const converted = await this.convert(entry, kind, captions, progress, signal);
+        const converted = await this.convert(
+            entry, kind, "export", captions, progress, signal);
         if (kind === "webm" && entry.subtitleCues > 0) {
             const subtitles = await this.subtitles(entry);
             const vtt = subtitlesToVtt(subtitles.cues);

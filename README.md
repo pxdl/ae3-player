@@ -33,14 +33,15 @@ converts, and caches only the movie the user chooses. Playback preserves the
 game's 7:6 sample aspect ratio, bobs interlaced sources to 59.94 fps, and exposes
 local WebVTT captions for the ten subtitled scenes. Exports include byte-exact
 original `.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT
-masters; lossless MPEG-2/FLAC/SubRip MKV; H.264/AAC MP4; and VP9/Opus WebM with
-a WebVTT sidecar.
+masters; lossless MPEG-2/FLAC/SubRip MKV; quality H.264/AAC MP4; and VP9/Opus
+WebM with a WebVTT sidecar. Local playback uses a separate x264
+`veryfast`/CRF 16 watch copy; explicit MP4 export retains `slow`/CRF 15.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
 off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
-drives. The 32 MiB FFmpeg core is excluded from the initial precache; it is
-fetched and cached only after the first movie preparation or conversion.
+drives. The 32 MiB FFmpeg core is excluded from the initial precache; opening
+Cinema loads and caches it in the background for the first preparation.
 
 Browser support: Chrome/Chromium is the tested reference; Firefox works.
 Safari works as of the in-gesture audio fix: the whole audio stack is created

@@ -3,8 +3,8 @@ ae3-player third-party notices
 
 The ae3-player source code is licensed under the MIT License except where an
 individual file says otherwise. The optional Cinema conversion engine contains
-separately licensed software. It is downloaded only after a user first prepares
-or converts a movie; it is not part of the initial PWA precache.
+separately licensed software. It is downloaded only after a user opens Cinema;
+it is not part of the initial PWA precache.
 
 No Ape Escape 3 game data is included in this distribution.
 

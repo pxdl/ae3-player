@@ -8,6 +8,7 @@ import {
 import type { FmvVideoInfo } from "./vendor/extract/index.ts";
 
 export type MovieOutputFormat = "mkv" | "mp4" | "webm";
+export type MovieConversionProfile = "playback" | "export";
 
 export interface MovieConversionInput {
     video: Uint8Array;
@@ -62,8 +63,15 @@ function sourceArgs(): string[] {
             "-i", "input.wav"];
 }
 
+function mp4VideoArgs(profile: MovieConversionProfile): string[] {
+    return profile === "playback"
+        ? ["-c:v", "libx264", "-crf", "16", "-preset", "veryfast"]
+        : ["-c:v", "libx264", "-crf", "15", "-preset", "slow"];
+}
+
 function baseCommand(format: Exclude<MovieOutputFormat, "webm">,
-                     input: MovieConversionInput): string[] {
+                     input: MovieConversionInput,
+                     profile: MovieConversionProfile): string[] {
     const target = input.embedCaptions && input.subtitleSrt
         ? `base.${format}` : `output.${format}`;
     if (format === "mkv") return [
@@ -74,8 +82,8 @@ function baseCommand(format: Exclude<MovieOutputFormat, "webm">,
     return [
         ...sourceArgs(), "-map", "0:v", "-map", "1:a",
         "-vf", videoFilter(input.videoInfo), "-r", outputRate(input.videoInfo),
-        "-c:v", "libx264", "-crf", "15", "-preset", "slow",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
+        ...mp4VideoArgs(profile), "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "256k",
         "-movflags", "+faststart", "-shortest", target,
     ];
 }
@@ -175,14 +183,20 @@ function terminateEngine(worker: FFmpeg): void {
     if (ffmpeg === worker) ffmpeg = null;
 }
 
+export async function preloadMovieConverter(): Promise<void> {
+    await engine();
+}
+
 export async function convertMovie(input: MovieConversionInput,
                                    format: MovieOutputFormat,
+                                   profile: MovieConversionProfile,
                                    progress: ConversionProgress,
                                    signal?: AbortSignal): Promise<Uint8Array> {
     if (busy) throw new Error("another movie conversion is already running");
     if (signal?.aborted) throw new DOMException("conversion cancelled", "AbortError");
     busy = true;
     try {
+        progress(0, "loading conversion engine");
         const worker = await engine();
         if (signal?.aborted) {
             terminateEngine(worker);
@@ -202,7 +216,8 @@ export async function convertMovie(input: MovieConversionInput,
             if (format === "webm")
                 return await convertWebm(worker, input, progress, signal);
 
-            await exec(worker, baseCommand(format, input), `${format.toUpperCase()} conversion`);
+            await exec(worker, baseCommand(format, input, profile),
+                `${format.toUpperCase()} conversion`);
             if (input.embedCaptions && input.subtitleSrt) {
                 await exec(worker, captionCommand(format), `${format.toUpperCase()} caption mux`);
                 await worker.deleteFile(`base.${format}`);

@@ -187,6 +187,8 @@ let movieProgress = 0;
 let movieStatus = "";
 let movieError = false;
 let movieAbort: AbortController | null = null;
+let movieConverterReady = false;
+let movieConverterWarmup: Promise<void> | null = null;
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
     gaussian: cfg.gaussian, loop: cfg.loop ? LOOP_FOREVER : 0,
@@ -1784,6 +1786,35 @@ function reportMovieProgress(progress: number, stage: string): void {
     movieStatus = stage;
 }
 
+const MOVIE_CONVERTER_WARMING = "Loading playback engine in the background…";
+
+async function warmMovieConverter(): Promise<void> {
+    if (!session || movieConverterReady || movieConverterWarmup) return;
+    const target = session;
+    if (!movieLoading && !movieExporting) {
+        movieStatus = MOVIE_CONVERTER_WARMING;
+        movieError = false;
+        viewerRevision++;
+    }
+    movieConverterWarmup = target.movies.preloadConverter();
+    try {
+        await movieConverterWarmup;
+        movieConverterReady = true;
+        if (session === target && movieStatus === MOVIE_CONVERTER_WARMING) {
+            movieStatus = "Playback engine ready. Prepare only the movie you choose.";
+            viewerRevision++;
+        }
+    } catch (error) {
+        if (session === target && movieStatus === MOVIE_CONVERTER_WARMING) {
+            movieStatus = `Playback engine failed to load: ${friendlyError(error)}`;
+            movieError = true;
+            viewerRevision++;
+        }
+    } finally {
+        movieConverterWarmup = null;
+    }
+}
+
 function reportMovieError(error: unknown, cancelledStatus: string): void {
     if (movieAbort?.signal.aborted) {
         movieStatus = cancelledStatus;
@@ -1982,6 +2013,7 @@ export function viewerExportMovie(kind: MovieExportKind, captions: boolean): voi
 export function viewerCancelMovieWork(): void {
     if (!movieAbort) return;
     movieStatus = "Cancelling…";
+    movieConverterReady = false;
     movieAbort.abort();
 }
 
@@ -2266,6 +2298,7 @@ export function viewerSwitchChannel(channel: ViewerChannel): void {
     if (channel === "cinema") {
         player?.pause();
         sPlayer.pause();
+        void warmMovieConverter();
         viewerRevision++;
         return;
     }

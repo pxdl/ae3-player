@@ -200,7 +200,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                 ${details.prepared ? "" : `<button type="button" class="cinema-prepare"
                     data-action="movie-prepare" ${busy ? "disabled" : ""}>
                     ${icon("play")}<strong>Prepare local playback</strong>
-                    <small>Decode only this movie · cached privately</small>
+                    <small>Fast H.264 / AAC copy · cached privately</small>
                 </button>`}
             </div>
             <div class="cinema-now">
@@ -233,7 +233,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                     <button type="button" data-movie-export="mkv" ${busy ? "disabled" : ""}>
                         <b>Lossless MKV</b><small>MPEG-2 / FLAC / SubRip</small></button>
                     <button type="button" data-movie-export="mp4" ${busy ? "disabled" : ""}>
-                        <b>Compatible MP4</b><small>H.264 / AAC${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
+                        <b>Compatible MP4</b><small>Quality H.264 / AAC${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
                     <button type="button" data-movie-export="webm" ${busy ? "disabled" : ""}>
                         <b>Open WebM</b><small>VP9 / Opus / VTT sidecar</small></button>
                 </div>
@@ -250,7 +250,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                 <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
                     · watch ${formatBytes(details.cache?.playbackBytes ?? 0)}
                     · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
-                <p class="converter-license">The GPL FFmpeg conversion core loads only after first use.
+                <p class="converter-license">The GPL FFmpeg conversion core loads in the background when Cinema opens.
                     Original disc data remains local. <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
                     target="_blank" rel="license">Licenses &amp; source</a>.</p>
             </div>
