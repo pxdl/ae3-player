@@ -9,6 +9,7 @@
     "build": "vite build && node scripts/gen-sw.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test:scheduler": "node --experimental-strip-types --test tests/movie-scheduler.test.ts",
     "sync-sdk": "sh scripts/sync-sdk.sh"
   },
   "devDependencies": {

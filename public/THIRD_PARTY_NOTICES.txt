@@ -2,11 +2,40 @@ ae3-player third-party notices
 ================================
 
 The ae3-player source code is licensed under the MIT License except where an
-individual file says otherwise. The optional Cinema conversion engine contains
-separately licensed software. It is downloaded only after a user opens Cinema;
-it is not part of the initial PWA precache.
+individual file says otherwise. Cinema playback and conversion contain
+separately licensed software. The playback decoder and optional conversion
+engine are downloaded and cached independently on first use; neither is part
+of the initial PWA precache.
 
 No Ape Escape 3 game data is included in this distribution.
+
+libav.js 6.9.8.1 with FFmpeg 8.1
+--------------------------------
+License: GNU Lesser General Public License, version 2.1 or any later version
+License text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+libav.js source commit:
+https://github.com/Yahweasel/libav.js/tree/65ce461de1add4c96bc74fac52bd239f900ec11f
+Deployed corresponding-source bundle:
+./libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz
+SHA-256:
+98d10302b871fca74247244eb44a19b4944339f38617690c02d81bec6a50586f
+The bundle contains the exact libav.js commit archive, FFmpeg 8.1 and
+emfiberthreads 1.3 source archives, custom configuration, build script, and
+license texts. Upstream source archives:
+https://github.com/Yahweasel/libav.js/archive/65ce461de1add4c96bc74fac52bd239f900ec11f.tar.gz
+https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
+https://github.com/Yahweasel/emfiberthreads/archive/refs/tags/v1.3.tar.gz
+The build script, artifact checksums, and readable rebuild instructions are
+also kept at:
+https://github.com/pxdl/ae3-player/tree/main/vendor/libav
+
+The three runtime files under public/libav/ form the non-threaded ae3-mpeg2
+decoder used only for original MPEG-2 Cinema playback. The build enables the
+raw mpegvideo demuxer, MPEG video parser and MPEG-2 decoder, plus the buffer,
+buffersink, format, and yadif filters required for presentation. It contains
+no GPL codecs or game data. emfiberthreads is 0BSD-licensed; its license is
+included in the corresponding-source bundle and reproduced in
+vendor/libav/LICENSE.emfiberthreads.txt.
 
 @ffmpeg/core 0.12.10
 -------------------
@@ -20,15 +49,17 @@ through the MIT-licensed @ffmpeg/ffmpeg message API. The rest of ae3-player
 remains MIT-licensed; the deployed distribution also conveys this GPL program
 under the GPL terms above.
 
-Complete build source and scripts for the exact published package revision:
-https://github.com/ffmpegwasm/ffmpeg.wasm/tree/794b84884f1e23cb6241689b3563190d138bbd9a
-Archive:
-https://github.com/ffmpegwasm/ffmpeg.wasm/archive/794b84884f1e23cb6241689b3563190d138bbd9a.tar.gz
+Exact package source and build scripts for @ffmpeg/core 0.12.10:
+https://github.com/ffmpegwasm/ffmpeg.wasm/tree/71aa99d37c02a7b4c435275ca9ef50e612f6efa1
+Source archive:
+https://github.com/ffmpegwasm/ffmpeg.wasm/archive/71aa99d37c02a7b4c435275ca9ef50e612f6efa1.tar.gz
 
-The source link and archive must remain available alongside every deployment
-that conveys ffmpeg-core-CgUfceKH.wasm or a successor build. When the package is
-updated, update this notice to the new exact source revision and retain the old
-source for as long as the old binary remains distributed or cached.
+That revision's packages/core/package.json identifies version 0.12.10; its
+Dockerfile records the FFmpeg and codec source versions used by the build.
+These exact source links must remain available alongside every deployment that
+conveys ffmpeg-core-CgUfceKH.wasm or a successor build. When the package is
+updated, update this notice and retain the old source for as long as the old
+binary remains distributed or cached.
 
 @ffmpeg/ffmpeg 0.12.15 and @ffmpeg/util 0.12.2
 ------------------------------------------------

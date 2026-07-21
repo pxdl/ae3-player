@@ -1,0 +1,13 @@
+[
+  "workerfs",
+  "avformat",
+  "demuxer-mpegvideo",
+  "avcodec",
+  "parser-mpegvideo",
+  "decoder-mpeg2video",
+  "avfilter",
+  "filter-buffer",
+  "filter-buffersink",
+  "filter-format",
+  "filter-yadif"
+]

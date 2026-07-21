@@ -20,8 +20,9 @@ export { parseExdb, bgmDescRecords, bgmSongTable, natcmp,
 export { openDisc, locateBgmAssets, loadBgmDesc, readPckMember, sniff,
          type Ae3Disc, type BgmAssetSet } from "./manifest.ts";
 export { locateFmvAssets, parseFmvHeader, parseMpeg2VideoInfo,
-         inspectFmvPrefix, inspectFmvAsset, demuxFmv,
+         indexMpeg2SeekPoints, inspectFmvPrefix, inspectFmvAsset, demuxFmv,
          parseFmvSubtitles, subtitlesToSrt, subtitlesToVtt,
          type FmvAsset, type FmvHeader, type FmvVideoInfo, type FmvGroup,
-         type FmvDemux, type SubtitleCue } from "./fmv.ts";
+         type FmvDemux, type Mpeg2SeekPoint, type Mpeg2SeekIndex,
+         type SubtitleCue } from "./fmv.ts";
 export { OpfsCache } from "./opfs.ts";

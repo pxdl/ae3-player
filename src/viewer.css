@@ -1091,12 +1091,81 @@
     box-shadow: 8px 8px 0 var(--yellow), 15px 15px 0 oklch(0.07 0.03 280 / 0.4);
 }
 
-.cinema-screen video {
+.cinema-screen canvas {
     display: block;
     width: 100%;
     height: 100%;
     object-fit: contain;
     background: black;
+}
+
+.cinema-caption {
+    position: absolute;
+    z-index: 2;
+    inset-inline: 5%;
+    bottom: 5%;
+    width: fit-content;
+    max-width: 90%;
+    margin-inline: auto;
+    padding: 0.28em 0.55em 0.34em;
+    color: white;
+    font-size: clamp(14px, 2.2vw, 26px);
+    font-weight: 700;
+    line-height: 1.2;
+    text-align: center;
+    text-wrap: balance;
+    white-space: pre-line;
+    background: oklch(0.03 0.01 280 / 0.82);
+    border-radius: 4px;
+    pointer-events: none;
+}
+
+.cinema-screen-actions {
+    position: absolute;
+    z-index: 3;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    gap: 6px;
+    opacity: 0;
+    transition: opacity 140ms ease;
+}
+
+.cinema-screen:hover .cinema-screen-actions,
+.cinema-screen:focus-within .cinema-screen-actions {
+    opacity: 1;
+}
+
+.cinema-screen-actions button {
+    display: grid;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 8px;
+    place-items: center;
+    color: white;
+    background: oklch(0.03 0.01 280 / 0.76);
+    border: 1px solid oklch(1 0 0 / 0.3);
+    border-radius: 8px;
+}
+
+.cinema-screen-actions button[aria-pressed="true"] {
+    color: var(--indigo);
+    background: var(--yellow);
+}
+
+.cinema-screen-actions svg {
+    width: 20px;
+    height: 20px;
+}
+
+.cinema-screen:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    aspect-ratio: auto;
+    background: black;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
 }
 
 .cinema-prepare {

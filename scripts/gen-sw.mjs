@@ -1,8 +1,8 @@
 /* Generate dist/sw.js after `vite build`: an app-shell service worker
- * (PWA/offline, plan W6). Normal assets -- including public/synth/ -- are
- * precached. The large movie converter, FFmpeg core, and its worker are
- * fetched and cached only after the user first prepares or converts a movie.
- * No runtime deps, mirroring the app (a build-time script instead of
+ * (PWA/offline). Normal assets -- including public/synth/ -- are
+ * precached. The MPEG-2 playback decoder and large movie converter are fetched
+ * and cached independently, only when the user first prepares or converts a
+ * movie. No runtime deps, mirroring the app (a build-time script instead of
  * vite-plugin-pwa). */
 
 import { createHash } from "node:crypto";
@@ -20,7 +20,7 @@ const files = [];
     }
 })(dist);
 files.sort();
-const lazyAsset = /^assets\/(?:ffmpeg-core|movie-converter|worker)-/;
+const lazyAsset = /^(?:libav\/|assets\/(?:ffmpeg-core|movie-converter|movie-decoder\.worker|worker)-)/;
 
 const hash = createHash("sha256");
 const urls = [];
@@ -76,14 +76,24 @@ self.addEventListener("fetch", (e) => {
         return;
     e.respondWith((async () => {
         const key = req.mode === "navigate" ? "./" : req;
-        const c = await caches.open(CACHE);
-        const cached = await c.match(key, OPTS) ?? await caches.match(key, OPTS);
-        if (cached) return cached;
+        let cache;
+        try {
+            cache = await caches.open(CACHE);
+            const cached = await cache.match(key, OPTS) ?? await caches.match(key, OPTS);
+            if (cached) return cached;
+        } catch (error) {
+            console.error("service-worker cache lookup failed", error);
+        }
         const response = await fetch(req);
         const scopePath = new URL(self.registration.scope).pathname;
         const requestPath = new URL(req.url).pathname.slice(scopePath.length);
-        if (response.ok && LAZY_ASSET.test(requestPath))
-            await c.put(req, response.clone());
+        if (response.ok && cache && LAZY_ASSET.test(requestPath)) {
+            try {
+                await cache.put(req, response.clone());
+            } catch (error) {
+                console.error("service-worker lazy cache write failed", error);
+            }
+        }
         return response;
     })());
 });

@@ -51,6 +51,16 @@ export interface FmvVideoInfo {
     displayAspect: readonly [number, number];
 }
 
+export interface Mpeg2SeekPoint {
+    offset: number;
+    frame: number;
+}
+
+export interface Mpeg2SeekIndex {
+    frames: number;
+    points: readonly Mpeg2SeekPoint[];
+}
+
 export interface FmvGroup {
     fields: number;
     videoChunks: number;
@@ -299,6 +309,51 @@ function startCodes(video: Uint8Array): { code: number; payload: Uint8Array; off
         offset = end - 1;
     }
     return codes;
+}
+
+export function indexMpeg2SeekPoints(video: Uint8Array,
+                                     source = "MPEG-2"): Mpeg2SeekIndex {
+    const points: Mpeg2SeekPoint[] = [];
+    let sequenceOffset = -1;
+    let gopOffset = -1;
+    let frames = 0;
+    for (const item of startCodes(video)) {
+        if (item.code === 0xb3) {
+            sequenceOffset = item.offset;
+            gopOffset = -1;
+            continue;
+        }
+        if (item.code === 0xb8) {
+            gopOffset = item.offset;
+            continue;
+        }
+        if (item.code !== 0x00) continue;
+
+        const bits = new BitReader(item.payload);
+        let temporalReference: number;
+        let pictureType: number;
+        try {
+            temporalReference = bits.read(10);
+            pictureType = bits.read(3);
+        } catch (error) {
+            fail(source, item.offset, (error as Error).message);
+        }
+        if (pictureType! < 1 || pictureType! > 3)
+            fail(source, item.offset, `unsupported MPEG picture type ${pictureType!}`);
+        if (pictureType === 1 && sequenceOffset >= 0 && gopOffset > sequenceOffset) {
+            if (temporalReference! !== 0)
+                fail(source, item.offset,
+                     `indexed I-picture temporal reference ${temporalReference!} is not zero`);
+            points.push({ offset: sequenceOffset, frame: frames });
+            sequenceOffset = -1;
+            gopOffset = -1;
+        }
+        frames++;
+    }
+    if (frames === 0) fail(source, 0, "missing MPEG picture headers");
+    if (points.length === 0 || points[0].frame !== 0)
+        fail(source, 0, "missing initial sequence/GOP/I-picture seek anchor");
+    return { frames, points };
 }
 
 export function parseMpeg2VideoInfo(video: Uint8Array, source = "MPEG-2"): FmvVideoInfo {

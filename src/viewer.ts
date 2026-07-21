@@ -3,7 +3,7 @@ import { loadViewerArt } from "./viewer-assets.ts";
 import type { ViewerArt } from "./viewer-assets.ts";
 import {
     viewerActivate,
-    viewerBindMovieVideo,
+    viewerBindMovieCanvas,
     viewerCancelMovieWork,
     viewerChooseDisc,
     viewerExport,
@@ -13,10 +13,12 @@ import {
     viewerMovieDetails,
     viewerMove,
     viewerPrepareMovie,
+    viewerReportMovieError,
     viewerRemoveMovie,
     viewerSeek,
     viewerSetup,
     viewerSwitchChannel,
+    viewerToggleMovieCaptions,
     viewerTogglePlayback,
     viewerTransport,
     viewerVersion,
@@ -42,16 +44,19 @@ function formatTime(seconds: number): string {
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-function icon(name: "play" | "pause" | "search" | "back" | "forward" | "download"): string {
-    const paths = {
-        play: '<path d="m10 7 8 5-8 5z"/>',
-        pause: '<path d="M9 7h2.5v10H9zm5.5 0H17v10h-2.5z"/>',
-        search: '<circle cx="11" cy="11" r="5.5"/><path d="m15 15 4 4"/>',
-        back: '<path d="m15.5 6-6 6 6 6"/>',
-        forward: '<path d="m9 6 6 6-6 6"/>',
-        download: '<path d="M12 4v10m-4-4 4 4 4-4M5 19h14"/>',
-    };
-    return `<svg aria-hidden="true" viewBox="0 0 24 24">${paths[name]}</svg>`;
+const ICON_PATHS = {
+    play: '<path d="m10 7 8 5-8 5z"/>',
+    pause: '<path d="M9 7h2.5v10H9zm5.5 0H17v10h-2.5z"/>',
+    search: '<circle cx="11" cy="11" r="5.5"/><path d="m15 15 4 4"/>',
+    back: '<path d="m15.5 6-6 6 6 6"/>',
+    forward: '<path d="m9 6 6 6-6 6"/>',
+    download: '<path d="M12 4v10m-4-4 4 4 4-4M5 19h14"/>',
+    fullscreen: '<path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/>',
+} as const;
+type IconName = keyof typeof ICON_PATHS;
+
+function icon(name: IconName): string {
+    return `<svg aria-hidden="true" viewBox="0 0 24 24">${ICON_PATHS[name]}</svg>`;
 }
 
 
@@ -195,12 +200,18 @@ function cinemaFeature(library: ViewerLibrary): string {
             <span class="feature-kicker" data-live-state data-channel-number="04"
                 data-off-air="false">${liveState} · Ch. 04</span>
             <div class="cinema-screen" style="--movie-aspect:${entry.video.displayAspect[0]}/${entry.video.displayAspect[1]}">
-                <video id="cinema-video" playsinline preload="metadata"
-                    aria-label="${escapeHtml(entry.label)}"></video>
-                ${details.prepared ? "" : `<button type="button" class="cinema-prepare"
+                <canvas id="cinema-canvas" aria-label="${escapeHtml(entry.label)}"></canvas>
+                <div class="cinema-caption" data-movie-caption
+                    ${details.captionsEnabled && details.caption !== null ? "" : "hidden"}>${escapeHtml(details.caption ?? "")}</div>
+                ${details.prepared ? `<div class="cinema-screen-actions">
+                    ${captions ? `<button type="button" data-action="movie-caption-toggle"
+                        aria-pressed="${details.captionsEnabled}">CC</button>` : ""}
+                    <button type="button" data-action="movie-fullscreen"
+                        aria-label="Full screen">${icon("fullscreen")}</button>
+                </div>` : `<button type="button" class="cinema-prepare"
                     data-action="movie-prepare" ${busy ? "disabled" : ""}>
                     ${icon("play")}<strong>Prepare local playback</strong>
-                    <small>Fast H.264 / AAC copy · cached privately</small>
+                    <small>Original MPEG-2 · starts after a short buffer</small>
                 </button>`}
             </div>
             <div class="cinema-now">
@@ -239,20 +250,22 @@ function cinemaFeature(library: ViewerLibrary): string {
                 </div>
                 <progress data-movie-progress max="1" value="${details.progress}"
                     ${busy ? "" : "hidden"}></progress>
-                <p class="movie-status${details.error ? " error" : ""}" data-movie-status>
-                    ${escapeHtml(details.status || "Nothing leaves this browser.")}</p>
+                <p class="movie-status${details.error ? " error" : ""}" data-movie-status
+                    aria-live="polite">${escapeHtml(details.status || "Nothing leaves this browser.")}</p>
                 <div class="cache-actions">
-                    ${busy ? `<button type="button" data-action="movie-cancel">Cancel current job</button>` : ""}
+                    ${details.cancellable ? `<button type="button" data-action="movie-cancel">Cancel current job</button>` : ""}
                     ${details.hasIso ? "" : `<button type="button" data-action="tune">Reconnect source disc</button>`}
                     <button type="button" data-action="movie-remove" ${cached && !busy ? "" : "disabled"}>
                         Remove ${cached ? formatBytes(cached) : "cached copies"}</button>
                 </div>
                 <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
-                    · watch ${formatBytes(details.cache?.playbackBytes ?? 0)}
                     · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
-                <p class="converter-license">The GPL FFmpeg conversion core loads in the background when Cinema opens.
-                    Original disc data remains local. <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
-                    target="_blank" rel="license">Licenses &amp; source</a>.</p>
+                <p class="converter-license">The LGPL MPEG-2 playback decoder loads only when a movie is prepared.
+                    The GPL conversion core loads only for converted exports. Original disc data remains local.
+                    <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
+                    target="_blank" rel="license">Licenses</a> ·
+                    <a href="${import.meta.env.BASE_URL}libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz"
+                    rel="license">decoder source</a>.</p>
             </div>
         </div>
         ${broadcastGuide(library)}
@@ -395,8 +408,8 @@ function render(): void {
     document.body.className = "viewer";
     viewerRoot.innerHTML = `<a class="skip-link" href="#viewer">Skip to viewer</a>
         <div class="viewer-page">${viewerHeader()}${viewerMarkup()}</div>`;
-    const movieVideo = viewerRoot.querySelector<HTMLVideoElement>("#cinema-video");
-    if (movieVideo) viewerBindMovieVideo(movieVideo);
+    const movieCanvas = viewerRoot.querySelector<HTMLCanvasElement>("#cinema-canvas");
+    if (movieCanvas) viewerBindMovieCanvas(movieCanvas);
     playUiKey = "";
     exportUiKey = "";
     const nextGuide = viewerRoot.querySelector<HTMLElement>(".guide-list");
@@ -448,8 +461,13 @@ function updateFunctionalUi(now: number): void {
         element.classList.toggle("error", state.error);
     });
     viewerRoot.querySelectorAll<HTMLElement>("[data-live-state]").forEach((kicker) => {
-        const stateLabel = kicker.dataset.offAir === "true"
-            ? "Off air" : state.loading ? "Tuning" : state.playing ? "Live" : "Ready";
+        let stateLabel = "Ready";
+        if (kicker.dataset.offAir === "true")
+            stateLabel = "Off air";
+        else if (state.loading)
+            stateLabel = "Tuning";
+        else if (state.playing)
+            stateLabel = "Live";
         kicker.textContent = `${stateLabel} · Ch. ${kicker.dataset.channelNumber}`;
     });
     viewerRoot.querySelectorAll<HTMLInputElement>("[data-action='seek']").forEach((input) => {
@@ -469,6 +487,20 @@ function updateFunctionalUi(now: number): void {
     });
     viewerRoot.querySelectorAll<HTMLProgressElement>("[data-movie-progress]")
         .forEach((progress) => { progress.value = movie.progress; });
+    const caption = viewerRoot.querySelector<HTMLElement>("[data-movie-caption]");
+    if (caption) {
+        const text = movie.caption ?? "";
+        if (caption.textContent !== text) caption.textContent = text;
+        const hidden = !movie.captionsEnabled || movie.caption === null;
+        if (caption.hidden !== hidden) caption.hidden = hidden;
+    }
+    const captionButton = viewerRoot.querySelector<HTMLButtonElement>(
+        "[data-action='movie-caption-toggle']");
+    if (captionButton) {
+        const pressed = movie.captionsEnabled ? "true" : "false";
+        if (captionButton.getAttribute("aria-pressed") !== pressed)
+            captionButton.setAttribute("aria-pressed", pressed);
+    }
 
     const levels = viewerRoot.querySelector<HTMLElement>("#broadcast-levels");
     if (levels) {
@@ -497,16 +529,32 @@ function updateFunctionalUi(now: number): void {
 
 function interactiveKeyTarget(target: EventTarget | null): target is HTMLElement {
     return target instanceof HTMLElement && (
-        target.matches("input, select, textarea, video, [contenteditable='true']")
+        target.matches("input, select, textarea, [contenteditable='true']")
         || target.closest(".movie-export-grid") !== null
     );
 }
 
 function toggleMovieCaptions(): boolean {
-    const video = viewerRoot.querySelector<HTMLVideoElement>("#cinema-video");
-    const track = video?.textTracks[0];
-    if (!track) return false;
-    track.mode = track.mode === "showing" ? "disabled" : "showing";
+    const details = viewerMovieDetails();
+    if (!details.prepared || details.entry?.subtitleCues === 0) return false;
+    viewerToggleMovieCaptions();
+    return true;
+}
+
+function toggleMovieFullscreen(): boolean {
+    const screen = viewerRoot.querySelector<HTMLElement>(".cinema-screen");
+    if (!screen) return false;
+    const movieName = viewerMovieDetails().entry?.name;
+    const entering = document.fullscreenElement === null;
+    const operation = entering ? screen.requestFullscreen() : document.exitFullscreen();
+    void operation.catch((error) => {
+        console.error("movie fullscreen request failed", error);
+        if (viewerMovieDetails().entry?.name !== movieName)
+            return;
+        viewerReportMovieError(entering
+            ? "Full screen was blocked. Allow full-screen access for this site or use the browser's full-screen command."
+            : "Could not leave full screen. Press Escape or use the browser's full-screen command.");
+    });
     return true;
 }
 
@@ -521,12 +569,18 @@ function focusMovieExports(): boolean {
 }
 
 function onViewerKey(event: KeyboardEvent): void {
+    const library = viewerLibrary();
     if (interactiveKeyTarget(event.target)) {
-        if (event.key === "Escape" && event.target instanceof HTMLElement)
+        if (event.key === "Escape" && event.target instanceof HTMLElement) {
             event.target.blur();
+            const transport = viewerTransport();
+            if (library.channel === "cinema" && (transport.loading || transport.exporting)) {
+                viewerCancelMovieWork();
+                event.preventDefault();
+            }
+        }
         return;
     }
-    const library = viewerLibrary();
     let handled = true;
     switch (event.key) {
     case " ":
@@ -553,11 +607,13 @@ function onViewerKey(event: KeyboardEvent): void {
     case "E":
         handled = library.channel === "cinema" && focusMovieExports();
         break;
-    case "Escape":
-        if (library.channel === "cinema" && viewerTransport().exporting)
+    case "Escape": {
+        const transport = viewerTransport();
+        if (library.channel === "cinema" && (transport.loading || transport.exporting))
             viewerCancelMovieWork();
         else handled = false;
         break;
+    }
     default:
         handled = false;
     }
@@ -595,10 +651,18 @@ function wireInteractions(): void {
         if (action === "movie-prepare") viewerPrepareMovie();
         if (action === "movie-cancel") viewerCancelMovieWork();
         if (action === "movie-remove") viewerRemoveMovie();
+        if (action === "movie-caption-toggle") toggleMovieCaptions();
+        if (action === "movie-fullscreen") toggleMovieFullscreen();
         if (action === "activate-selected") {
             const library = viewerLibrary();
             if (library.selectedId) viewerActivate(library.selectedId);
         }
+    });
+    viewerRoot.addEventListener("dblclick", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".cinema-screen")
+                && !target.closest("button"))
+            toggleMovieFullscreen();
     });
     viewerRoot.addEventListener("input", (event) => {
         const input = event.target as HTMLInputElement;

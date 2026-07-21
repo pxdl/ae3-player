@@ -28,35 +28,39 @@ stream jumps can loop or execute once; sample loops remain identified even when
 their envelopes are technically finite. Velocity-zero voice-stop requests are
 labeled as control-only rather than silent effects. WAV export offers one pass
 or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
-Cinema performs a lightweight 22-movie catalog scan, then reads, validates,
-converts, and caches only the movie the user chooses. Playback preserves the
-game's 7:6 sample aspect ratio, bobs interlaced sources to 59.94 fps, and exposes
-local WebVTT captions for the ten subtitled scenes. Exports include byte-exact
-original `.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT
-masters; lossless MPEG-2/FLAC/SubRip MKV; quality H.264/AAC MP4; and VP9/Opus
-WebM with a WebVTT sidecar. Local playback uses a separate x264
-`veryfast`/CRF 16 watch copy; explicit MP4 export retains `slow`/CRF 15.
+Cinema performs a lightweight 22-movie catalog scan, then reads, validates, and
+caches only the movie the user chooses. Playback sends the disc's original
+MPEG-2 elementary stream to a dedicated worker, decodes bounded frame batches
+with a custom LGPL libav.js/FFmpeg WebAssembly build, and presents packed I420
+through WebGL2 with the decoded WAV as the master clock. It preserves the game's
+7:6 sample aspect ratio, bobs interlaced sources to 59.94 fps, and exposes local
+captions for the ten subtitled scenes. Exports include byte-exact original
+`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters;
+lossless MPEG-2/FLAC/SubRip MKV; quality H.264/AAC MP4; and VP9/Opus WebM with
+a WebVTT sidecar. The GPL conversion engine is never loaded for playback.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
 off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
-drives. The 32 MiB FFmpeg core is excluded from the initial precache; opening
-Cinema loads and caches it in the background for the first preparation.
+drives. The MPEG-2 playback decoder and 32 MiB conversion engine are excluded
+from the initial precache. Each is fetched and cached independently on first
+use.
 
-Browser support: Chrome/Chromium is the tested reference; Firefox works.
-Safari works as of the in-gesture audio fix: the whole audio stack is created
-inside the first click, because Safari ties the autoplay dispensation to the
-gesture that CREATED the `AudioContext` — a context built at page-load time
-can stay "interrupted" forever under stricter per-site Auto-Play policies,
-no matter who calls `resume()` later. If audio still refuses to start, the
-status line says so; check Safari Settings > Websites > Auto-Play for this
-site and the tab's mute state. Safari floors: `Promise.withResolvers` needs
-17.4+; OPFS writes need 18.2+ and can be declined by the browser (the app
-then plays straight from the ISO and asks for it again next visit).
-Cinema playback and conversion were exercised on this workstation in current
-Chrome 150, Firefox 152, and Safari 26.4. Conversion uses the single-thread core
-because the Pages deployment does not provide the COOP/COEP isolation required
-by `SharedArrayBuffer`.
+Browser support: Chrome/Chromium is the tested reference. Core audio and UI
+paths also work in Firefox and Safari. Safari's audio stack is created inside
+the first click because Safari ties autoplay dispensation to the gesture that
+created the `AudioContext`; a context built at page load can remain interrupted
+under stricter per-site Auto-Play policies. If audio still refuses to start,
+check Safari Settings > Websites > Auto-Play and the tab's mute state. Safari
+floors: `Promise.withResolvers` needs 17.4+; OPFS writes need 18.2+ and can be
+declined by the browser, in which case the app reads from the ISO again next
+visit.
+
+As of 2026-07-21, original MPEG-2 Cinema playback and conversion are verified
+in Chrome 150, Firefox 152, and Safari 26.4 with progressive, bobbed
+interlaced, caption, seek, cache-resume, and full-movie flows. Conversion uses
+the single-thread core because Pages does not provide the COOP/COEP isolation
+required by `SharedArrayBuffer`.
 
 This repository never contains or serves game data. Your disc stays on your
 machine.
@@ -64,12 +68,15 @@ machine.
 ## Architecture
 
 - `src/` — Vite + TypeScript app: disc session (extraction + OPFS), worklet
-  controller, timeline, media stores, lazy movie converter, and UI. No
-  framework.
+  controller, timeline, media stores, bounded movie decoder/renderer/session,
+  lazy movie converter, and UI. No framework.
 - `src/vendor/extract/` — vendored `@ae3/extract` (TS source, bundled).
 - `public/synth/` — the **unbundled audio path**: vendored `@ae3/synth`
   binding + `ae3synth.wasm`, plus the app's engine + `AudioWorkletProcessor`.
   Served verbatim; see `public/synth/README.md` for why.
+- `public/libav/` and `vendor/libav/` — reproducible minimal LGPL MPEG-2
+  decoder artifacts, a directly deployed corresponding-source bundle, pinned
+  configuration, checksums, and build script.
 - Vendored artifacts refresh via `npm run sync-sdk` (set `AE3_SDK` to your
   ae3-sdk checkout; provenance lands in `src/vendor/SDK_COMMIT`).
 
@@ -91,9 +98,11 @@ npm run typecheck
 `.github/workflows/deploy.yml` on every push to `main` (needs Pages set to
 the "GitHub Actions" source once the repo is public).
 
-The application source is MIT-licensed. The optional Cinema converter also
-distributes `@ffmpeg/core` under GPL-2.0-or-later and unmodified Mediabunny
-portions under MPL-2.0. Exact versions, license links, and corresponding-source
-links are deployed in [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt).
+The application source is MIT-licensed. Cinema playback distributes a custom
+libav.js/FFmpeg build under LGPL-2.1-or-later. The optional Cinema converter
+also distributes `@ffmpeg/core` under GPL-2.0-or-later and unmodified Mediabunny
+portions under MPL-2.0. Exact versions, license links, checksums, and
+corresponding-source links are deployed in
+[`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt).
 
 License: MIT.
