@@ -904,7 +904,6 @@
 .guide-list {
     display: flex;
     min-height: 0;
-    max-height: 350px;
     flex: 1;
     flex-direction: column;
     padding-block-start: 6px;
@@ -1048,6 +1047,7 @@
 
 .cinema-feature {
     grid-template-columns: minmax(470px, 1.2fr) minmax(360px, 0.9fr) minmax(250px, 0.58fr);
+    height: 650px;
     min-height: 650px;
     background: oklch(0.16 0.065 277);
 }
@@ -1459,7 +1459,7 @@
 
 @media (max-width: 1180px) {
     .broadcast-feature { grid-template-columns: minmax(340px, 1.2fr) minmax(270px, 0.8fr); }
-    .cinema-feature { grid-template-columns: minmax(410px, 1.1fr) minmax(340px, 0.9fr); }
+    .cinema-feature { height: auto; grid-template-columns: minmax(410px, 1.1fr) minmax(340px, 0.9fr); }
     .up-next { grid-column: 1 / -1; padding: 12px; }
     .guide-list {
         display: grid;
