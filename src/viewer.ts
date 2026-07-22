@@ -3,6 +3,7 @@ import { loadViewerArt } from "./viewer-assets.ts";
 import type { ViewerArt } from "./viewer-assets.ts";
 import {
     viewerActivate,
+    viewerAssetSession,
     viewerBindMovieCanvas,
     viewerCancelMovieWork,
     viewerChooseDisc,
@@ -27,7 +28,7 @@ import type { ViewerChannel, ViewerItem, ViewerLibrary } from "./main.ts";
 import type { MovieExportKind } from "./movies.ts";
 
 let viewerArt: ViewerArt | null = null;
-let artDiscAttempt = "";
+let artDiscAttempt: ReturnType<typeof viewerAssetSession> = null;
 let viewerRoot: HTMLElement;
 let guideQuery = "";
 let lastViewerVersion = -1;
@@ -748,11 +749,11 @@ function mountViewer(): void {
 }
 
 function refreshViewerArt(): void {
-    const library = viewerLibrary();
-    if (!library.connected || viewerArt || artDiscAttempt === library.discLabel) return;
-    artDiscAttempt = library.discLabel;
-    void loadViewerArt().then((art) => {
-        if (!art) return;
+    const source = viewerAssetSession();
+    if (!source || viewerArt || artDiscAttempt === source) return;
+    artDiscAttempt = source;
+    void loadViewerArt(source).then((art) => {
+        if (!art || viewerAssetSession() !== source) return;
         viewerArt = art;
         render();
     }).catch((error) => console.warn("Could not load local game art", error));

@@ -2242,6 +2242,10 @@ export function viewerVersion(): number {
     return viewerRevision;
 }
 
+export function viewerAssetSession(): DiscSession | null {
+    return session;
+}
+
 export function viewerLibrary(): ViewerLibrary {
     const channel = viewerChannel;
     const items: ViewerItem[] = [];

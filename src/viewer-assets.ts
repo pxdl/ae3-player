@@ -1,5 +1,5 @@
-import { LAST_DISC_KEY } from "./disc.ts";
-import { inflateSz, memberBytes, OpfsCache, unpackPck } from "./vendor/extract/index.ts";
+import type { DiscSession } from "./disc.ts";
+import { inflateSz, memberBytes, unpackPck } from "./vendor/extract/index.ts";
 
 const RGBA16 = 1;
 const RGB24 = 2;
@@ -176,11 +176,7 @@ async function imageUrl(data: Uint8Array, frame?: AssetSpec["frame"]): Promise<s
 }
 
 /** Load selected UI textures previously cached from the user's own disc. */
-export async function loadViewerArt(): Promise<ViewerArt | null> {
-    const key = localStorage.getItem(LAST_DISC_KEY);
-    if (!key || !OpfsCache.supported()) return null;
-
-    const cache = await OpfsCache.open(key);
+export async function loadViewerArt(session: DiscSession): Promise<ViewerArt | null> {
     const images: Partial<Record<ViewerArtId, string>> = {};
     const packages = new Map<string, AssetSpec[]>();
     for (const asset of ASSETS) {
@@ -190,7 +186,7 @@ export async function loadViewerArt(): Promise<ViewerArt | null> {
     }
 
     for (const [packageName, specs] of packages) {
-        const compressed = await cache.read(packageName);
+        const compressed = await session.read(packageName);
         if (!compressed) continue;
         try {
             const data = await inflateSz(compressed);
