@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Client-side Ape Escape 3 music, sound, and FMV player with local extraction, conversion, and offline caching.",
   "scripts": {
+    "postinstall": "node scripts/patch-mediabunny-mpeg2.mjs",
     "dev": "vite",
     "build": "vite build && node scripts/gen-sw.mjs",
     "preview": "vite preview",

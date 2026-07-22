@@ -4,9 +4,11 @@ import {
     BufferTarget,
     EncodedAudioPacketSource,
     EncodedPacket,
+    EncodedVideoPacketSource,
     canEncodeAudio,
     canEncodeVideo,
     Input,
+    MkvOutputFormat,
     Mp4OutputFormat,
     Output,
     TextSubtitleSource,
@@ -34,6 +36,9 @@ import {
     type FmvDemux,
     type FmvVideoInfo,
 } from "./vendor/extract/index.ts";
+type MovieOutput = Output<Mp4OutputFormat, BufferTarget>
+    | Output<MkvOutputFormat, BufferTarget>;
+
 
 const AUDIO_BITRATE = 256_000;
 const MAX_DECODER_FRAMES = 32;
@@ -71,6 +76,13 @@ export interface MovieMp4ExportResult {
     duration: number;
     stats: MovieDecoderStats;
 }
+export interface MovieMkvExportResult {
+    buffer: ArrayBuffer;
+    mime: "video/x-matroska";
+    encodedFrames: number;
+    duration: number;
+}
+
 
 export class MovieExportStageError extends Error {
     readonly stage: MovieMp4ExportErrorStage;
@@ -85,7 +97,7 @@ export class MovieExportStageError extends Error {
 export class MovieMp4ExportController {
     readonly #abort = new AbortController();
     #decoder: MovieDecoderClient | null = null;
-    #output: Output<Mp4OutputFormat, BufferTarget> | null = null;
+    #output: MovieOutput | null = null;
     #cancelPromise: Promise<void> | null = null;
 
     get signal(): AbortSignal {
@@ -98,7 +110,7 @@ export class MovieMp4ExportController {
             decoder.terminate();
     }
 
-    attachOutput(output: Output<Mp4OutputFormat, BufferTarget>): void {
+    attachOutput(output: MovieOutput): void {
         this.#output = output;
         if (this.signal.aborted && this.#cancelPromise === null)
             this.#cancelPromise = this.#cancelOutput(output);
@@ -118,7 +130,7 @@ export class MovieMp4ExportController {
         this.signal.throwIfAborted();
     }
 
-    async #cancelOutput(output: Output<Mp4OutputFormat, BufferTarget>): Promise<void> {
+    async #cancelOutput(output: MovieOutput): Promise<void> {
         if (output.state === "canceled" || output.state === "finalized")
             return;
         await output.cancel();
@@ -264,6 +276,116 @@ export async function exportMovieMp4(request: MovieMp4ExportRequest,
         }
     }
 }
+export async function exportMovieMkv(request: MovieMp4ExportRequest,
+                                     progress: MovieExportProgress,
+                                     controller = new MovieMp4ExportController()):
+        Promise<MovieMkvExportResult> {
+    controller.throwIfAborted();
+    progress(0, "Demuxing lossless movie…");
+    const demux = runStage("demux", () => demuxFmv(
+        new Uint8Array(request.fmv),
+        request.name,
+    ));
+    validateDemux(request, demux);
+    controller.throwIfAborted();
+
+    progress(0.08, "Packetizing original MPEG-2 video…");
+    const seekIndex = runStage("index", () => indexMpeg2SeekPoints(
+        demux.video,
+        `${request.name} video`,
+    ));
+    const videoPackets = runStage("index", () => packetizeMpeg2Video(
+        demux.video,
+        demux.videoInfo.frameRate,
+        seekIndex,
+    ));
+    const audio = runStage("demux", () => readPcmWave(
+        demux.wav,
+        request.expectations.channels,
+        request.expectations.sampleRate,
+    ));
+    const duration = videoPackets.length / demux.videoInfo.frameRate;
+    if (!nearlyEqual(duration, request.expectations.duration)
+            || !nearlyEqual(audio.duration, request.expectations.duration)) {
+        throw new MovieExportStageError(
+            "demux",
+            "decoded audio and original MPEG-2 video do not match the scanned duration",
+        );
+    }
+    controller.throwIfAborted();
+
+    const target = new BufferTarget();
+    const output = new Output({
+        format: new MkvOutputFormat(),
+        target,
+    });
+    controller.attachOutput(output);
+    const videoSource = new EncodedVideoPacketSource("mpeg2");
+    const audioSource = new EncodedAudioPacketSource("pcm-s16");
+    const subtitleSource = request.vtt === undefined
+        ? null
+        : new TextSubtitleSource("webvtt");
+    output.addVideoTrack(videoSource, { frameRate: demux.videoInfo.frameRate });
+    output.addAudioTrack(audioSource);
+    if (subtitleSource !== null)
+        output.addSubtitleTrack(subtitleSource, { languageCode: "eng" });
+
+    try {
+        progress(0.14, "Starting lossless MKV muxer…");
+        await runAsyncStage("mux", () => output.start());
+        controller.throwIfAborted();
+        const producers = [
+            failTogether(controller, () => produceMpeg2Video(
+                videoPackets,
+                demux.videoInfo,
+                videoSource,
+                progress,
+                controller,
+            )),
+            failTogether(controller, () => producePcmAudio(
+                audio,
+                audioSource,
+                controller,
+            )),
+        ];
+        if (subtitleSource !== null && request.vtt !== undefined) {
+            producers.push(failTogether(controller, () => produceSubtitles(
+                request.vtt!,
+                subtitleSource,
+                duration,
+                controller,
+            )));
+        }
+        const settled = await Promise.allSettled(producers);
+        const failure = settled.find(
+            (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failure !== undefined)
+            throw controller.signal.aborted ? controller.signal.reason : failure.reason;
+
+        controller.throwIfAborted();
+        progress(0.96, "Finalizing lossless MKV…");
+        await runAsyncStage("mux", () => output.finalize());
+        const buffer = target.buffer;
+        if (buffer === null || buffer.byteLength === 0)
+            throw new MovieExportStageError("mux", "MKV muxer produced an empty file");
+        progress(1, "Lossless MKV ready");
+        return {
+            buffer,
+            mime: "video/x-matroska",
+            encodedFrames: videoPackets.length,
+            duration,
+        };
+    } catch (cause) {
+        try {
+            await controller.cancel(cause);
+        } catch (cleanupCause) {
+            console.error("movie export cleanup failed", cleanupCause);
+        }
+        throw cause;
+    }
+}
+
 
 function validateRuntimeSupport(): void {
     if (typeof VideoFrame !== "function" || typeof VideoEncoder !== "function"
@@ -350,6 +472,211 @@ async function openWave(demux: FmvDemux, request: MovieMp4ExportRequest): Promis
         throw stageError("demux", cause);
     }
 }
+export function packetizeMpeg2Video(video: Uint8Array, frameRate: number,
+                                    seekIndex = indexMpeg2SeekPoints(video)):
+        EncodedPacket[] {
+    if (!Number.isFinite(frameRate) || frameRate <= 0)
+        throw new RangeError("MPEG-2 frame rate must be positive and finite");
+    const codes: Array<{ offset: number; code: number }> = [];
+    for (let offset = 0; offset + 4 <= video.byteLength; offset++) {
+        if (video[offset] === 0 && video[offset + 1] === 0 && video[offset + 2] === 1) {
+            codes.push({ offset, code: video[offset + 3]! });
+            offset += 3;
+        }
+    }
+    const pictures = codes
+        .map((item, codeIndex) => ({ ...item, codeIndex }))
+        .filter(item => item.code === 0);
+    if (pictures.length !== seekIndex.frames)
+        throw new Error(`packetized ${pictures.length} MPEG-2 pictures; expected ${seekIndex.frames}`);
+
+    const units = pictures.map((picture, pictureIndex) => {
+        const payload = picture.offset + 4;
+        if (payload + 2 > video.byteLength)
+            throw new Error(`truncated MPEG-2 picture header at 0x${picture.offset.toString(16)}`);
+        const temporalReference = video[payload]! << 2 | video[payload + 1]! >> 6;
+        const pictureType = video[payload + 1]! >> 3 & 7;
+        if (pictureType < 1 || pictureType > 3)
+            throw new Error(`unsupported MPEG-2 picture type ${pictureType}`);
+
+        let start = picture.offset;
+        if (pictureIndex === 0) {
+            start = 0;
+        } else {
+            const previousPictureCodeIndex = pictures[pictureIndex - 1]!.codeIndex;
+            for (let index = picture.codeIndex - 1; index > previousPictureCodeIndex; index--) {
+                const leading = codes[index]!;
+                if (leading.code >= 0x01 && leading.code <= 0xaf)
+                    break;
+                start = leading.offset;
+            }
+        }
+        return {
+            start,
+            temporalReference,
+            pictureType,
+            key: seekIndex.points.some(point =>
+                point.offset >= start && point.offset <= picture.offset),
+        };
+    });
+    if (!units[0]?.key)
+        throw new Error("first MPEG-2 access unit is not an indexed key picture");
+
+    const packets: EncodedPacket[] = [];
+    let groupStart = 0;
+    let presentationBase = 0;
+    for (let index = 1; index <= units.length; index++) {
+        if (index < units.length && !units[index]!.key)
+            continue;
+        const group = units.slice(groupStart, index);
+        const references = new Set(group.map(unit => unit.temporalReference));
+        if (references.size !== group.length
+                || group.some(unit => unit.temporalReference >= group.length)) {
+            throw new Error("MPEG-2 GOP temporal references are not a complete presentation order");
+        }
+        for (let offset = 0; offset < group.length; offset++) {
+            const unitIndex = groupStart + offset;
+            const unit = group[offset]!;
+            const end = units[unitIndex + 1]?.start ?? video.byteLength;
+            packets.push(new EncodedPacket(
+                video.subarray(unit.start, end),
+                unit.key ? "key" : "delta",
+                (presentationBase + unit.temporalReference) / frameRate,
+                1 / frameRate,
+                unitIndex,
+            ));
+        }
+        presentationBase += group.length;
+        groupStart = index;
+    }
+    return packets;
+}
+
+interface PcmWave {
+    data: Uint8Array;
+    channels: number;
+    sampleRate: number;
+    frames: number;
+    duration: number;
+}
+
+function readPcmWave(bytes: Uint8Array, expectedChannels: number,
+                     expectedSampleRate: number): PcmWave {
+    if (bytes.byteLength < 12 || ascii(bytes, 0, 4) !== "RIFF"
+            || ascii(bytes, 8, 4) !== "WAVE")
+        throw new Error("decoded PCM WAV has an invalid RIFF header");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let channels = 0;
+    let sampleRate = 0;
+    let blockAlign = 0;
+    let bitsPerSample = 0;
+    let data: Uint8Array | null = null;
+    for (let offset = 12; offset + 8 <= bytes.byteLength;) {
+        const size = view.getUint32(offset + 4, true);
+        const start = offset + 8;
+        const end = start + size;
+        if (end > bytes.byteLength)
+            throw new Error("decoded PCM WAV contains a truncated chunk");
+        const id = ascii(bytes, offset, 4);
+        if (id === "fmt ") {
+            if (size < 16 || view.getUint16(start, true) !== 1)
+                throw new Error("decoded WAV audio is not integer PCM");
+            channels = view.getUint16(start + 2, true);
+            sampleRate = view.getUint32(start + 4, true);
+            blockAlign = view.getUint16(start + 12, true);
+            bitsPerSample = view.getUint16(start + 14, true);
+        } else if (id === "data") {
+            data = bytes.subarray(start, end);
+        }
+        offset = end + (size & 1);
+    }
+    if (data === null || channels !== expectedChannels || sampleRate !== expectedSampleRate
+            || bitsPerSample !== 16 || blockAlign !== channels * 2
+            || data.byteLength === 0 || data.byteLength % blockAlign !== 0)
+        throw new Error("decoded PCM WAV metadata does not match the scanned catalog");
+    const frames = data.byteLength / blockAlign;
+    return { data, channels, sampleRate, frames, duration: frames / sampleRate };
+}
+
+async function produceMpeg2Video(packets: readonly EncodedPacket[],
+                                 info: FmvVideoInfo,
+                                 source: EncodedVideoPacketSource,
+                                 progress: MovieExportProgress,
+                                 controller: MovieMp4ExportController): Promise<void> {
+    const metadata: EncodedVideoChunkMetadata = {
+        decoderConfig: {
+            codec: "mpeg2video",
+            codedWidth: info.width,
+            codedHeight: info.height,
+            displayAspectWidth: info.displayAspect[0],
+            displayAspectHeight: info.displayAspect[1],
+            colorSpace: {
+                primaries: "smpte170m",
+                transfer: "smpte170m",
+                matrix: "smpte170m",
+                fullRange: false,
+            },
+        },
+    };
+    try {
+        for (let index = 0; index < packets.length; index++) {
+            controller.throwIfAborted();
+            await source.add(packets[index]!, index === 0 ? metadata : undefined);
+            progress(
+                0.16 + 0.74 * (index + 1) / packets.length,
+                `Remuxing original MPEG-2 video · ${index + 1} / ${packets.length}`,
+            );
+        }
+    } catch (cause) {
+        throw stageError("mux", cause);
+    } finally {
+        source.close();
+    }
+}
+
+async function producePcmAudio(audio: PcmWave, source: EncodedAudioPacketSource,
+                               controller: MovieMp4ExportController): Promise<void> {
+    const framesPerPacket = 4096;
+    const bytesPerFrame = audio.channels * 2;
+    const metadata: EncodedAudioChunkMetadata = {
+        decoderConfig: {
+            codec: "pcm-s16",
+            numberOfChannels: audio.channels,
+            sampleRate: audio.sampleRate,
+        },
+    };
+    try {
+        for (let frame = 0, sequence = 0; frame < audio.frames;
+                frame += framesPerPacket, sequence++) {
+            controller.throwIfAborted();
+            const frames = Math.min(framesPerPacket, audio.frames - frame);
+            const start = frame * bytesPerFrame;
+            const data = audio.data.subarray(start, start + frames * bytesPerFrame);
+            await source.add(
+                new EncodedPacket(
+                    data,
+                    "key",
+                    frame / audio.sampleRate,
+                    frames / audio.sampleRate,
+                    sequence,
+                ),
+                sequence === 0 ? metadata : undefined,
+            );
+        }
+    } catch (cause) {
+        throw stageError("mux", cause);
+    } finally {
+        source.close();
+    }
+}
+
+function ascii(bytes: Uint8Array, offset: number, length: number): string {
+    let value = "";
+    for (let index = 0; index < length; index++)
+        value += String.fromCharCode(bytes[offset + index]!);
+    return value;
+}
+
 
 interface VideoProducerResult {
     encodedFrames: number;

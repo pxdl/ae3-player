@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 
 import {
+    exportMovieMkv,
     exportMovieMp4,
-    MovieMp4ExportWorkerError,
+    MovieExportWorkerError,
 } from "../src/movie-export-client.ts";
 import type {
     MovieMp4ExportWorkerRequest,
@@ -88,7 +89,7 @@ function complete(worker: FakeWorker, buffer = new Uint8Array([9, 8, 7]).buffer)
         type: "complete",
         jobId: request.jobId,
         buffer,
-        mime: "video/mp4",
+        mime: request.format === "mkv" ? "video/x-matroska" : "video/mp4",
         encodedFrames: 1,
         duration: 1,
     } satisfies MovieMp4ExportWorkerResponse);
@@ -122,6 +123,16 @@ test("transfers a non-empty result and relays monotonic progress", async () => {
     ]);
     assert.equal(worker.terminated, true);
 });
+test("requests lossless MKV and accepts its Matroska MIME", async () => {
+    const promise = exportMovieMkv(input(), () => {});
+    const worker = await currentWorker();
+    const request = worker.requests[0];
+    assert.equal(request.type, "export");
+    assert.equal(request.format, "mkv");
+    complete(worker);
+    assert.deepEqual([...await promise], [9, 8, 7]);
+});
+
 
 test("abort before start creates no worker", async () => {
     const controller = new AbortController();
@@ -164,7 +175,7 @@ test("structured worker errors preserve their stage", async () => {
         message: "Fast MP4 unavailable",
     } satisfies MovieMp4ExportWorkerResponse);
     await assert.rejects(promise, (cause: unknown) => {
-        assert.ok(cause instanceof MovieMp4ExportWorkerError);
+        assert.ok(cause instanceof MovieExportWorkerError);
         assert.equal(cause.stage, "capability");
         assert.equal(cause.message, "Fast MP4 unavailable");
         return true;

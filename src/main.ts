@@ -2089,7 +2089,9 @@ async function exportSelectedMovie(kind: MovieExportKind, captions: boolean): Pr
     movieProgress = 0;
     movieStatus = kind === "mp4"
         ? "Starting Fast MP4 export…"
-        : `preparing ${kind} export`;
+        : kind === "mkv"
+            ? "Starting Lossless MKV export…"
+            : `preparing ${kind} export`;
     movieError = false;
     const controller = new AbortController();
     movieAbort = controller;

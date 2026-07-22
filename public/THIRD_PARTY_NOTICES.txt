@@ -85,6 +85,8 @@ Exact source: https://github.com/Vanilagy/mediabunny/tree/v1.50.9
 Source archive: https://github.com/Vanilagy/mediabunny/archive/refs/tags/v1.50.9.tar.gz
 Copyright: Vanilagy and Mediabunny contributors
 
-The deployed direct movie-export worker and its lazy client chunk contain
-unmodified compiled portions of Mediabunny. The corresponding Source Code Form
-is available at the exact source link above under MPL-2.0.
+The deployed movie-export worker contains compiled portions of Mediabunny.
+ae3-player adds the `mpeg2` codec registration and Matroska `V_MPEG2` mapping;
+the complete modification is reproduced by
+`scripts/patch-mediabunny-mpeg2.mjs`. The upstream corresponding Source Code
+Form is available at the exact source link above under MPL-2.0.

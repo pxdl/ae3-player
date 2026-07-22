@@ -1257,6 +1257,7 @@
 .caption-toggle { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 900; }
 .caption-toggle input { width: 16px; height: 16px; accent-color: var(--red); }
 .movie-export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-block-start: 12px; }
+.movie-export-grid [data-movie-export="mkv"],
 .movie-export-grid [data-movie-export="mp4"] { grid-column: 1 / -1; }
 .movie-export-grid button {
     display: flex;

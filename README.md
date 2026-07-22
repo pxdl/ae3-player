@@ -39,23 +39,24 @@ an explicit display-aspect picture box while the WebGL backing store stays at
 the coded source dimensions. A two-row Cinema transport sits directly below the
 picture and remains with captions and picture controls in fullscreen.
 Interlaced sources are bobbed to 59.94 fps, and local captions cover the ten
-subtitled scenes. Cinema offers three exports: byte-exact original
-`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters; and
-Fast MP4 with browser-encoded H.264/AAC plus optional embedded WebVTT captions.
-Fast MP4 uses a separate export worker and decoder session, so playback remains
-isolated and responsive.
+subtitled scenes. Cinema offers four exports: byte-exact original
+`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters;
+Lossless MKV that remuxes the original MPEG-2 with decoded 16-bit PCM and
+optional embedded WebVTT captions; and Fast MP4 with browser-encoded H.264/AAC.
+Both containers use a separate export worker, so playback remains isolated and
+responsive.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
 off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
-drives. The MPEG-2 decoder and direct Fast MP4 modules are excluded from the
+drives. The MPEG-2 decoder and movie-export modules are excluded from the
 initial precache. Each is fetched and cached independently on first use.
 
 Browser support: Chrome/Chromium is the tested reference. Core audio, playback,
-and UI paths also work in Firefox and Safari. Fast MP4 additionally requires
-worker-side WebCodecs AVC and AAC encoding; unsupported browsers report that
-requirement explicitly, while Original ZIP and Masters ZIP remain available as
-the portable fallback. Safari's audio stack is created inside the first click
+UI, and Lossless MKV export paths also work without WebCodecs encoding. Fast MP4
+requires worker-side WebCodecs AVC and AAC encoding; unsupported browsers report
+that requirement explicitly, while Original ZIP, Masters ZIP, and Lossless MKV
+remain available. Safari's audio stack is created inside the first click
 because Safari ties autoplay dispensation to the gesture that created the
 `AudioContext`; a context built at page load can remain interrupted under
 stricter per-site Auto-Play policies. If audio still refuses to start, check
@@ -108,7 +109,8 @@ the "GitHub Actions" source once the repo is public).
 
 The application source is MIT-licensed. Cinema playback and Fast MP4 frame
 extraction distribute a custom libav.js/FFmpeg build under
-LGPL-2.1-or-later. Direct MP4 muxing includes unmodified Mediabunny portions
+LGPL-2.1-or-later. Movie muxing includes Mediabunny portions plus the
+MPEG-2 Matroska codec registration in `scripts/patch-mediabunny-mpeg2.mjs`,
 under MPL-2.0. The notices retain the former `@ffmpeg/*` GPL source offer while
 one previous service-worker cache generation can still serve that legacy
 release. Exact versions, license links, checksums, and corresponding-source

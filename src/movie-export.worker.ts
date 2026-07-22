@@ -7,6 +7,7 @@ import {
     type MovieMp4ExportWorkerResponse,
 } from "./movie-export-protocol.ts";
 import {
+    exportMovieMkv,
     exportMovieMp4,
     MovieExportStageError,
     MovieMp4ExportController,
@@ -40,7 +41,8 @@ scope.onmessage = (event: MessageEvent<unknown>) => {
 
 async function run(request: Parameters<typeof exportMovieMp4>[0]): Promise<void> {
     try {
-        const result = await exportMovieMp4(request, reportProgress, controller!);
+        const exporter = request.format === "mkv" ? exportMovieMkv : exportMovieMp4;
+        const result = await exporter(request, reportProgress, controller!);
         if (terminal)
             return;
         terminal = true;
@@ -62,7 +64,9 @@ async function run(request: Parameters<typeof exportMovieMp4>[0]): Promise<void>
         const error: MovieMp4ExportError = {
             type: "error",
             jobId: request.jobId,
-            stage: cause instanceof MovieExportStageError ? cause.stage : "encode",
+            stage: cause instanceof MovieExportStageError
+                ? cause.stage
+                : request.format === "mkv" ? "mux" : "encode",
             message: errorMessage(cause),
         };
         post(error);

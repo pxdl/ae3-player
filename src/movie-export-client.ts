@@ -1,5 +1,6 @@
 import {
     isMovieMp4ExportWorkerResponse,
+    type MovieExportFormat,
     type MovieMp4ExportErrorStage,
     type MovieMp4ExportExpectations,
     type MovieMp4ExportRequest,
@@ -9,7 +10,7 @@ import type { MovieProgress } from "./movies.ts";
 const CANCEL_ACK_TIMEOUT_MS = 300;
 const COPY_CHUNK_BYTES = 4 * 1024 * 1024;
 
-export interface MovieMp4ExportInput {
+export interface MovieExportInput {
     name: string;
     fmv: Uint8Array;
     vtt?: Uint8Array;
@@ -17,19 +18,29 @@ export interface MovieMp4ExportInput {
     cooperativeCopy?: boolean;
 }
 
-export class MovieMp4ExportWorkerError extends Error {
+export class MovieExportWorkerError extends Error {
     readonly stage: MovieMp4ExportErrorStage;
 
     constructor(stage: MovieMp4ExportErrorStage, message: string) {
         super(message);
-        this.name = "MovieMp4ExportWorkerError";
+        this.name = "MovieExportWorkerError";
         this.stage = stage;
     }
 }
 
-export async function exportMovieMp4(input: MovieMp4ExportInput,
-                                     progress: MovieProgress,
-                                     signal?: AbortSignal): Promise<Uint8Array> {
+export function exportMovieMp4(input: MovieExportInput, progress: MovieProgress,
+                               signal?: AbortSignal): Promise<Uint8Array> {
+    return exportMovie("mp4", input, progress, signal);
+}
+
+export function exportMovieMkv(input: MovieExportInput, progress: MovieProgress,
+                               signal?: AbortSignal): Promise<Uint8Array> {
+    return exportMovie("mkv", input, progress, signal);
+}
+
+async function exportMovie(format: MovieExportFormat, input: MovieExportInput,
+                           progress: MovieProgress,
+                           signal?: AbortSignal): Promise<Uint8Array> {
     signal?.throwIfAborted();
     const fmv = await ownedCopy(input.fmv, input.cooperativeCopy === true, signal);
     const vtt = input.vtt === undefined
@@ -43,6 +54,7 @@ export async function exportMovieMp4(input: MovieMp4ExportInput,
     const jobId = crypto.randomUUID();
     const request: MovieMp4ExportRequest = {
         type: "export",
+        format,
         jobId,
         name: input.name,
         fmv,
@@ -122,12 +134,16 @@ export async function exportMovieMp4(input: MovieMp4ExportInput,
             progress(lastProgress, response.stage);
             break;
         case "complete":
+            if (response.mime !== (format === "mp4" ? "video/mp4" : "video/x-matroska")) {
+                fail(new Error("movie export worker returned the wrong container format"));
+                return;
+            }
             settled = true;
             terminate();
             resolve(new Uint8Array(response.buffer));
             break;
         case "error":
-            fail(new MovieMp4ExportWorkerError(response.stage, response.message));
+            fail(new MovieExportWorkerError(response.stage, response.message));
             break;
         case "cancelled":
             fail(new Error("movie export worker cancelled unexpectedly"));

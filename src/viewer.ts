@@ -249,12 +249,14 @@ function cinemaFeature(library: ViewerLibrary): string {
             <div class="conversion-studio">
                 <div class="conversion-head"><span class="eyebrow">Local export lab</span>
                     <label class="caption-toggle"><input type="checkbox" data-action="movie-captions"
-                        ${captions ? "checked" : "disabled"} /> Include English captions in Fast MP4</label></div>
+                        ${captions ? "checked" : "disabled"} /> Embed available English captions</label></div>
                 <div class="movie-export-grid">
                     <button type="button" data-movie-export="original" ${busy ? "disabled" : ""}>
                         <b>Original ZIP</b><small>.str / .bin / .sbt · byte-exact</small></button>
                     <button type="button" data-movie-export="masters" ${busy ? "disabled" : ""}>
                         <b>Masters ZIP</b><small>MPEG-2 / PCM WAV / SRT</small></button>
+                    <button type="button" data-movie-export="mkv" ${busy ? "disabled" : ""}>
+                        <b>Lossless MKV</b><small>Original MPEG-2 / lossless PCM · no video transcode</small></button>
                     <button type="button" data-movie-export="mp4" ${busy ? "disabled" : ""}>
                         <b>Fast MP4</b><small>H.264 / AAC · direct browser encode${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
                 </div>
@@ -271,7 +273,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                 <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
                     · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
                 <p class="converter-license">The LGPL MPEG-2 decoder powers previews and Fast MP4 frame extraction.
-                    MediaBunny muxes the browser-encoded result. Original disc data remains local.
+                    MediaBunny muxes Fast MP4 and remuxes the original MPEG-2 into Lossless MKV. Disc data remains local.
                     <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
                     target="_blank" rel="license">Licenses</a> ·
                     <a href="${import.meta.env.BASE_URL}libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz"

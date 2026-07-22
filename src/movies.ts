@@ -59,7 +59,7 @@ const EMPTY_SUBTITLES: SubtitleBundle = {
     cues: [],
 };
 
-export type MovieExportKind = "original" | "masters" | "mp4";
+export type MovieExportKind = "original" | "masters" | "mkv" | "mp4";
 
 export interface MovieExport {
     filename: string;
@@ -160,6 +160,10 @@ function movieRoot(name: string): string {
 function directMp4Key(name: string, captions: boolean): string {
     return `${movieRoot(name)}/export-direct-mp4-v1-${captions ? "captions" : "plain"}.mp4`;
 }
+function directMkvKey(name: string, captions: boolean): string {
+    return `${movieRoot(name)}/export-lossless-mkv-v1-${captions ? "captions" : "plain"}.mkv`;
+}
+
 
 function legacyExportKey(name: string, format: string, captions: boolean): string {
     return `${movieRoot(name)}/export-${format}-${captions ? "captions" : "plain"}.${format}`;
@@ -397,22 +401,25 @@ export class MovieStore {
         signal?.throwIfAborted();
     }
 
-    private async exportMp4(entry: MovieEntry, captions: boolean,
-                            progress: MovieProgress,
-                            signal?: AbortSignal): Promise<Uint8Array> {
+    private async exportDirect(entry: MovieEntry, format: "mkv" | "mp4",
+                               captions: boolean, progress: MovieProgress,
+                               signal?: AbortSignal): Promise<Uint8Array> {
         signal?.throwIfAborted();
-        const key = directMp4Key(entry.name, captions);
+        const label = format === "mkv" ? "Lossless MKV" : "Fast MP4";
+        const key = format === "mkv"
+            ? directMkvKey(entry.name, captions)
+            : directMp4Key(entry.name, captions);
         const sessionCached = this.memory.has(key);
         const cached = await this.cachedRead(key, signal);
         signal?.throwIfAborted();
         if (cached) {
             progress(1, sessionCached
-                ? "using session-only Fast MP4"
-                : "using cached Fast MP4");
+                ? `using session-only ${label}`
+                : `using cached ${label}`);
             return cached;
         }
 
-        progress(0.02, "reading Fast MP4 source");
+        progress(0.02, `reading ${label} source`);
         const [source, subtitles] = await Promise.all([
             this.source(entry, signal),
             this.subtitles(entry, signal),
@@ -440,12 +447,15 @@ export class MovieStore {
         const vtt = captions && subtitles.cues.length > 0
             ? subtitlesToVtt(subtitles.cues)
             : undefined;
-        progress(0.16, "loading Fast MP4 worker");
+        progress(0.16, `loading ${label} worker`);
         signal?.throwIfAborted();
         const exporter = await import("./movie-export-client.ts");
         signal?.throwIfAborted();
-        progress(0.18, "starting Fast MP4 export");
-        const converted = await exporter.exportMovieMp4({
+        progress(0.18, `starting ${label} export`);
+        const convert = format === "mkv"
+            ? exporter.exportMovieMkv
+            : exporter.exportMovieMp4;
+        const converted = await convert({
             name: entry.name,
             fmv: source,
             ...(vtt === undefined ? {} : { vtt }),
@@ -463,12 +473,12 @@ export class MovieStore {
         }, (value, stage) => progress(0.18 + value * 0.76, stage), signal);
         signal?.throwIfAborted();
 
-        progress(0.96, "caching Fast MP4");
+        progress(0.96, `caching ${label}`);
         const persistent = await this.cacheWrite(key, converted);
         signal?.throwIfAborted();
         progress(1, persistent
-            ? "Fast MP4 ready"
-            : "Fast MP4 ready; export cache is session-only");
+            ? `${label} ready`
+            : `${label} ready; export cache is session-only`);
         signal?.throwIfAborted();
         return converted;
     }
@@ -515,6 +525,8 @@ export class MovieStore {
         const exportKeys = [
             directMp4Key(name, false),
             directMp4Key(name, true),
+            directMkvKey(name, false),
+            directMkvKey(name, true),
         ];
         const exportBytes = await this.totalSize(exportKeys, signal);
         signal?.throwIfAborted();
@@ -588,13 +600,13 @@ export class MovieStore {
             return { filename: `${name}-masters.zip`, bytes, mime: "application/zip" };
         }
         signal?.throwIfAborted();
-        const converted = await this.exportMp4(
-            entry, captions, progress, signal);
+        const converted = await this.exportDirect(
+            entry, kind, captions, progress, signal);
         signal?.throwIfAborted();
         return {
-            filename: `${name}.mp4`,
+            filename: `${name}.${kind}`,
             bytes: converted,
-            mime: "video/mp4",
+            mime: kind === "mkv" ? "video/x-matroska" : "video/mp4",
         };
     }
 }

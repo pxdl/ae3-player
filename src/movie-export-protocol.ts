@@ -1,6 +1,8 @@
 import type { MovieFieldOrder } from "./movie-decoder-protocol.ts";
 
 export type MovieAspectRatio = readonly [number, number];
+export type MovieExportFormat = "mp4" | "mkv";
+
 
 export interface MovieMp4ExportExpectations {
     duration: number;
@@ -15,6 +17,7 @@ export interface MovieMp4ExportExpectations {
 
 export interface MovieMp4ExportRequest {
     type: "export";
+    format: MovieExportFormat;
     jobId: string;
     name: string;
     fmv: ArrayBuffer;
@@ -43,7 +46,7 @@ export interface MovieMp4ExportProgress extends MovieMp4ExportResponseBase {
 export interface MovieMp4ExportComplete extends MovieMp4ExportResponseBase {
     type: "complete";
     buffer: ArrayBuffer;
-    mime: "video/mp4";
+    mime: "video/mp4" | "video/x-matroska";
     encodedFrames: number;
     duration: number;
 }
@@ -66,7 +69,9 @@ export type MovieMp4ExportWorkerResponse = MovieMp4ExportProgress
 
 export function isMovieMp4ExportRequest(value: unknown): value is MovieMp4ExportRequest {
     if (!isRecord(value) || value.type !== "export"
-            || !hasExactKeys(value, ["type", "jobId", "name", "fmv", "expectations"], ["vtt"]))
+            || !hasExactKeys(value, ["type", "format", "jobId", "name", "fmv", "expectations"], ["vtt"]))
+        return false;
+    if (value.format !== "mp4" && value.format !== "mkv")
         return false;
     return isNonEmptyString(value.jobId)
         && isNonEmptyString(value.name)
@@ -106,7 +111,7 @@ export function isMovieMp4ExportWorkerResponse(
         ])
             && value.buffer instanceof ArrayBuffer
             && value.buffer.byteLength > 0
-            && value.mime === "video/mp4"
+            && (value.mime === "video/mp4" || value.mime === "video/x-matroska")
             && isPositiveInteger(value.encodedFrames)
             && isPositiveFinite(value.duration);
     case "cancelled":

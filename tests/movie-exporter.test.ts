@@ -3,8 +3,14 @@ import { after, test } from "node:test";
 
 import {
     BufferSource,
+    BufferTarget,
     EncodedPacket,
+    EncodedAudioPacketSource,
+    EncodedVideoPacketSource,
     Input,
+    MkvOutputFormat,
+    Output,
+    TextSubtitleSource,
     WAVE,
 } from "mediabunny";
 import {
@@ -16,6 +22,7 @@ import {
     MovieMp4ExportController,
     movieExportVideoBitrate,
     normalizeAacMetadata,
+    packetizeMpeg2Video,
     snapEncodedAudioPacket,
 } from "../src/movie-exporter.ts";
 import type { DecodedMovieFrame } from "../src/movie-decoder-protocol.ts";
@@ -112,6 +119,109 @@ function decodedFrame(timestamp: number, duration: number): DecodedMovieFrame {
         ],
     };
 }
+function mpeg2StartCode(code: number, payload: readonly number[] = []): number[] {
+    return [0, 0, 1, code, ...payload];
+}
+
+function mpeg2Picture(temporalReference: number, pictureType: number): number[] {
+    return [
+        ...mpeg2StartCode(0, [
+            temporalReference >> 2,
+            (temporalReference & 3) << 6 | pictureType << 3,
+        ]),
+        ...mpeg2StartCode(1, [pictureType]),
+    ];
+}
+
+test("MPEG-2 packetization preserves bytes and decode order with presentation timestamps", () => {
+    const video = new Uint8Array([
+        ...mpeg2StartCode(0xb3, [1]),
+        ...mpeg2StartCode(0xb8, [2]),
+        ...mpeg2Picture(0, 1),
+        ...mpeg2Picture(3, 2),
+        ...mpeg2Picture(1, 3),
+        ...mpeg2Picture(2, 3),
+        ...mpeg2StartCode(0xb7),
+    ]);
+    const frameRate = 30_000 / 1_001;
+    const packets = packetizeMpeg2Video(video, frameRate, {
+        frames: 4,
+        points: [{ offset: 0, frame: 0 }],
+    });
+    assert.deepEqual(packets.map(packet => packet.type), ["key", "delta", "delta", "delta"]);
+    assert.deepEqual(
+        packets.map(packet => packet.timestamp),
+        [0, 3 / frameRate, 1 / frameRate, 2 / frameRate],
+    );
+    const remuxed = new Uint8Array(packets.reduce(
+        (length, packet) => length + packet.data.byteLength,
+        0,
+    ));
+    let offset = 0;
+    for (const packet of packets) {
+        remuxed.set(packet.data, offset);
+        offset += packet.data.byteLength;
+    }
+    assert.deepEqual(remuxed, video);
+});
+
+test("Mediabunny writes MPEG-2, PCM, and captions into Matroska", async () => {
+    const target = new BufferTarget();
+    const output = new Output({ format: new MkvOutputFormat(), target });
+    const videoSource = new EncodedVideoPacketSource("mpeg2");
+    const audioSource = new EncodedAudioPacketSource("pcm-s16");
+    const subtitleSource = new TextSubtitleSource("webvtt");
+    output.addVideoTrack(videoSource, { frameRate: 30 });
+    output.addAudioTrack(audioSource);
+    output.addSubtitleTrack(subtitleSource, { languageCode: "eng" });
+    await output.start();
+
+    const video = new Uint8Array([
+        ...mpeg2StartCode(0xb3, [1]),
+        ...mpeg2StartCode(0xb8, [2]),
+        ...mpeg2Picture(0, 1),
+    ]);
+    const [packet] = packetizeMpeg2Video(video, 30, {
+        frames: 1,
+        points: [{ offset: 0, frame: 0 }],
+    });
+    await videoSource.add(packet, {
+        decoderConfig: {
+            codec: "mpeg2video",
+            codedWidth: 512,
+            codedHeight: 320,
+            displayAspectWidth: 28,
+            displayAspectHeight: 15,
+        },
+    });
+    await audioSource.add(new EncodedPacket(
+        new Uint8Array([0, 0, 0, 0]),
+        "key",
+        0,
+        1 / 48_000,
+    ), {
+        decoderConfig: {
+            codec: "pcm-s16",
+            numberOfChannels: 2,
+            sampleRate: 48_000,
+        },
+    });
+    await subtitleSource.add(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:00.020\nCaption\n",
+    );
+    videoSource.close();
+    audioSource.close();
+    subtitleSource.close();
+    await output.finalize();
+
+    assert.ok(target.buffer);
+    const text = new TextDecoder("latin1").decode(target.buffer);
+    assert.match(text, /V_MPEG2/);
+    assert.match(text, /A_PCM\/INT\/LIT/);
+    assert.match(text, /S_TEXT\/WEBVTT/);
+    assert.match(text, /Caption/);
+});
+
 
 test("MediaBunny accepts generated PCM WAV metadata", async () => {
     const frames = 2_048;
