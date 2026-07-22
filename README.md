@@ -29,9 +29,11 @@ their envelopes are technically finite. Velocity-zero voice-stop requests are
 labeled as control-only rather than silent effects. WAV export offers one pass
 or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
 Cinema performs a lightweight 22-movie catalog scan, then reads, validates, and
-caches only the movie the user chooses. One Play action retains intent through
-source reading, decoder startup, canvas attachment, and priming; playback begins
-without a second click. The disc's original MPEG-2 elementary stream goes to a
+caches only the movie the user chooses. Clicking a Cinema guide item retains
+play intent through source reading, decoder startup, canvas attachment, and
+priming; playback begins without a separate Play click. Keyboard browsing still
+prepares the selected movie's first frame without starting playback. The disc's
+original MPEG-2 elementary stream goes to a
 dedicated worker, which decodes bounded frame batches with a custom LGPL
 libav.js/FFmpeg WebAssembly build and presents packed I420 through WebGL2 with
 the decoded WAV as the master clock. The SDK's 7:6 sample aspect ratio controls

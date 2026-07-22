@@ -2560,7 +2560,7 @@ export function viewerActivate(id: string): void {
         return;
     }
     if (id.startsWith("movie:")) {
-        activateMovie(id.slice(6), "preview");
+        activateMovie(id.slice(6), "play");
         return;
     }
     const index = seRows.findIndex((row) => id === (row.kind === "bank"
@@ -2577,7 +2577,11 @@ export function viewerMove(direction: number): void {
     const selected = library.items.findIndex((item) => item.id === library.selectedId);
     const index = (Math.max(selected, 0) + direction + library.items.length)
         % library.items.length;
-    viewerActivate(library.items[index]!.id);
+    const id = library.items[index]!.id;
+    if (id.startsWith("movie:"))
+        activateMovie(id.slice(6), "preview");
+    else
+        viewerActivate(id);
 }
 
 export function viewerMoveAndPlayMovie(direction: number): void {
