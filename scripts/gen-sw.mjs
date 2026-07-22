@@ -47,8 +47,11 @@ const ASSETS = ${JSON.stringify(urls, null, 1)};
 const LAZY_ASSET = ${lazyAsset};
 
 self.addEventListener("install", (e) => {
-    e.waitUntil(caches.open(CACHE).then((c) =>
-        c.addAll(ASSETS.map((u) => new Request(u, { cache: "reload" })))));
+    e.waitUntil((async () => {
+        const cache = await caches.open(CACHE);
+        await cache.addAll(ASSETS.map((u) => new Request(u, { cache: "reload" })));
+        await self.skipWaiting();
+    })());
 });
 
 self.addEventListener("activate", (e) => {

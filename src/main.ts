@@ -2846,10 +2846,23 @@ async function main(): Promise<void> {
 
     /* Offline after first visit: best-effort, and production-only. Development
      * serves no sw.js, and a stale worker would shadow the dev server. */
-    if (import.meta.env.PROD && "serviceWorker" in navigator)
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
+        const hadController = navigator.serviceWorker.controller !== null;
+        let reloadingForUpdate = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+            if (!hadController || reloadingForUpdate) return;
+            reloadingForUpdate = true;
+            location.reload();
+        });
         void navigator.serviceWorker
-            .register(`${import.meta.env.BASE_URL}sw.js`)
-            .catch((e) => console.warn("service worker registration failed", e));
+            .register(`${import.meta.env.BASE_URL}sw.js`, { updateViaCache: "none" })
+            .then((registration) => {
+                if (navigator.onLine)
+                    void registration.update().catch((error) =>
+                        console.warn("service worker update failed", error));
+            })
+            .catch((error) => console.warn("service worker registration failed", error));
+    }
 
     if (new URLSearchParams(location.search).has("selftest"))
         return selftest();
