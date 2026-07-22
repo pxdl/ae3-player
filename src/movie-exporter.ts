@@ -294,7 +294,7 @@ export async function exportMovieMkv(request: MovieMp4ExportRequest,
         demux.video,
         `${request.name} video`,
     ));
-    const videoPackets = runStage("index", () => packetizeMpeg2Video(
+    const packetizedVideo = runStage("index", () => packetizeMpeg2Video(
         demux.video,
         demux.videoInfo.frameRate,
         seekIndex,
@@ -304,14 +304,12 @@ export async function exportMovieMkv(request: MovieMp4ExportRequest,
         request.expectations.channels,
         request.expectations.sampleRate,
     ));
-    const duration = videoPackets.length / demux.videoInfo.frameRate;
-    if (!nearlyEqual(duration, request.expectations.duration)
-            || !nearlyEqual(audio.duration, request.expectations.duration)) {
-        throw new MovieExportStageError(
-            "demux",
-            "decoded audio and original MPEG-2 video do not match the scanned duration",
-        );
-    }
+    const aligned = runStage("index", () => alignLosslessMovieTracks(
+        packetizedVideo,
+        audio.duration,
+        request.expectations.duration,
+    ));
+    const { duration, videoPackets } = aligned;
     controller.throwIfAborted();
 
     const target = new BufferTarget();
@@ -344,6 +342,7 @@ export async function exportMovieMkv(request: MovieMp4ExportRequest,
             )),
             failTogether(controller, () => producePcmAudio(
                 audio,
+                duration,
                 audioSource,
                 controller,
             )),
@@ -551,6 +550,39 @@ export function packetizeMpeg2Video(video: Uint8Array, frameRate: number,
     }
     return packets;
 }
+export function clipMpeg2Packets(packets: readonly EncodedPacket[],
+                                 duration: number): EncodedPacket[] {
+    if (!Number.isFinite(duration) || duration <= 0)
+        throw new Error("movie has no shared audio/video duration");
+    return packets.map(packet => {
+        const clippedDuration = Math.min(packet.duration, duration - packet.timestamp);
+        if (clippedDuration <= 0) {
+            throw new Error(
+                "shared movie duration would discard original MPEG-2 picture data",
+            );
+        }
+        return clippedDuration === packet.duration
+            ? packet
+            : packet.clone({ duration: clippedDuration });
+    });
+}
+export function alignLosslessMovieTracks(
+    packets: readonly EncodedPacket[],
+    audioDuration: number,
+    scannedDuration: number,
+): { duration: number; videoPackets: EncodedPacket[] } {
+    const naturalVideoDuration = packets.reduce(
+        (end, packet) => Math.max(end, packet.timestamp + packet.duration),
+        0,
+    );
+    const duration = Math.min(scannedDuration, naturalVideoDuration, audioDuration);
+    return {
+        duration,
+        videoPackets: clipMpeg2Packets(packets, duration),
+    };
+}
+
+
 
 interface PcmWave {
     data: Uint8Array;
@@ -634,10 +666,17 @@ async function produceMpeg2Video(packets: readonly EncodedPacket[],
     }
 }
 
-async function producePcmAudio(audio: PcmWave, source: EncodedAudioPacketSource,
+async function producePcmAudio(audio: PcmWave, duration: number,
+                               source: EncodedAudioPacketSource,
                                controller: MovieMp4ExportController): Promise<void> {
     const framesPerPacket = 4096;
     const bytesPerFrame = audio.channels * 2;
+    const outputFrames = audioFramesWithinDuration(
+        0,
+        audio.sampleRate,
+        audio.frames,
+        duration,
+    );
     const metadata: EncodedAudioChunkMetadata = {
         decoderConfig: {
             codec: "pcm-s16",
@@ -646,10 +685,10 @@ async function producePcmAudio(audio: PcmWave, source: EncodedAudioPacketSource,
         },
     };
     try {
-        for (let frame = 0, sequence = 0; frame < audio.frames;
+        for (let frame = 0, sequence = 0; frame < outputFrames;
                 frame += framesPerPacket, sequence++) {
             controller.throwIfAborted();
-            const frames = Math.min(framesPerPacket, audio.frames - frame);
+            const frames = Math.min(framesPerPacket, outputFrames - frame);
             const start = frame * bytesPerFrame;
             const data = audio.data.subarray(start, start + frames * bytesPerFrame);
             await source.add(

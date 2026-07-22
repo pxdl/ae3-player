@@ -15,6 +15,7 @@ import {
 } from "mediabunny";
 import {
     audioFramesWithinDuration,
+    alignLosslessMovieTracks,
     clipEncodedAudioPacket,
     clipMovieVtt,
     createMovieVideoSample,
@@ -164,6 +165,42 @@ test("MPEG-2 packetization preserves bytes and decode order with presentation ti
     }
     assert.deepEqual(remuxed, video);
 });
+test("lossless track alignment tolerates FMV clock rounding and audio padding", () => {
+    const frameRate = 30_000 / 1_001;
+    const frameDuration = 1 / frameRate;
+    const packets = [
+        new EncodedPacket(new Uint8Array([1]), "key", 0, frameDuration, 0),
+        new EncodedPacket(new Uint8Array([2]), "delta", frameDuration, frameDuration, 1),
+    ];
+    const naturalVideoDuration = 2 * frameDuration;
+    const scannedDuration = 4 / 59.94;
+    assert.notEqual(scannedDuration, naturalVideoDuration);
+
+    const aligned = alignLosslessMovieTracks(
+        packets,
+        naturalVideoDuration + 0.01,
+        scannedDuration,
+    );
+    assert.equal(aligned.duration, naturalVideoDuration);
+    assert.deepEqual(aligned.videoPackets, packets);
+});
+
+test("lossless track alignment clips timing without dropping MPEG-2 bytes", () => {
+    const packets = [
+        new EncodedPacket(new Uint8Array([1]), "key", 0, 1, 0),
+        new EncodedPacket(new Uint8Array([2]), "delta", 1, 1, 1),
+    ];
+    const aligned = alignLosslessMovieTracks(packets, 1.5, 2);
+    assert.equal(aligned.duration, 1.5);
+    assert.equal(aligned.videoPackets.length, 2);
+    assert.equal(aligned.videoPackets[1].duration, 0.5);
+    assert.deepEqual(aligned.videoPackets.map(packet => [...packet.data]), [[1], [2]]);
+    assert.throws(
+        () => alignLosslessMovieTracks(packets, 1, 2),
+        /discard original MPEG-2 picture data/,
+    );
+});
+
 
 test("Mediabunny writes MPEG-2, PCM, and captions into Matroska", async () => {
     const target = new BufferTarget();
