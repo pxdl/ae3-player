@@ -2272,6 +2272,7 @@ export function viewerSetup(): ViewerSetup | null {
             progress: movieLoading ? movieProgress : null,
         };
     }
+    if (viewerChannel === "cinema") return null;
     let label: string;
     let detail: string;
     let progressElement: HTMLProgressElement;
@@ -2280,14 +2281,14 @@ export function viewerSetup(): ViewerSetup | null {
         detail = $("picker-status").textContent
             || "Choose the disc image. Extraction stays inside this browser.";
         progressElement = $<HTMLProgressElement>("picker-progress");
-    } else if (tab === "streams" && !sCatalog) {
+    } else if (viewerChannel === "streams" && !sCatalog) {
         label = "Scan the stream archive";
         detail = $("s-setup-status").textContent
             || (session.streams.hasIso()
                 ? "The local disc is ready to scan."
                 : "Reconnect the same disc once to scan streamed audio.");
         progressElement = $<HTMLProgressElement>("s-progress");
-    } else if (tab === "se" && !seCatalog) {
+    } else if (viewerChannel === "effects" && !seCatalog) {
         label = "Scan the effects archive";
         detail = $("se-setup-status").textContent
             || (session.se.hasIso()
