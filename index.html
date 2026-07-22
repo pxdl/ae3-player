@@ -84,7 +84,7 @@
             <button class="ex-row" id="bank-kit" title="Every waveform decoded to a 44100 Hz WAV, loop points and root key in a smpl chunk">DECODED SAMPLES</button>
           </div>
         </div>
-        <button id="helpbtn" title="How the console plays this (H)">?</button>
+        <button id="helpbtn" title="About Asset Lab audio playback (H)">?</button>
       </header>
       <div id="bar">
         <div id="bar-loop"></div>
@@ -306,145 +306,139 @@
       </footer>
       <div id="help" hidden>
         <div id="help-inner">
-          <header><h1>HOW THE CONSOLE PLAYS THIS</h1><span>H or ESC closes</span></header>
+          <header><h1>AUDIO PLAYBACK IN ASSET LAB</h1><span>Press H or ESC to close</span></header>
           <section>
-            <h2>What this is</h2>
-            <p>A native re-implementation of the game's PS2 sound driver. It performs
-            streaming ADPCM decode, live SPU2 envelopes, gaussian resampling, the
-            driver's integer volume and pan math, and the hardware reverb network.
-            Everything is driven by the game's own data (banks, sequences, and tables
-            read from the game's IRX modules) &mdash; extracted from your own disc, in
-            your browser &mdash; and renders on the SPU2's 48000&nbsp;Hz clock.</p>
+            <h2>The audio engine</h2>
+            <p>Asset Lab reimplements the game's PS2 sound driver. It decodes
+            streaming ADPCM, runs the SPU2 envelopes and gaussian resampler,
+            applies the driver's integer volume and pan math, and reproduces the
+            hardware reverb network. The browser reads the banks, sequences, and
+            tables from your own disc, including tables stored in the game's IRX
+            modules. Playback runs on the SPU2's 48000&nbsp;Hz clock.</p>
           </section>
           <section>
-            <h2>SE requests <small>(SE tab)</small></h2>
-            <p>Each sound-effect bank carries a two-level sequence table. Expand
-            one bank to see its outer bank and inner request coordinates; selecting
-            one runs the game's complete request bytecode through the same 48-voice
-            synth as BGM. VOL is the gameplay caller's input before positional
-            attenuation. The isolated renderer cannot reproduce scene distance, so
-            an in-game effect may be quieter without being a different sound.</p>
+            <h2>Sound-effect requests <small>(SE tab)</small></h2>
+            <p>Each sound-effect bank has a two-level sequence table. Expand a
+            bank to see its outer bank and inner request coordinates. Loading a
+            request runs its complete bytecode through the same 48-voice synth
+            used for BGM. VOL is the value supplied by the gameplay caller before
+            positional attenuation. Asset Lab has no scene distance to apply, so
+            the same effect may sound quieter during the game.</p>
           </section>
           <section>
-            <h2>SE event track vs source audio</h2>
-            <p>The event score shows the request's commands, not a decoded waveform.
-            A short track can start a looped ADPCM sample or SPU2 noise voice that
-            keeps sounding until its authored sustain envelope reaches silence.
-            This <strong>is a loop in the source data</strong>, even when the event
-            stream itself does not jump. Some envelopes are extraordinarily slow:
-            the Arabian 25:1 and 28:0 sources run for about 39.8 hours, which is
-            effectively continuous in normal play. Separately, a
-            <strong>STREAM JUMP</strong> repeats the request bytecode and is the
-            only loop that wraps the transport bar. The L key only controls an
-            infinite stream jump; it does not disable a source loop. For a source
-            loop, the transport covers the authored event track and stays at its
-            end while the source keeps sounding. The event score remains seekable.</p>
+            <h2>Event score and source audio</h2>
+            <p>The event score lists commands, not decoded samples. A short score
+            can start a looped ADPCM sample or SPU2 noise voice that keeps playing
+            until its sustain envelope reaches silence. The source data is still
+            looped even if the event stream never jumps. Some envelopes are
+            extremely slow: Arabian requests 25:1 and 28:0 run for about 39.8
+            hours, which is effectively continuous during normal play.</p>
+            <p><code>STREAM JUMP</code> is different. It repeats the request
+            bytecode and is the only kind of loop that wraps the transport bar.
+            The L key controls an infinite stream jump; it does not stop a sample
+            from following its own loop points. When only the source loops, the
+            transport reaches the end of the event track and stays there while
+            the sound continues. You can still seek within the event score.</p>
           </section>
           <section>
-            <h2>SE event markers</h2>
-            <p><code>1</code> is a one-shot sample, <code>L</code> is a looped
-            sample, <code>N</code> is the SPU2 noise source, and <code>R</code>
-            means that tone also feeds the reverb send. An open circle labeled
-            <code>STOP Pnn Knn</code> is a velocity-zero command that stops a
-            matching live program/key voice; it starts no sound by itself. LFO
-            DEPTH, LFO RATE, VELOCITY, PAN, and GLIDE labels are commands issued by
-            the authored bytecode. Long-lived loop/noise status is amber. Requests
-            whose source outlives a practical export need an explicit 10, 30, or
-            60 second cap.</p>
+            <h2>Event markers</h2>
+            <p><code>1</code> marks a one-shot sample, <code>L</code> a looped
+            sample, <code>N</code> an SPU2 noise source, and <code>R</code> a tone
+            sent to reverb. An open <code>STOP Pnn Knn</code> marker is a
+            velocity-zero command that stops a matching live program and key; it
+            does not start a sound. LFO DEPTH, LFO RATE, VELOCITY, PAN, and GLIDE
+            are commands from the authored bytecode. Amber marks long-running
+            loops and noise. When a source runs longer than a useful export,
+            choose an explicit 10, 30, or 60 second limit.</p>
           </section>
           <section>
-            <h2>Authored volume <small>(VOL NN AUTH, keys - = A)</small></h2>
-            <p>The sound driver boots with song volume 127, but the game never plays
-            music that loud. Every music cue computes
-            <code>songvol = trunc(127 &times; volume_scale &times; options_slider &times; dolby)</code>,
-            where <code>volume_scale</code> is a per-song value between 0.28 and 0.56
-            stored in the game's own BGM database. Sony mastered each song
-            individually. At 127, dense songs overdrive the 16-bit mix bus; at
-            authored levels only occasional transient peaks clip, and the real
-            console clips those too. Use - and = to override, and A to return to the
-            authored value.</p>
+            <h2>Music volume <small>(VOL NN AUTH, keys - = A)</small></h2>
+            <p>The driver starts with song volume 127, but the game does not play
+            its music that loud. Every cue calculates
+            <code>songvol = trunc(127 &times; volume_scale &times; options_slider &times; dolby)</code>.
+            The per-song <code>volume_scale</code> comes from the game's BGM
+            database and ranges from 0.28 to 0.56. Sony set it separately for each
+            song. At 127, dense songs overdrive
+            the 16-bit mix bus. At the authored levels, only occasional transients
+            clip, just as they do on the console. Use - and = to adjust the value,
+            then A to restore the authored setting.</p>
           </section>
           <section>
-            <h2>Ducking <small>(key D)</small></h2>
-            <p>During cutscenes and monkey-phone calls the game lowers music to
-            70&nbsp;percent, fading down in half a second and back up in two. The
-            fade is a linear ramp the game itself steps every frame; the sound
-            driver just receives the new volume each tick. Internally the game
-            keeps two identical duck groups &mdash; one for cutscenes, one for the
-            phone &mdash; but they sound the same and never overlap in play, so one
-            toggle demonstrates the mechanism. Holding it arms the game's cue
-            volume layer at the authored scale (the VOL dial tracks the fade);
-            - = A return to manual volume.</p>
+            <h2>Music ducking <small>(key D)</small></h2>
+            <p>The game lowers music to 70&nbsp;percent during cutscenes and
+            monkey-phone calls. It fades down over half a second and returns over
+            two seconds. The game advances this linear ramp once per frame and
+            sends each new volume to the driver. It keeps separate groups for
+            cutscenes and phone calls, but the groups use the same settings and
+            never overlap during play. Asset Lab uses one toggle for both.
+            While it is active, the VOL dial follows the game's cue-volume layer
+            at the authored scale. The -, =, and A keys return to manual volume.</p>
           </section>
           <section>
-            <h2>Exact vs tick clock <small>(key T)</small></h2>
-            <p>The console's sequencers run as callbacks of the 60&nbsp;Hz sound
-            thread. Events due within a callback fire in one burst, so timing
-            quantizes to a 16.7&nbsp;ms grid. SE bytecode itself uses 480 ticks per
-            second; one console callback spans eight of those ticks. EXACT places
-            each event at its authored 480&nbsp;Hz position and is the listening
-            default. TICK reproduces the console callback bursts and is the right
-            timeline for capture comparison.</p>
+            <h2>Timing <small>(key T)</small></h2>
+            <p>The console runs its sequencers from the 60&nbsp;Hz sound-thread
+            callback. Events due during one callback fire together on a
+            16.7&nbsp;ms grid. Sound-effect bytecode uses 480 ticks per second, so
+            each console callback spans eight ticks. EXACT plays events at their
+            authored 480&nbsp;Hz positions and is the default for listening. TICK
+            reproduces the console's callback bursts and is the useful setting
+            for capture comparisons.</p>
           </section>
           <section>
-            <h2>Slots <small>(the 48-cell grid)</small></h2>
-            <p>The SPU2 has 48 hardware voices, shared by music and sound effects.
-            The driver grants them round-robin and never steals a playing voice. If
-            all 48 are busy, the note is simply dropped. Voices free up only at the
-            60&nbsp;Hz tick, once their envelope has fallen below 2. This game's
-            music peaks at 31 of 48 voices (33 on the tick clock), so it never
-            actually drops a note.</p>
+            <h2>Music loops <small>(key L)</small></h2>
+            <p>MIDI CC99 values 20 and 30 mark the loop start and end. The game's
+            sequence walker consumes them before they reach the sound driver. The
+            console repeats music indefinitely. Sixty-four songs have one marker
+            pair; the four Genie Dancer jingles are meant to play once. The export
+            menu can repeat the loop body any number of times.</p>
           </section>
           <section>
-            <h2>SE source loops <small>(the live source-loop rows)</small></h2>
-            <p>An SE request can repeat its 480&nbsp;Hz bytecode stream while each
-            hardware voice independently loops its own ADPCM source and advances
-            its own ADSR envelope. The live rows use decoder state, not wall time:
-            the source marker jumps from the waveform end to its embedded loop
-            start and the seam count rises, while the envelope bar continues
-            without restarting. These rows are a monitor, not a seek control.
-            The request bar and <code>STREAM JUMP</code> remain separate
-            request-level coordinates.</p>
+            <h2>Voice slots <small>(the 48-cell grid)</small></h2>
+            <p>The SPU2 has 48 hardware voices shared by music and sound effects.
+            The driver assigns them round-robin and never steals a voice that is
+            already playing. If every slot is busy, it drops the new note. A voice
+            becomes free only on a 60&nbsp;Hz tick after its envelope falls below
+            2. The busiest music in the game reaches 31 voices with exact timing
+            and 33 with tick timing, so no music note is dropped.</p>
           </section>
           <section>
-            <h2>Looping <small>(key L)</small></h2>
-            <p>CC99 values 20 and 30 in the MIDI mark the loop start and end. They
-            are consumed by the game's sequence walker and never reach the sound
-            driver. The console loops music forever. 64 songs carry exactly one
-            marker pair, and the four Genie Dancer jingles play once by design.
-            The export menu can bounce the loop body any number of times.</p>
+            <h2>Live source loops <small>(SE tab)</small></h2>
+            <p>A request can repeat its 480&nbsp;Hz bytecode while each hardware
+            voice follows its own ADPCM loop and ADSR envelope. The live rows read
+            decoder state rather than estimating from elapsed time. At a loop
+            seam, the source marker returns to the embedded loop start and the
+            seam count rises, but the envelope continues without restarting.
+            These rows are monitors, not seek controls. The request transport and
+            <code>STREAM JUMP</code> remain separate request-level coordinates.</p>
           </section>
           <section>
             <h2>Reverb <small>(keys R , .)</small></h2>
-            <p>The SPU2's hardware reverb, preset STUDIO_C at depth 30, is set once
-            at boot and never touched again by the game. Only tones flagged for
-            reverb feed the wet bus, and they stay in the dry mix as well, since it
-            works as a send. The network runs at 24&nbsp;kHz behind the hardware's
-            39-tap half-band filter. The depth knob here is purely for A/B
-            listening; the game never moves it.</p>
+            <p>The game selects the SPU2's STUDIO_C reverb preset at depth 30
+            during boot and never changes it. Only flagged tones enter the wet
+            bus, but they remain in the dry mix because reverb is a send. The
+            network runs at 24&nbsp;kHz behind the hardware's 39-tap half-band
+            filter. Asset Lab's depth control is only for comparison; the game
+            itself never moves it.</p>
           </section>
           <section>
-            <h2>Gauss vs bright <small>(key G)</small></h2>
-            <p>The SPU2 resamples every voice with a 4-tap gaussian kernel, which is
-            why the console sounds darker than a modern resampler. It also lets
-            notes struck below their root pitch alias audibly, and that grit is part
-            of the real console sound. BRIGHT swaps in a catmull-rom kernel with
-            cleaner treble, which is not what the hardware does. The authored export
-            always uses gaussian.</p>
+            <h2>Gaussian and bright resampling <small>(key G)</small></h2>
+            <p>The SPU2 resamples each voice with a four-tap gaussian kernel. It
+            sounds darker than a modern resampler and can produce audible aliasing
+            when a note plays below its root pitch. That grit is part of the
+            console's sound. BRIGHT uses a Catmull-Rom kernel with cleaner treble,
+            but it does not match the hardware. Authored exports always use
+            gaussian resampling.</p>
           </section>
           <section>
-            <h2>Bus saturation <small>(red waveform columns)</small></h2>
-            <p>Voices sum on a saturating 16-bit bus, exactly like the chip, so
-            dense passages can genuinely crunch on real hardware. At authored
-            volumes it amounts to rare transient clipping. The CLIP counter and red
-            waveform columns show every saturated sample.</p>
-          </section>
-          <section>
-            <h2>Odd but real</h2>
-            <p>Velocity is linear; the banks carry an identity velocity curve, so
-            there is no squared taper. The pan table is not constant power, so a
-            centred tone is about 2.5&nbsp;dB louder than a hard-panned one. Both
-            come straight from the driver's own math and are kept, not fixed.</p>
+            <h2>Clipping and driver quirks</h2>
+            <p>The chip adds voices on a saturating 16-bit bus, so dense passages
+            can crunch on the real hardware. Authored volumes reduce this to rare
+            transient clipping. The CLIP counter and red waveform columns mark
+            every saturated sample.</p>
+            <p>Velocity is linear because the banks use an identity velocity
+            curve. Pan is not constant power, so a centered tone is about
+            2.5&nbsp;dB louder than one panned fully left or right. Both behaviors
+            come from the driver and are reproduced as written.</p>
           </section>
         </div>
       </div>
