@@ -459,8 +459,6 @@ export function createMovieVideoSample(frame: DecodedMovieFrame, duration: numbe
     };
     const nativeFrame = new VideoFrame(data, init);
     try {
-        if (data.byteLength !== 0)
-            throw new Error("VideoFrame did not take ownership of the decoded I420 buffer");
         return new VideoSample(nativeFrame, {
             timestamp: frame.timestamp,
             duration,

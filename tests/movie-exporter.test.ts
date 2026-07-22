@@ -22,6 +22,7 @@ import type { DecodedMovieFrame } from "../src/movie-decoder-protocol.ts";
 
 class FakeVideoFrame {
     static lastInit: (VideoFrameBufferInit & { transfer?: ArrayBuffer[] }) | null = null;
+    static transfersOwnership = true;
     readonly format: VideoPixelFormat;
     readonly codedWidth: number;
     readonly codedHeight: number;
@@ -53,7 +54,7 @@ class FakeVideoFrame {
             height: init.codedHeight,
         } as DOMRectReadOnly;
         this.colorSpace = init.colorSpace as VideoColorSpace;
-        if (init.transfer)
+        if (init.transfer && FakeVideoFrame.transfersOwnership)
             structuredClone(data, { transfer: init.transfer });
     }
 
@@ -173,6 +174,23 @@ test("native VideoFrame receives exact I420 layout and transferred ownership", (
         });
     } finally {
         sample.close();
+    }
+});
+
+test("accepts VideoFrame implementations that copy I420 input", () => {
+    FakeVideoFrame.transfersOwnership = false;
+    const frame = decodedFrame(0, 1001 / 30000);
+    const originalBuffer = frame.data;
+    let sample: ReturnType<typeof createMovieVideoSample> | null = null;
+    try {
+        sample = createMovieVideoSample(frame, frame.duration, [4, 3]);
+        assert.equal(originalBuffer.byteLength, 12);
+        assert.equal(sample.format, "I420");
+        assert.equal(sample.codedWidth, 4);
+        assert.equal(sample.codedHeight, 2);
+    } finally {
+        sample?.close();
+        FakeVideoFrame.transfersOwnership = true;
     }
 });
 
