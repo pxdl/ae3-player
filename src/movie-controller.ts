@@ -19,6 +19,7 @@ export interface MovieControllerSnapshot {
     cache: MovieCacheInfo | null;
     prepared: boolean;
     hasIso: boolean;
+    sourceRequired: boolean;
     cancellable: boolean;
     loading: boolean;
     exporting: boolean;
@@ -42,6 +43,7 @@ export class MovieController {
     private readonly hooks: MovieControllerHooks;
     private session: DiscSession | null = null;
     private catalog: MovieCatalog | null = null;
+    private catalogResolved = false;
     private selectedName: string | null = null;
     private playback: MoviePlaybackSession | null = null;
     private cache: MovieCacheInfo | null = null;
@@ -71,6 +73,7 @@ export class MovieController {
         this.abortAll();
         this.session = null;
         this.catalog = null;
+        this.catalogResolved = false;
         this.selectedName = null;
         this.cache = null;
         this.attaching = false;
@@ -103,14 +106,22 @@ export class MovieController {
 
     snapshot(): MovieControllerSnapshot {
         const playback = this.selectedPlayback();
+        const entry = this.selectedEntry();
+        const hasIso = this.session?.movies.hasIso() ?? false;
+        const sourceComplete = entry !== null && this.cache !== null
+            && movieSourceComplete(entry, this.cache);
         return {
             revision: this.revision,
             active: this.active,
             catalog: this.catalog,
-            entry: this.selectedEntry(),
+            entry,
             cache: this.cache,
             prepared: playback !== null && playback.state !== "error",
-            hasIso: this.session?.movies.hasIso() ?? false,
+            hasIso,
+            sourceRequired: this.catalogResolved && !hasIso && (
+                this.catalog === null
+                || (entry !== null && this.cache !== null && !sourceComplete)
+            ),
             cancellable: this.attachAbort !== null || this.exportAbort !== null
                 || this.playbackAbort !== null || this.playbackBusy(playback),
             loading: this.attaching || this.preparing,
@@ -220,6 +231,7 @@ export class MovieController {
             controller.signal.throwIfAborted();
             if (this.session !== target) return;
             this.catalog = await target.movies.catalog(controller.signal);
+            this.catalogResolved = true;
             controller.signal.throwIfAborted();
             if (this.session !== target) return;
             if (!this.catalog?.entries.some(entry => entry.name === this.selectedName))
@@ -322,6 +334,7 @@ export class MovieController {
         this.session = null;
         await this.disposePlayback();
         this.catalog = null;
+        this.catalogResolved = false;
         this.selectedName = null;
         this.cache = null;
         this.attaching = false;
@@ -351,10 +364,11 @@ export class MovieController {
             const catalog = await target.movies.catalog();
             if (this.session !== target || generation !== this.connectionGeneration) return;
             this.catalog = catalog;
+            this.catalogResolved = true;
             this.selectedName = catalog?.entries[0]?.name ?? null;
             this.status = catalog
                 ? `${catalog.entries.length} movies indexed locally`
-                : "Reconnect the same disc once to scan its movie archive.";
+                : "Attach the source ISO once to scan its movie archive.";
             this.error = false;
             this.touch();
             if (!this.selectedName) return;
@@ -362,6 +376,7 @@ export class MovieController {
             else await this.refreshCache(this.selectedName);
         } catch (cause) {
             if (this.session !== target || generation !== this.connectionGeneration) return;
+            this.catalogResolved = true;
             this.fail(cause);
         }
     }
@@ -467,14 +482,14 @@ export class MovieController {
         this.playbackAutoplay = mode === "play";
         this.preparing = true;
         this.progress = 0;
-        this.status = "Loading preview…";
+        this.status = "Loading movie…";
         this.error = false;
         this.touch();
         try {
             const prepared = await target.movies.prepare(name, value => {
                 if (!this.startIsCurrent(target, name, controller, generation)) return;
                 this.progress = value;
-                this.status = "Loading preview…";
+                this.status = "Loading movie…";
             }, controller.signal);
             controller.signal.throwIfAborted();
             if (!this.startIsCurrent(target, name, controller, generation)) return;
@@ -509,7 +524,7 @@ export class MovieController {
             this.touch();
         } catch (cause) {
             if (this.startIsCurrent(target, name, controller, generation))
-                this.reportOperationError(cause, controller.signal, "Preview cancelled.");
+                this.reportOperationError(cause, controller.signal, "Movie loading cancelled.");
         } finally {
             if (this.playbackAbort === controller) {
                 this.playbackAbort = null;
@@ -537,7 +552,7 @@ export class MovieController {
             this.cache = cache;
             this.touch();
             if (!target.movies.hasIso() && !movieSourceComplete(entry, cache)) {
-                this.status = "Reconnect the same disc to preview this movie.";
+                this.status = "Attach the source ISO to preview this movie.";
                 this.error = false;
                 this.touch();
                 return;
@@ -636,7 +651,7 @@ function playbackStatus(state: MoviePlaybackState, fallback: string): string {
     switch (state) {
     case "idle":
     case "initializing-decoder":
-    case "priming": return "Loading preview…";
+    case "priming": return "Loading movie…";
     case "ready": return "Ready.";
     case "playing": return "Playing.";
     case "paused": return "Paused.";

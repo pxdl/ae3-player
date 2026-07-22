@@ -562,6 +562,7 @@ export class MoviePlaybackSession {
             this.#scheduler = null;
         }
         if (this.#renderer !== null) {
+            this.#renderer.clear();
             this.#renderer.dispose();
             this.#renderer = null;
         }

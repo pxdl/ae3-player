@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#101116" />
-  <title>AE3 Sound Player</title>
+  <title>AE3 Asset Lab</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23101116'/%3E%3Cpath d='M5 12V5l6-1.5V10' stroke='%23ffc440' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='12' r='1.6' fill='%23ffc440'/%3E%3Ccircle cx='10' cy='10' r='1.6' fill='%23ffc440'/%3E%3C/svg%3E" />
@@ -14,7 +14,13 @@
 <body>
   <div id="app" hidden>
     <aside id="side">
-      <h1>AE3 SOUND SYNTH</h1>
+      <div id="side-brand">
+        <h1>AE3 ASSET LAB</h1>
+        <span class="monkey-tv-disabled" title="Monkey TV is in development.">
+          <button id="monkey-tv-link" type="button" disabled
+            aria-label="Monkey TV — in development">Monkey TV</button>
+        </span>
+      </div>
       <div id="tabs">
         <button id="tab-bgm" class="tab on" title="Sequenced music through the SPU2 synth">BGM</button>
         <button id="tab-streams" class="tab" title="Streamed audio -- phone calls, cutscene voice, minigame music">STREAMS</button>
@@ -38,11 +44,8 @@
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
-        <span class="monkey-tv-disabled" title="Monkey TV is in development.">
-          <button id="monkey-tv-link" type="button" disabled
-            aria-label="Monkey TV — in development">Monkey TV</button>
-        </span>
-        <button id="forget" title="Wipe the extracted assets from this browser">forget my disc</button>
+        <button id="forget"
+          title="Close this session, remove its cached assets, and return to the disc picker">clear data</button>
       </div>
     </aside>
     <main id="main">
@@ -209,22 +212,7 @@
             <span class="fmv-kicker">DISC CINEMA / ADVANCED INSPECTION</span>
             <h2 id="fmv-heading">FMV ASSETS</h2>
           </div>
-          <p>Original MPEG-2 video, PS-ADPCM audio, subtitle sidecars, and local derivatives.</p>
         </header>
-
-        <section id="fmv-setup" aria-labelledby="fmv-setup-title">
-          <div>
-            <span class="fmv-kicker">SOURCE CONNECTION</span>
-            <h3 id="fmv-setup-title">MOVIE CATALOG</h3>
-            <p id="fmv-setup-status">Loading the local movie catalog&hellip;</p>
-          </div>
-          <label class="fmv-file-button" for="fmv-iso">
-            <input id="fmv-iso" type="file" accept=".iso,application/x-iso9660-image" />
-            <span>RECONNECT ISO</span>
-          </label>
-          <progress id="fmv-setup-progress" max="1" value="0" hidden></progress>
-          <button id="fmv-setup-cancel" type="button" hidden>CANCEL</button>
-        </section>
 
         <div id="fmv-workspace">
           <section id="fmv-player" aria-label="Movie player">
@@ -251,7 +239,20 @@
               </div>
               <div id="fmv-now">
                 <strong id="fmv-title">&mdash;</strong>
-                <span id="fmv-status" aria-live="polite">Choose an FMV asset.</span>
+                <div id="fmv-activity">
+                  <span id="fmv-status" aria-live="polite">Choose an FMV asset.</span>
+                  <label id="fmv-source-select" class="fmv-file-button" for="fmv-iso">
+                    <input id="fmv-iso" type="file" accept=".iso,application/x-iso9660-image" />
+                    <span id="fmv-source-label">ATTACH ISO</span>
+                  </label>
+                  <span id="fmv-progress-slot">
+                    <span id="fmv-job-progress" role="progressbar" aria-label="Movie operation progress"
+                      aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></span>
+                  </span>
+                  <span id="fmv-cancel-slot">
+                    <button id="fmv-cancel" type="button" hidden>CANCEL</button>
+                  </span>
+                </div>
               </div>
               <div id="fmv-time"><span id="fmv-current">0:00.0</span> /
                 <span id="fmv-duration">0:00.0</span></div>
@@ -288,10 +289,7 @@
               <strong>FAST MP4</strong><span>H.264 / AAC &middot; browser encode</span>
             </button>
           </div>
-          <div id="fmv-job">
-            <progress id="fmv-job-progress" max="1" value="0" hidden></progress>
-            <button id="fmv-cancel" type="button" hidden>CANCEL CURRENT JOB</button>
-            <button id="fmv-reconnect" type="button">RECONNECT SOURCE DISC</button>
+          <div id="fmv-cache-actions">
             <button id="fmv-remove-cache" type="button" disabled>REMOVE LOCAL CACHE</button>
           </div>
         </section>
@@ -455,11 +453,11 @@
 
   <div id="picker">
     <div id="picker-card">
-      <h1>AE3 Sound Player</h1>
+      <h1>AE3 Asset Lab</h1>
       <p>Point this page at your own <em>Ape Escape 3</em> disc image
-        (<code>.iso</code>). Core music assets are extracted <strong>in your
-        browser</strong>; streams and sound-effect banks load on demand.
-        Nothing is uploaded, and this site ships no game data.</p>
+        (<code>.iso</code>). Explore music, streams, sound effects, and movies
+        extracted <strong>in your browser</strong>. Nothing is uploaded, and
+        this site ships no game data.</p>
       <label id="drop">
         <input id="file" type="file" accept=".iso" />
         <span id="drop-label">drop the ISO here, or click to choose</span>

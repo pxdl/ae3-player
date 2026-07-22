@@ -461,12 +461,15 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
     const query = $<HTMLInputElement>("fmv-search").value.trim().toLocaleLowerCase();
     fmvRenderedSearch = query;
     const entries = snapshot.catalog?.entries ?? [];
-    const visible = entries.filter(entry => {
+    const groups = ["opening", "story", "gameplay"] as const;
+    const groupedEntries = groups.map(group => entries.filter(entry => {
+        if (entry.group !== group) return false;
         if (!query) return true;
         return entry.label.toLocaleLowerCase().includes(query)
             || entry.name.toLocaleLowerCase().includes(query)
             || entry.movie.path.toLocaleLowerCase().includes(query);
-    });
+    }));
+    const visible = groupedEntries.flat();
     fmvVisibleNames = visible.map(entry => entry.name);
     if (!snapshot.catalog) {
         list.innerHTML = `<li class="fmv-list-message">${snapshot.error
@@ -478,9 +481,7 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
         list.innerHTML = `<li class="fmv-list-message">No matching movies</li>`;
         return;
     }
-    const groups = ["opening", "story", "gameplay"] as const;
-    list.innerHTML = groups.map(group => {
-        const groupEntries = visible.filter(entry => entry.group === group);
+    list.innerHTML = groupedEntries.map(groupEntries => {
         if (!groupEntries.length) return "";
         const heading = movieGroupLabel(groupEntries[0]!);
         const rows = groupEntries.map(entry => {
@@ -580,20 +581,6 @@ function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
     ].join("");
 }
 
-function renderFmvSetup(snapshot: MovieControllerSnapshot): void {
-    const setup = $("fmv-setup");
-    setup.hidden = snapshot.catalog !== null && !snapshot.loading && !snapshot.error;
-    const statusElement = $("fmv-setup-status");
-    statusElement.textContent = snapshot.status || (snapshot.hasIso
-        ? "Disc connected. The metadata-only catalog can be indexed locally."
-        : "Reconnect the same disc to index or prepare movie sources.");
-    statusElement.classList.toggle("err", snapshot.error);
-    $<HTMLInputElement>("fmv-iso").disabled =
-        snapshot.exporting || snapshot.loading;
-    const setupCancel = $<HTMLButtonElement>("fmv-setup-cancel");
-    setupCancel.hidden = !snapshot.cancellable;
-    setupCancel.disabled = !snapshot.cancellable;
-}
 
 function renderFmvExport(snapshot: MovieControllerSnapshot): void {
     const entryChanged = fmvRenderedEntryName !== snapshot.entry?.name;
@@ -612,17 +599,16 @@ function renderFmvExport(snapshot: MovieControllerSnapshot): void {
     remove.textContent = snapshot.cache?.totalBytes
         ? `REMOVE ${formatMovieBytes(snapshot.cache.totalBytes)} LOCAL CACHE`
         : "REMOVE LOCAL CACHE";
-    const sourceComplete = snapshot.entry && snapshot.cache
-        ? movieSourceComplete(snapshot.entry, snapshot.cache)
-        : false;
-    $("fmv-reconnect").hidden = snapshot.hasIso || sourceComplete;
+    $("fmv-source-label").textContent =
+        snapshot.catalog ? "ATTACH SOURCE ISO" : "ATTACH ISO";
+    $("fmv-source-select").hidden =
+        snapshot.loading || snapshot.exporting || !snapshot.sourceRequired;
 }
 
 function renderFmvStatic(snapshot: MovieControllerSnapshot): void {
     fmvRenderedRevision = snapshot.revision;
     renderFmvList(snapshot);
     renderFmvInspector(snapshot);
-    renderFmvSetup(snapshot);
     renderFmvExport(snapshot);
     const entry = snapshot.entry;
     $("fmv-title").textContent = entry?.label ?? "—";
@@ -646,11 +632,6 @@ function renderFmvStatic(snapshot: MovieControllerSnapshot): void {
 }
 
 function moveFmv(delta: number, mode: "preview" | "play"): void {
-    const query = $<HTMLInputElement>("fmv-search").value.trim();
-    if (!query) {
-        movieController.move(delta, mode);
-        return;
-    }
     if (!fmvVisibleNames.length) return;
     const current = movieController.snapshot().entry?.name;
     const selected = fmvVisibleNames.indexOf(current ?? "");
@@ -1698,25 +1679,14 @@ function tick(): void {
         const message = movie.status || "Nothing leaves this browser.";
         if (statusElement.textContent !== message) statusElement.textContent = message;
         statusElement.classList.toggle("err", movie.error);
-        const setupStatus = $("fmv-setup-status");
-        if (!setupStatus.parentElement?.parentElement?.hidden) {
-            if (setupStatus.textContent !== message) setupStatus.textContent = message;
-            setupStatus.classList.toggle("err", movie.error);
-        }
-
         const busy = movie.loading || movie.exporting;
-        const setupProgress = $<HTMLProgressElement>("fmv-setup-progress");
-        setupProgress.value = movie.progress;
-        setupProgress.hidden = !movie.loading;
-        const jobProgress = $<HTMLProgressElement>("fmv-job-progress");
-        jobProgress.value = movie.progress;
+        const jobProgress = $("fmv-job-progress");
+        jobProgress.setAttribute("aria-valuenow", String(Math.round(movie.progress * 100)));
+        jobProgress.setAttribute("aria-valuetext", message);
         jobProgress.hidden = !busy;
         const cancel = $<HTMLButtonElement>("fmv-cancel");
         cancel.hidden = !movie.cancellable;
         cancel.disabled = !movie.cancellable;
-        const setupCancel = $<HTMLButtonElement>("fmv-setup-cancel");
-        setupCancel.hidden = !movie.cancellable;
-        setupCancel.disabled = !movie.cancellable;
 
         const navigationDisabled = !movie.catalog?.entries.length || movie.exporting;
         $<HTMLButtonElement>("fmv-prev").disabled = navigationDisabled;
@@ -1726,7 +1696,6 @@ function tick(): void {
         document.querySelectorAll<HTMLButtonElement>("[data-fmv-export]")
             .forEach(button => { button.disabled = !movie.entry || busy; });
         $<HTMLInputElement>("fmv-iso").disabled = busy;
-        $<HTMLButtonElement>("fmv-reconnect").disabled = busy;
         $<HTMLButtonElement>("fmv-remove-cache").disabled =
             busy || !movie.cache?.totalBytes;
         return;
@@ -2686,8 +2655,6 @@ async function main(): Promise<void> {
             );
         });
     $("fmv-cancel").onclick = () => movieController.cancel();
-    $("fmv-setup-cancel").onclick = () => movieController.cancel();
-    $("fmv-reconnect").onclick = () => $<HTMLInputElement>("fmv-iso").click();
     $("fmv-remove-cache").onclick = () => movieController.removeCached();
     document.addEventListener("fullscreenchange", () => {
         fmvAttachedRevision = -1;

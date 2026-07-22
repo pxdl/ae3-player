@@ -51,11 +51,21 @@ button:not(:disabled):active {
     flex-direction: column;
     min-height: 0;
 }
+#side-brand {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px 7px;
+}
 #side h1 {
+    min-width: 0;
+    overflow: hidden;
     color: var(--accent);
     font-size: 14px;
     letter-spacing: 0.08em;
-    padding: 12px 14px 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 /* ---- sidebar tabs (BGM / STREAMS) --------------------------------------- */
 #tabs {
@@ -195,13 +205,13 @@ button:not(:disabled):active {
 }
 #monkey-tv-link {
     display: inline-flex;
-    min-height: 40px;
+    min-height: 28px;
     align-items: center;
-    padding-inline: 8px;
+    padding-inline: 7px;
     color: var(--dim);
     border: 1px solid var(--dim);
-    border-radius: 4px;
-    font-size: 10px;
+    border-radius: 3px;
+    font-size: 9px;
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.62;
@@ -764,10 +774,9 @@ button.ex-row:disabled {
     min-height: 0;
     flex-direction: column;
 }
-#fmvview[hidden], #fmv-main[hidden], #fmv-setup[hidden],
-#fmv-caption[hidden], #fmv-job-progress[hidden],
-#fmv-setup-progress[hidden], #fmv-cancel[hidden],
-#fmv-setup-cancel[hidden], #fmv-reconnect[hidden] {
+#fmvview[hidden], #fmv-main[hidden], #fmv-caption[hidden],
+#fmv-job-progress[hidden], #fmv-cancel[hidden],
+#fmv-source-select[hidden] {
     display: none;
 }
 .search-label {
@@ -879,27 +888,29 @@ button.ex-row:disabled {
     padding: 14px 18px 18px;
 }
 #fmv-head {
+    position: relative;
     display: flex;
     flex: none;
-    align-items: end;
+    min-height: 42px;
+    align-items: center;
     justify-content: space-between;
-    gap: 24px;
+    gap: 16px;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--panel-hi);
 }
+#fmv-head > div:first-child {
+    min-width: 0;
+}
 #fmv-head h2,
-#fmv-setup h3,
 #fmv-export h3 {
     color: var(--text);
     font-size: 15px;
     letter-spacing: 0.06em;
 }
-#fmv-head p {
-    max-width: 620px;
-    color: var(--dim);
-    font-size: 10px;
-    line-height: 1.45;
-    text-align: right;
+#fmv-head h2 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .fmv-kicker {
     display: block;
@@ -908,32 +919,19 @@ button.ex-row:disabled {
     font-size: 9px;
     letter-spacing: 0.12em;
 }
-#fmv-setup {
-    display: grid;
-    flex: none;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 10px;
-    padding: 12px;
-    background: var(--panel);
-    box-shadow: inset 3px 0 var(--accent);
-}
-#fmv-setup p {
-    margin-top: 5px;
-    color: var(--dim);
-    font-size: 11px;
-    line-height: 1.4;
-}
-#fmv-setup p.err,
 #fmv-status.err {
     color: var(--bad);
 }
 .fmv-file-button {
-    min-height: 40px;
-    padding: 11px 13px;
+    display: flex;
+    min-height: 36px;
+    align-items: center;
+    padding: 8px 11px;
     border: 1px solid var(--panel-hi);
     border-radius: 3px;
     color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.04em;
     cursor: pointer;
     user-select: none;
 }
@@ -942,10 +940,6 @@ button.ex-row:disabled {
 }
 .fmv-file-button input {
     display: none;
-}
-#fmv-setup-progress {
-    width: 140px;
-    accent-color: var(--accent);
 }
 
 #fmv-workspace {
@@ -1071,6 +1065,63 @@ button.ex-row:disabled {
     flex-direction: column;
     gap: 4px;
 }
+#fmv-activity {
+    display: flex;
+    min-width: 0;
+    min-height: 24px;
+    align-items: center;
+    gap: 8px;
+}
+#fmv-activity .fmv-file-button {
+    min-height: 24px;
+    flex: none;
+    padding: 4px 8px;
+}
+#fmv-progress-slot {
+    display: flex;
+    width: 72px;
+    height: 3px;
+    flex: none;
+    overflow: hidden;
+}
+#fmv-job-progress {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 3px;
+    overflow: hidden;
+    background: var(--panel-hi);
+}
+#fmv-job-progress > span {
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: 30%;
+    background: var(--accent);
+    animation: fmv-loading-sweep 900ms cubic-bezier(0.77, 0, 0.175, 1) infinite alternate;
+}
+#fmv-cancel-slot {
+    display: flex;
+    width: 58px;
+    min-height: 24px;
+    flex: none;
+    justify-content: flex-end;
+}
+#fmv-cancel {
+    min-height: 24px;
+    padding: 3px 7px;
+    font-size: 9px;
+}
+@keyframes fmv-loading-sweep {
+    from { transform: translateX(0); }
+    to { transform: translateX(233%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #fmv-job-progress > span {
+        left: 35%;
+        animation: none;
+    }
+}
 #fmv-title {
     overflow: hidden;
     color: var(--text);
@@ -1078,6 +1129,9 @@ button.ex-row:disabled {
     white-space: nowrap;
 }
 #fmv-status {
+    min-width: 0;
+    max-width: min(50ch, 60%);
+    flex: 0 1 auto;
     overflow: hidden;
     color: var(--dim);
     font-size: 10px;
@@ -1187,21 +1241,14 @@ button.ex-row:disabled {
     font-size: 9px;
     line-height: 1.35;
 }
-#fmv-job {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
-}
-#fmv-job progress {
-    min-width: 120px;
-    flex: 1;
-    accent-color: var(--accent);
-}
-#fmv-job button,
-#fmv-setup button {
-    min-height: 40px;
+#fmv-cache-actions button {
+    min-height: 36px;
     padding: 8px 12px;
+}
+#fmv-cache-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
 }
 #fmv-remove-cache:hover:not(:disabled),
 #fmv-cancel:hover:not(:disabled) {
@@ -1380,7 +1427,7 @@ button.ex-row:disabled {
         height: 36vh;
         min-height: 250px;
     }
-    #side h1 { padding-block: 8px 6px; }
+    #side-brand { padding-block: 8px 6px; }
     #side-foot { padding-block: 6px; }
     #main {
         width: 100%;
@@ -1418,20 +1465,6 @@ button.ex-row:disabled {
         overflow-y: auto;
         padding: 10px;
     }
-    #fmv-head {
-        flex-wrap: wrap;
-        align-items: start;
-        gap: 6px;
-    }
-    #fmv-head p {
-        text-align: left;
-    }
-    #fmv-setup {
-        grid-template-columns: minmax(0, 1fr);
-    }
-    #fmv-setup-progress {
-        width: 100%;
-    }
     #fmv-workspace {
         min-height: 0;
     }
@@ -1454,12 +1487,6 @@ button.ex-row:disabled {
     }
     #fmv-export-grid {
         grid-template-columns: minmax(0, 1fr);
-    }
-    #fmv-job {
-        flex-wrap: wrap;
-    }
-    #fmv-job progress {
-        flex-basis: 100%;
     }
     #foot {
         padding: 6px 10px 8px;

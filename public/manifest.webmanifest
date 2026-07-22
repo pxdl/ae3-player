@@ -1,7 +1,7 @@
 {
-  "name": "AE3 Sound Player",
-  "short_name": "AE3 Sound",
-  "description": "Browser player for Ape Escape 3 music, streams, and sound effects -- extracted from your own disc image, client-side.",
+  "name": "AE3 Asset Lab",
+  "short_name": "AE3 Assets",
+  "description": "Browser asset explorer for Ape Escape 3 music, streams, sound effects, and movies -- extracted from your own disc image, client-side.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
