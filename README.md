@@ -3,7 +3,7 @@
 Browser player and local media viewer for Ape Escape 3 — point it at your own
 game disc image and it extracts assets **client-side** (nothing uploaded,
 nothing shipped). It plays the game's sequenced music, streams, and embedded
-sound effects, and exposes all 22 full-motion videos in a Cinema channel.
+sound effects, and exposes all 22 full-motion videos in an FMV workspace.
 Sequenced audio runs through a WebAssembly build of the
 [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer core.
 
@@ -28,8 +28,8 @@ stream jumps can loop or execute once; sample loops remain identified even when
 their envelopes are technically finite. Velocity-zero voice-stop requests are
 labeled as control-only rather than silent effects. WAV export offers one pass
 or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
-Cinema performs a lightweight 22-movie catalog scan, then reads, validates, and
-caches only the movie the user chooses. Clicking a Cinema guide item retains
+The production FMV workspace performs a lightweight 22-movie catalog scan, then
+caches only the movie the user chooses. Clicking an FMV list item retains
 play intent through source reading, decoder startup, canvas attachment, and
 priming; playback begins without a separate Play click. Keyboard browsing still
 prepares the selected movie's first frame without starting playback. The disc's
@@ -38,15 +38,17 @@ dedicated worker, which decodes bounded frame batches with a custom LGPL
 libav.js/FFmpeg WebAssembly build and presents packed I420 through WebGL2 with
 the decoded WAV as the master clock. The SDK's 7:6 sample aspect ratio controls
 an explicit display-aspect picture box while the WebGL backing store stays at
-the coded source dimensions. A two-row Cinema transport sits directly below the
+the coded source dimensions. A two-row FMV transport sits directly below the
 picture and remains with captions and picture controls in fullscreen.
 Interlaced sources are bobbed to 59.94 fps, and local captions cover the ten
-subtitled scenes. Cinema offers four exports: byte-exact original
+subtitled scenes. The workspace offers four exports: byte-exact original
 `.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters;
 Lossless MKV that remuxes the original MPEG-2 with decoded 16-bit PCM and
 optional embedded WebVTT captions; and Fast MP4 with browser-encoded H.264/AAC.
 Both containers use a separate export worker, so playback remains isolated and
 responsive.
+The production surface is the original Asset Lab's **FMV** tab. The alternate
+Monkey TV viewer remains an in-development route and is not exposed in the UI.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
@@ -80,7 +82,7 @@ machine.
 
 - `src/` — Vite + TypeScript app: disc session (extraction + OPFS), worklet
   controller, timeline, media stores, bounded movie decoder/renderer/session,
-  lazy movie converter, and UI. No framework.
+  lazy movie exporter, and UI. No framework.
 - `src/vendor/extract/` — vendored `@ae3/extract` (TS source, bundled).
 - `public/synth/` — the **unbundled audio path**: vendored `@ae3/synth`
   binding + `ae3synth.wasm`, plus the app's engine + `AudioWorkletProcessor`.
@@ -102,6 +104,7 @@ npm install
 npm run sync-sdk   # only when bumping the SDK
 npm run dev        # or: npm run build && npm run preview
 npm run typecheck
+npm test
 ```
 
 `npm run build` also generates `dist/sw.js` (the precache service worker;

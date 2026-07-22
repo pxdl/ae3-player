@@ -1,6 +1,6 @@
 #!/bin/sh
-# Vendor the SDK artifacts this app consumes (no npm packages yet -- WEB_PORT_PLAN
-# §9.4: the player vendors built artifacts; publish to npm only if demand appears).
+# Vendor the SDK artifacts this app consumes. Packages remain unpublished until
+# external demand justifies a dist/semver path; the player uses pinned vendoring.
 #
 #   @ae3/extract  -> src/vendor/extract/   (TS source, bundled into the app)
 #   @ae3/synth    -> public/synth/         (binding .mjs + .wasm, served verbatim:

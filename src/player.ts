@@ -6,7 +6,7 @@
  *
  * The playhead the UI shows is aligned to what is HEARD: each snapshot is
  * stamped with the worklet's currentFrame, and heardPos() rebases it onto the
- * context clock minus output latency (WEB_PORT_PLAN §1). */
+ * context clock minus output latency. */
 
 import type { DisplayClock } from "./timeline.ts";
 

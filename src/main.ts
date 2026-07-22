@@ -113,7 +113,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
     }
 }
 
-/* streams tab (VIEWER_PLAN §2) */
+/* streams tab */
 let tab: "bgm" | "streams" | "se" | "fmv" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
@@ -421,7 +421,7 @@ function setRev(depth: number): void {
     renderDials();
 }
 
-/* ---- streams tab (VIEWER_PLAN §2) ---------------------------------------- */
+/* ---- streams tab --------------------------------------------------------- */
 let keysBgmText = "";               /* captured from the DOM at boot */
 const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fold "
     + "· T trim · E wav · X raw · H help · click bar/stage to seek";

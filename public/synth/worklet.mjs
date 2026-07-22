@@ -1,7 +1,7 @@
 /* AudioWorkletProcessor wrapper around PlayerEngine.
  *
- * The WASM synth lives HERE, on the rendering thread (WEB_PORT_PLAN §1): the
- * main thread compiles ae3synth.wasm once and posts the WebAssembly.Module;
+ * The WASM synth lives HERE, on the rendering thread. The main thread compiles
+ * ae3synth.wasm once and posts the WebAssembly.Module;
  * process() renders 128-frame quanta directly. Control flows in over the
  * port; a ~47 Hz snapshot (every 8 quanta) flows out, stamped with
  * currentFrame so the main thread can align the playhead to what is heard.

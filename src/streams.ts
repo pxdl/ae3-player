@@ -1,5 +1,5 @@
-/* STREAMS tab backbone (VIEWER_PLAN §2): the sound/stream (.x) family --
- * extraction phase, catalog, taxonomy grouping, worker decode, playback.
+/* STREAMS tab backbone: the sound/stream (.x) family -- extraction phase,
+ * catalog, taxonomy grouping, worker decode, playback.
  *
  * Extraction is a SECOND OPFS phase with its own completeness marker
  * (stream_meta.json, written LAST like the BGM phase's meta.json), run on
@@ -44,7 +44,7 @@ function xHeader(b: Uint8Array, size: number, name: string): Omit<StreamEntry, "
              length: v.getUint32(0x14, true) };
 }
 
-/* ---- taxonomy (VIEWER_PLAN §3, measured on the whole corpus) -------------
+/* ---- taxonomy, measured on the whole corpus ------------------------------
  * channels == 2 -> MUSIC, else VOICE; sub-grouped by the first '_'-token
  * (whole name when none). Derived per disc from the user's own catalog. */
 

@@ -1,13 +1,15 @@
-/* @ae3/extract -- client-side asset extraction for the AE3 BGM player.
+/* @ae3/extract -- client-side Ape Escape 3 asset extraction.
  *
  * Chain: ISO file -> ISO9660 -> DATA.BIN -> VFI -> (.sz deflate, .pck) ->
- * assets -> OPFS cache. Everything runs on the user's machine against their
- * own disc image; this package ships no game data and uploads nothing.
+ * assets / FMV demux -> OPFS cache. Everything runs on the user's machine
+ * against their own disc image; this package ships no game data and uploads
+ * nothing.
  *
  * Entry point for apps: openDisc(new BlobSource(file)).
- * Format specs: ../docs/formats/DATA_BIN.md, EXTRACTION.md.
- * Oracles: tools/ae3tools/{vfiparse,vfiextract,exdb}.py -- the private differ
- * keeps this package byte-identical to them against the real corpus. */
+ * Format specs: ../docs/formats/{DATA_BIN,EXTRACTION,FMV}.md.
+ * Oracles: tools/ae3tools/{vfiparse,vfiextract,exdb,strextract,sbt2srt}.py;
+ * private differs keep the browser implementation byte-identical on the real
+ * corpus. */
 
 export { type ByteSource, BytesSource, BlobSource, SubSource } from "./source.ts";
 export { Iso9660, ISO_SECTOR, type IsoDirent, systemCnfSerial } from "./iso9660.ts";

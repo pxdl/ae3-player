@@ -2,8 +2,8 @@
 
 Everything in this directory runs in (or is loaded into) the
 `AudioWorkletGlobalScope` or the export Worker and is served **verbatim** --
-no bundler touches it (WEB_PORT_PLAN §1: standalone build, no main-thread
-glue in the audio path). Plain ES modules with relative imports keep dev and
+no bundler touches it. The standalone build keeps all audio rendering off the
+main thread. Plain ES modules with relative imports keep dev and
 production byte-identical and base-path safe, and let the private exit gate
 import `engine.mjs` / `exporter.mjs` directly under Node.
 

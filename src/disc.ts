@@ -4,8 +4,8 @@
  * banks, sequences, the two IRX donors, the mastering DB's song table) is
  * extracted CLIENT-SIDE into origin-private storage keyed per disc, and a
  * meta.json completeness marker is written LAST. Later visits resume from
- * OPFS via localStorage's last-disc pointer -- no ISO needed. "Forget my
- * disc" wipes both (WEB_PORT_PLAN §4.5).
+ * OPFS via localStorage's last-disc pointer -- no ISO needed. "Forget my disc"
+ * wipes both.
  *
  * Without OPFS (or if the user declines persistence) the session still works,
  * reading straight from the ISO File for this visit only. */

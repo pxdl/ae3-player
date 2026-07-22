@@ -1,6 +1,6 @@
 /* Offline WAV export -- wavdump's render mode through a SECOND synth
- * instance, never the audio path's (WEB_PORT_PLAN §1: export runs off the
- * audio thread and must not stall it; export-worker.mjs is that thread).
+ * instance, never the audio path's. Export runs off the audio thread and must
+ * not stall it; export-worker.mjs is that thread.
  *
  * Pure module: no fetch, no DOM, no Worker dependency, so the private repo's
  * exit gate drives this exact function under Node and byte-compares whole
