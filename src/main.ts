@@ -2272,7 +2272,7 @@ export function viewerSetup(): ViewerSetup | null {
             progress: movieLoading ? movieProgress : null,
         };
     }
-    if (viewerChannel === "cinema") return null;
+    if (session && viewerChannel === "cinema") return null;
     let label: string;
     let detail: string;
     let progressElement: HTMLProgressElement;
