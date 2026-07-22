@@ -1,0 +1,803 @@
+import {
+    AudioSampleSink,
+    BufferSource,
+    BufferTarget,
+    EncodedAudioPacketSource,
+    EncodedPacket,
+    canEncodeAudio,
+    canEncodeVideo,
+    Input,
+    Mp4OutputFormat,
+    Output,
+    QUALITY_HIGH,
+    TextSubtitleSource,
+    VideoSample,
+    VideoSampleSource,
+    WAVE,
+} from "mediabunny";
+import type { AudioSample } from "mediabunny";
+import {
+    createMovieDecoderSource,
+    MovieDecoderClient,
+} from "./movie-decoder-client.ts";
+import type {
+    DecodedMovieFrame,
+    MovieDecoderStats,
+} from "./movie-decoder-protocol.ts";
+import type {
+    MovieMp4ExportErrorStage,
+    MovieMp4ExportRequest,
+} from "./movie-export-protocol.ts";
+import {
+    demuxFmv,
+    indexMpeg2SeekPoints,
+    type FmvDemux,
+    type FmvVideoInfo,
+} from "./vendor/extract/index.ts";
+
+const AUDIO_BITRATE = 256_000;
+const MAX_DECODER_FRAMES = 32;
+const MAX_DECODER_BYTES = 16 * 1024 * 1024;
+const MICROSECONDS_PER_SECOND = 1_000_000;
+const CAPABILITY_MESSAGE = "Fast MP4 export is unavailable in this browser. "
+    + "Download Masters ZIP to convert locally.";
+const VIDEO_ENCODING_OPTIONS = {
+    bitrate: QUALITY_HIGH,
+    latencyMode: "quality" as const,
+    hardwareAcceleration: "no-preference" as const,
+    contentHint: "motion",
+};
+
+export type MovieExportProgress = (progress: number, stage: string) => void;
+
+export interface MovieMp4ExportResult {
+    buffer: ArrayBuffer;
+    mime: "video/mp4";
+    encodedFrames: number;
+    duration: number;
+    stats: MovieDecoderStats;
+}
+
+export class MovieExportStageError extends Error {
+    readonly stage: MovieMp4ExportErrorStage;
+
+    constructor(stage: MovieMp4ExportErrorStage, message: string, options?: ErrorOptions) {
+        super(message, options);
+        this.name = "MovieExportStageError";
+        this.stage = stage;
+    }
+}
+
+export class MovieMp4ExportController {
+    readonly #abort = new AbortController();
+    #decoder: MovieDecoderClient | null = null;
+    #output: Output<Mp4OutputFormat, BufferTarget> | null = null;
+    #cancelPromise: Promise<void> | null = null;
+
+    get signal(): AbortSignal {
+        return this.#abort.signal;
+    }
+
+    attachDecoder(decoder: MovieDecoderClient): void {
+        this.#decoder = decoder;
+        if (this.signal.aborted)
+            decoder.terminate();
+    }
+
+    attachOutput(output: Output<Mp4OutputFormat, BufferTarget>): void {
+        this.#output = output;
+        if (this.signal.aborted && this.#cancelPromise === null)
+            this.#cancelPromise = this.#cancelOutput(output);
+    }
+
+    async cancel(reason: unknown = new DOMException("Movie export cancelled", "AbortError")):
+            Promise<void> {
+        if (!this.signal.aborted)
+            this.#abort.abort(reason);
+        this.#decoder?.terminate();
+        if (this.#cancelPromise === null && this.#output !== null)
+            this.#cancelPromise = this.#cancelOutput(this.#output);
+        await this.#cancelPromise;
+    }
+
+    throwIfAborted(): void {
+        this.signal.throwIfAborted();
+    }
+
+    async #cancelOutput(output: Output<Mp4OutputFormat, BufferTarget>): Promise<void> {
+        if (output.state === "canceled" || output.state === "finalized")
+            return;
+        await output.cancel();
+    }
+}
+
+export async function exportMovieMp4(request: MovieMp4ExportRequest,
+                                     progress: MovieExportProgress,
+                                     controller = new MovieMp4ExportController()):
+        Promise<MovieMp4ExportResult> {
+    validateRuntimeSupport();
+    controller.throwIfAborted();
+    progress(0, "Checking browser encoders…");
+    await preflight(request);
+    controller.throwIfAborted();
+
+    progress(0.04, "Demuxing movie…");
+    const demux = runStage("demux", () => demuxFmv(
+        new Uint8Array(request.fmv),
+        request.name,
+    ));
+    validateDemux(request, demux);
+    controller.throwIfAborted();
+
+    progress(0.1, "Indexing MPEG-2 video…");
+    const seekIndex = runStage("index", () => indexMpeg2SeekPoints(
+        demux.video,
+        `${request.name} video`,
+    ));
+    controller.throwIfAborted();
+
+    let waveInput: Input<BufferSource> | null = null;
+    let decoder: MovieDecoderClient | null = null;
+    let output: Output<Mp4OutputFormat, BufferTarget> | null = null;
+    let completed = false;
+    try {
+        const audio = await openWave(demux, request);
+        waveInput = audio.input;
+        controller.throwIfAborted();
+
+        decoder = new MovieDecoderClient();
+        controller.attachDecoder(decoder);
+        const ready = await runAsyncStage("decode", () => decoder!.initialize(
+            createMovieDecoderSource({
+                video: ownedBuffer(demux.video),
+                videoInfo: demux.videoInfo,
+                duration: request.expectations.duration,
+                seekIndex,
+            }),
+        ));
+        controller.throwIfAborted();
+
+        const decoderDuration = ready.outputFrames * ready.frameDuration;
+        const duration = Math.min(
+            request.expectations.duration,
+            decoderDuration,
+            audio.duration,
+        );
+        if (!Number.isFinite(duration) || duration <= 0)
+            throw new MovieExportStageError("demux", "movie has no shared audio/video duration");
+
+        const target = new BufferTarget();
+        output = new Output({
+            format: new Mp4OutputFormat({ fastStart: "in-memory" }),
+            target,
+        });
+        controller.attachOutput(output);
+
+        const videoSource = new VideoSampleSource({
+            codec: "avc",
+            ...VIDEO_ENCODING_OPTIONS,
+            keyFrameInterval: 2,
+        });
+        const audioSource = new ClippedAudioEncoderSource(duration);
+        const subtitleSource = request.vtt === undefined
+            ? null
+            : new TextSubtitleSource("webvtt");
+        output.addVideoTrack(videoSource, { frameRate: ready.outputRate });
+        output.addAudioTrack(audioSource.source);
+        if (subtitleSource !== null)
+            output.addSubtitleTrack(subtitleSource, { languageCode: "eng" });
+
+        progress(0.15, "Starting MP4 muxer…");
+        await runAsyncStage("mux", () => output!.start());
+        controller.throwIfAborted();
+
+        let videoResult: VideoProducerResult | undefined;
+        const producers = [
+            failTogether(controller, async () => {
+                videoResult = await produceVideo(
+                    decoder!, ready.outputFrames, ready.frameDuration, duration,
+                    demux.videoInfo, videoSource, progress, controller,
+                );
+            }),
+            failTogether(controller, () => produceAudio(
+                audio.sink, audioSource, controller,
+            )),
+        ];
+        if (subtitleSource !== null && request.vtt !== undefined) {
+            producers.push(failTogether(controller, () => produceSubtitles(
+                request.vtt!, subtitleSource, duration, controller,
+            )));
+        }
+        const settled = await Promise.allSettled(producers);
+        const failure = settled.find(
+            (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failure !== undefined)
+            throw controller.signal.aborted ? controller.signal.reason : failure.reason;
+        if (videoResult === undefined)
+            throw new MovieExportStageError("decode", "video producer returned no result");
+
+        controller.throwIfAborted();
+        progress(0.94, "Finalizing MP4…");
+        await runAsyncStage("mux", () => output!.finalize());
+        const buffer = target.buffer;
+        if (buffer === null || buffer.byteLength === 0)
+            throw new MovieExportStageError("mux", "MP4 muxer produced an empty file");
+        completed = true;
+        progress(1, "Fast MP4 ready");
+        return {
+            buffer,
+            mime: "video/mp4",
+            encodedFrames: videoResult.encodedFrames,
+            duration,
+            stats: videoResult.stats,
+        };
+    } catch (cause) {
+        try {
+            await controller.cancel(cause);
+        } catch (cleanupCause) {
+            console.error("movie export cleanup failed", cleanupCause);
+        }
+        throw cause;
+    } finally {
+        waveInput?.dispose();
+        if (decoder !== null) {
+            if (completed)
+                await decoder.dispose();
+            else
+                decoder.terminate();
+        }
+    }
+}
+
+function validateRuntimeSupport(): void {
+    if (typeof VideoFrame !== "function" || typeof VideoEncoder !== "function"
+            || typeof AudioData !== "function" || typeof AudioEncoder !== "function")
+        throw new MovieExportStageError("capability", CAPABILITY_MESSAGE);
+}
+
+async function preflight(request: MovieMp4ExportRequest): Promise<void> {
+    const { width, height, channels, sampleRate } = request.expectations;
+    let videoSupported: boolean;
+    let audioSupported: boolean;
+    try {
+        [videoSupported, audioSupported] = await Promise.all([
+            canEncodeVideo("avc", { width, height, ...VIDEO_ENCODING_OPTIONS }),
+            canEncodeAudio("aac", {
+                numberOfChannels: channels,
+                sampleRate,
+                bitrate: AUDIO_BITRATE,
+            }),
+        ]);
+    } catch (cause) {
+        throw new MovieExportStageError("capability", CAPABILITY_MESSAGE, { cause });
+    }
+    if (!videoSupported || !audioSupported)
+        throw new MovieExportStageError("capability", CAPABILITY_MESSAGE);
+}
+
+function validateDemux(request: MovieMp4ExportRequest, demux: FmvDemux): void {
+    const expected = request.expectations;
+    const actual = demux.videoInfo;
+    if (actual.width !== expected.width || actual.height !== expected.height
+            || actual.fieldOrder !== expected.fieldOrder
+            || !sameRatio(actual.sampleAspect, expected.sampleAspect)
+            || !sameRatio(actual.displayAspect, expected.displayAspect)) {
+        throw new MovieExportStageError(
+            "demux",
+            `${request.name} metadata does not match the scanned catalog`,
+        );
+    }
+    const duration = demux.header.fields / demux.header.fieldRate;
+    if (!nearlyEqual(duration, expected.duration)
+            || demux.header.channels !== expected.channels
+            || demux.header.sampleRate !== expected.sampleRate) {
+        throw new MovieExportStageError(
+            "demux",
+            `${request.name} audio or duration metadata does not match the scanned catalog`,
+        );
+    }
+}
+
+async function openWave(demux: FmvDemux, request: MovieMp4ExportRequest): Promise<{
+    input: Input<BufferSource>;
+    sink: AudioSampleSink;
+    duration: number;
+}> {
+    const input = new Input({
+        formats: [WAVE],
+        source: new BufferSource(demux.wav),
+    });
+    try {
+        if (!await input.canRead())
+            throw new Error("decoded PCM WAV is unreadable");
+        const tracks = await input.getAudioTracks();
+        if (tracks.length !== 1)
+            throw new Error(`decoded PCM WAV has ${tracks.length} audio tracks`);
+        const track = tracks[0];
+        const [channels, sampleRate, duration] = await Promise.all([
+            track.getNumberOfChannels(),
+            track.getSampleRate(),
+            input.computeDuration([track]),
+        ]);
+        if (channels !== request.expectations.channels
+                || sampleRate !== request.expectations.sampleRate)
+            throw new Error("decoded PCM WAV metadata does not match the scanned catalog");
+        if (!Number.isFinite(duration) || duration <= 0)
+            throw new Error("decoded PCM WAV has no duration");
+        return { input, sink: new AudioSampleSink(track), duration };
+    } catch (cause) {
+        input.dispose();
+        throw stageError("demux", cause);
+    }
+}
+
+interface VideoProducerResult {
+    encodedFrames: number;
+    stats: MovieDecoderStats;
+}
+
+async function produceVideo(decoder: MovieDecoderClient, outputFrames: number,
+                            frameDuration: number, duration: number,
+                            info: FmvVideoInfo, source: VideoSampleSource,
+                            progress: MovieExportProgress,
+                            controller: MovieMp4ExportController):
+        Promise<VideoProducerResult> {
+    const timelineEnd = outputFrames * frameDuration;
+    const pull = {
+        untilTimestamp: timelineEnd,
+        maxFrames: MAX_DECODER_FRAMES,
+        maxBytes: MAX_DECODER_BYTES,
+    };
+    let deliveredFrames = 0;
+    let encodedFrames = 0;
+    let stats: MovieDecoderStats | null = null;
+    let first = true;
+    try {
+        for (;;) {
+            controller.throwIfAborted();
+            const response = await runAsyncStage("decode", () => first
+                ? decoder.prime(pull)
+                : decoder.pull(pull));
+            first = false;
+            stats = response.stats;
+            if (response.type === "eof")
+                break;
+            for (const frame of response.frames) {
+                deliveredFrames++;
+                if (frame.timestamp < duration) {
+                    const clippedDuration = Math.min(
+                        frame.duration,
+                        duration - frame.timestamp,
+                    );
+                    if (clippedDuration > 0) {
+                        await addVideoFrame(frame, clippedDuration, info, source);
+                        encodedFrames++;
+                    }
+                }
+                progress(
+                    0.18 + 0.72 * Math.min(1, deliveredFrames / outputFrames),
+                    `Decoding and encoding video · ${deliveredFrames} / ${outputFrames}`,
+                );
+                controller.throwIfAborted();
+            }
+            if (response.eof)
+                break;
+        }
+    } catch (cause) {
+        throw stageError(
+            cause instanceof MovieExportStageError ? cause.stage : "encode",
+            cause,
+        );
+    } finally {
+        source.close();
+    }
+    if (deliveredFrames !== outputFrames)
+        throw new MovieExportStageError(
+            "decode",
+            `decoder delivered ${deliveredFrames} frames; expected ${outputFrames}`,
+        );
+    if (stats === null)
+        throw new MovieExportStageError("decode", "decoder returned no statistics");
+    console.info("movie export decoder stats", stats);
+    return { encodedFrames, stats };
+}
+
+async function addVideoFrame(frame: DecodedMovieFrame, duration: number,
+                             info: FmvVideoInfo, source: VideoSampleSource): Promise<void> {
+    let sample: VideoSample | null = null;
+    try {
+        sample = createMovieVideoSample(frame, duration, info.displayAspect);
+        await source.add(sample);
+    } catch (cause) {
+        throw stageError("encode", cause);
+    } finally {
+        sample?.close();
+    }
+}
+
+export function createMovieVideoSample(frame: DecodedMovieFrame, duration: number,
+                                       displayAspect: readonly [number, number]):
+        VideoSample {
+    const [displayWidth, displayHeight] = exactDisplaySize(displayAspect);
+    const data = frame.data;
+    const init: VideoFrameBufferInit & { transfer: ArrayBuffer[] } = {
+        format: "I420",
+        codedWidth: frame.width,
+        codedHeight: frame.height,
+        layout: frame.layout.map(plane => ({ ...plane })),
+        timestamp: Math.round(frame.timestamp * MICROSECONDS_PER_SECOND),
+        duration: Math.round(duration * MICROSECONDS_PER_SECOND),
+        displayWidth,
+        displayHeight,
+        colorSpace: {
+            primaries: "smpte170m",
+            transfer: "smpte170m",
+            matrix: "smpte170m",
+            fullRange: false,
+        },
+        transfer: [data],
+    };
+    const nativeFrame = new VideoFrame(data, init);
+    try {
+        if (data.byteLength !== 0)
+            throw new Error("VideoFrame did not take ownership of the decoded I420 buffer");
+        return new VideoSample(nativeFrame, {
+            timestamp: frame.timestamp,
+            duration,
+        });
+    } catch (cause) {
+        nativeFrame.close();
+        throw cause;
+    }
+}
+
+class ClippedAudioEncoderSource {
+    readonly source = new EncodedAudioPacketSource("aac");
+    readonly duration: number;
+    #encoder: AudioEncoder | null = null;
+    #pendingPacketAdds = Promise.resolve();
+    #failure: { cause: unknown } | null = null;
+
+    constructor(duration: number) {
+        this.duration = duration;
+    }
+
+    async add(sample: AudioSample): Promise<void> {
+        this.#throwIfFailed();
+        const encoder = this.#encoder ??= this.#createEncoder(sample);
+        const data = sample.toAudioData();
+        try {
+            encoder.encode(data);
+        } finally {
+            data.close();
+        }
+        if (encoder.encodeQueueSize >= 4) {
+            await new Promise<void>(resolve => {
+                encoder.addEventListener("dequeue", () => resolve(), { once: true });
+            });
+        }
+        await this.#pendingPacketAdds;
+        this.#throwIfFailed();
+    }
+
+    async close(): Promise<void> {
+        try {
+            if (this.#encoder !== null) {
+                await this.#encoder.flush();
+                await this.#pendingPacketAdds;
+                this.#throwIfFailed();
+            }
+        } finally {
+            try {
+                if (this.#encoder !== null && this.#encoder.state !== "closed")
+                    this.#encoder.close();
+            } finally {
+                this.source.close();
+            }
+        }
+    }
+
+    #createEncoder(sample: AudioSample): AudioEncoder {
+        const encoder = new AudioEncoder({
+            output: (chunk, meta) => {
+                try {
+                    const packet = clipEncodedAudioPacket(
+                        snapEncodedAudioPacket(
+                            EncodedPacket.fromEncodedChunk(chunk),
+                            sample.sampleRate,
+                        ),
+                        this.duration,
+                    );
+                    if (packet === null)
+                        return;
+                    const normalizedMeta = normalizeAacMetadata(
+                        meta,
+                        sample.sampleRate,
+                        sample.numberOfChannels,
+                    );
+                    this.#pendingPacketAdds = this.#pendingPacketAdds
+                        .then(() => this.source.add(packet, normalizedMeta))
+                        .catch(cause => this.#recordFailure(cause));
+                } catch (cause) {
+                    this.#recordFailure(cause);
+                }
+            },
+            error: cause => this.#recordFailure(cause),
+        });
+        encoder.configure({
+            codec: "mp4a.40.2",
+            numberOfChannels: sample.numberOfChannels,
+            sampleRate: sample.sampleRate,
+            bitrate: AUDIO_BITRATE,
+        });
+        return encoder;
+    }
+
+    #recordFailure(cause: unknown): void {
+        this.#failure ??= { cause };
+    }
+
+    #throwIfFailed(): void {
+        if (this.#failure !== null)
+            throw this.#failure.cause;
+    }
+}
+
+async function produceAudio(sink: AudioSampleSink, encoder: ClippedAudioEncoderSource,
+                            controller: MovieMp4ExportController): Promise<void> {
+    await runAsyncStage("encode", async () => {
+        try {
+            for await (const sample of sink.samples(0, encoder.duration)) {
+                controller.throwIfAborted();
+                try {
+                    const frames = audioFramesWithinDuration(
+                        sample.timestamp,
+                        sample.sampleRate,
+                        sample.numberOfFrames,
+                        encoder.duration,
+                    );
+                    if (frames <= 0)
+                        break;
+                    const outputSample = frames < sample.numberOfFrames
+                        ? sample.trim(0, frames)
+                        : sample;
+                    try {
+                        await encoder.add(outputSample);
+                    } finally {
+                        if (outputSample !== sample)
+                            outputSample.close();
+                    }
+                } finally {
+                    sample.close();
+                }
+            }
+        } finally {
+            await encoder.close();
+        }
+    });
+}
+
+
+const AAC_SAMPLE_RATES = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000,
+    24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
+] as const;
+const AAC_CHANNELS = [-1, 1, 2, 3, 4, 5, 6, 8] as const;
+
+export function normalizeAacMetadata(meta: EncodedAudioChunkMetadata | undefined,
+                                     sampleRate: number, numberOfChannels: number):
+        EncodedAudioChunkMetadata {
+    const config = meta?.decoderConfig;
+    const description = config?.description;
+    if (meta !== undefined && description !== undefined) {
+        const bytes = bufferBytes(description);
+        if (bytes.byteLength >= 2 && bytes[0] >> 3 !== 0)
+            return meta;
+    }
+    return {
+        ...meta,
+        decoderConfig: {
+            ...config,
+            codec: config?.codec ?? "mp4a.40.2",
+            sampleRate: config?.sampleRate ?? sampleRate,
+            numberOfChannels: config?.numberOfChannels ?? numberOfChannels,
+            description: buildAacLcAudioSpecificConfig(sampleRate, numberOfChannels),
+        },
+    };
+}
+
+export function snapEncodedAudioPacket(packet: EncodedPacket, sampleRate: number):
+        EncodedPacket {
+    const timestamp = Math.round(packet.timestamp * sampleRate) / sampleRate;
+    const duration = Math.round(packet.duration * sampleRate) / sampleRate;
+    if (timestamp === packet.timestamp && duration === packet.duration)
+        return packet;
+    return packet.clone({ timestamp, duration });
+}
+
+function buildAacLcAudioSpecificConfig(sampleRate: number,
+                                       numberOfChannels: number): Uint8Array {
+    let frequencyIndex = AAC_SAMPLE_RATES.indexOf(
+        sampleRate as typeof AAC_SAMPLE_RATES[number],
+    );
+    const channelConfiguration = AAC_CHANNELS.indexOf(
+        numberOfChannels as typeof AAC_CHANNELS[number],
+    );
+    if (channelConfiguration < 0)
+        throw new TypeError(`unsupported AAC channel count: ${numberOfChannels}`);
+    const customRate = frequencyIndex < 0;
+    if (customRate)
+        frequencyIndex = 15;
+    const bits: number[] = [];
+    writeBits(bits, 2, 5);
+    writeBits(bits, frequencyIndex, 4);
+    if (customRate)
+        writeBits(bits, sampleRate, 24);
+    writeBits(bits, channelConfiguration, 4);
+    const bytes = new Uint8Array(Math.ceil(bits.length / 8));
+    for (let index = 0; index < bits.length; index++)
+        bytes[index >> 3] |= bits[index] << (7 - (index & 7));
+    return bytes;
+}
+
+function writeBits(target: number[], value: number, count: number): void {
+    for (let shift = count - 1; shift >= 0; shift--)
+        target.push(value >> shift & 1);
+}
+
+function bufferBytes(buffer: AllowSharedBufferSource): Uint8Array {
+    if (ArrayBuffer.isView(buffer)) {
+        return new Uint8Array(
+            buffer.buffer,
+            buffer.byteOffset,
+            buffer.byteLength,
+        );
+    }
+    return new Uint8Array(buffer);
+}
+
+export function clipEncodedAudioPacket(packet: EncodedPacket, duration: number):
+        EncodedPacket | null {
+    const clippedDuration = Math.min(packet.duration, duration - packet.timestamp);
+    if (clippedDuration <= 0)
+        return null;
+    return clippedDuration === packet.duration
+        ? packet
+        : packet.clone({ duration: clippedDuration });
+}
+
+export function audioFramesWithinDuration(timestamp: number, sampleRate: number,
+                                          frames: number, duration: number): number {
+    const remaining = duration - timestamp;
+    if (remaining <= 0)
+        return 0;
+    return Math.min(
+        frames,
+        Math.floor(remaining * sampleRate + Number.EPSILON),
+    );
+}
+
+async function produceSubtitles(vtt: ArrayBuffer, source: TextSubtitleSource,
+                                duration: number, controller: MovieMp4ExportController):
+        Promise<void> {
+    try {
+        controller.throwIfAborted();
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(vtt);
+        await source.add(clipMovieVtt(text, duration));
+    } catch (cause) {
+        throw stageError("mux", cause);
+    } finally {
+        source.close();
+    }
+}
+
+export function exactDisplaySize(aspect: readonly [number, number]): [number, number] {
+    const divisor = gcd(aspect[0], aspect[1]);
+    return [aspect[0] / divisor, aspect[1] / divisor];
+}
+
+export function clipMovieVtt(text: string, duration: number): string {
+    if (!Number.isFinite(duration) || duration <= 0)
+        throw new TypeError("subtitle duration must be positive and finite");
+    const normalized = text.replace(/\r\n?/g, "\n");
+    const blocks = normalized.split(/\n{2,}/);
+    if (blocks[0]?.trim() !== "WEBVTT")
+        throw new Error("captions are not a generated WebVTT file");
+    const clipped = ["WEBVTT"];
+    for (const block of blocks.slice(1)) {
+        const lines = block.split("\n");
+        const timingIndex = lines.findIndex(line => line.includes(" --> "));
+        if (timingIndex < 0)
+            continue;
+        const match = /^(\d{2,}):(\d{2}):(\d{2})\.(\d{3}) --> (\d{2,}):(\d{2}):(\d{2})\.(\d{3})$/.exec(
+            lines[timingIndex],
+        );
+        if (match === null)
+            throw new Error("captions contain an unsupported WebVTT timing line");
+        const start = vttSeconds(match, 1);
+        const end = vttSeconds(match, 5);
+        if (start >= duration || end <= start)
+            continue;
+        lines[timingIndex] = `${vttTimestamp(start)} --> ${vttTimestamp(Math.min(end, duration))}`;
+        clipped.push(lines.join("\n"));
+    }
+    return `${clipped.join("\n\n")}\n`;
+}
+
+function vttSeconds(match: RegExpExecArray, offset: number): number {
+    return Number(match[offset]) * 3600 + Number(match[offset + 1]) * 60
+        + Number(match[offset + 2]) + Number(match[offset + 3]) / 1000;
+}
+
+function vttTimestamp(seconds: number): string {
+    const milliseconds = Math.round(seconds * 1000);
+    const hours = Math.floor(milliseconds / 3_600_000);
+    const minutes = Math.floor(milliseconds % 3_600_000 / 60_000);
+    const wholeSeconds = Math.floor(milliseconds % 60_000 / 1000);
+    const fraction = milliseconds % 1000;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:`
+        + `${String(wholeSeconds).padStart(2, "0")}.${String(fraction).padStart(3, "0")}`;
+}
+
+async function failTogether(controller: MovieMp4ExportController,
+                            producer: () => Promise<void>): Promise<void> {
+    try {
+        await producer();
+    } catch (cause) {
+        await controller.cancel(cause);
+        throw cause;
+    }
+}
+
+function runStage<T>(stage: MovieMp4ExportErrorStage, operation: () => T): T {
+    try {
+        return operation();
+    } catch (cause) {
+        throw stageError(stage, cause);
+    }
+}
+
+async function runAsyncStage<T>(stage: MovieMp4ExportErrorStage,
+                                operation: () => Promise<T>): Promise<T> {
+    try {
+        return await operation();
+    } catch (cause) {
+        throw stageError(stage, cause);
+    }
+}
+
+function stageError(stage: MovieMp4ExportErrorStage,
+                    cause: unknown): MovieExportStageError {
+    if (cause instanceof MovieExportStageError)
+        return cause;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return new MovieExportStageError(stage, message || `movie export failed during ${stage}`, {
+        cause,
+    });
+}
+
+function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
+    if (bytes.buffer instanceof ArrayBuffer
+            && bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
+        return bytes.buffer;
+    return bytes.slice().buffer;
+}
+
+function sameRatio(left: readonly number[], right: readonly number[]): boolean {
+    return left.length === 2 && right.length === 2
+        && left[0] * right[1] === left[1] * right[0];
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+    return Math.abs(left - right) <= Number.EPSILON * Math.max(1, Math.abs(left), Math.abs(right));
+}
+
+function gcd(left: number, right: number): number {
+    let a = Math.abs(left);
+    let b = Math.abs(right);
+    while (b !== 0) {
+        [a, b] = [b, a % b];
+    }
+    return a;
+}

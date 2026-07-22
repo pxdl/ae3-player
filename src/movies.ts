@@ -5,7 +5,6 @@ import {
     type Mpeg2SeekIndex, type SubtitleCue, type Vfi, type VfiEntry,
 } from "./vendor/extract/index.ts";
 import { storeZip } from "./zip.ts";
-import type { MovieConversionInput, MovieOutputFormat } from "./movie-converter.ts";
 
 const META = "movie_meta.json";
 const CACHE_VERSION = "v1-ffmpeg-0.12.10-mediabunny-1.50.9";
@@ -17,7 +16,7 @@ const MOVIE_LABELS: Readonly<Record<string, string>> = {
     new_million: "Million Monkeys",
     new_rc4: "RC4",
 };
-const MOVIE_OUTPUT_FORMATS: readonly MovieOutputFormat[] = ["mkv", "mp4", "webm"];
+const LEGACY_OUTPUT_FORMATS = ["mkv", "mp4", "webm"] as const;
 
 export type MovieGroup = "opening" | "story" | "gameplay";
 
@@ -60,7 +59,7 @@ const EMPTY_SUBTITLES: SubtitleBundle = {
     cues: [],
 };
 
-export type MovieExportKind = "original" | "masters" | MovieOutputFormat;
+export type MovieExportKind = "original" | "masters" | "mp4";
 
 export interface MovieExport {
     filename: string;
@@ -158,16 +157,12 @@ function movieRoot(name: string): string {
     return `movies/${CACHE_VERSION}/${name}`;
 }
 
-function exportKey(name: string, format: MovieOutputFormat, captions: boolean): string {
-    return `${movieRoot(name)}/export-${format}-${captions ? "captions" : "plain"}.${format}`;
+function directMp4Key(name: string, captions: boolean): string {
+    return `${movieRoot(name)}/export-direct-mp4-v1-${captions ? "captions" : "plain"}.mp4`;
 }
 
-function movieMime(format: MovieOutputFormat): string {
-    switch (format) {
-    case "mkv": return "video/x-matroska";
-    case "mp4": return "video/mp4";
-    case "webm": return "video/webm";
-    }
+function legacyExportKey(name: string, format: string, captions: boolean): string {
+    return `${movieRoot(name)}/export-${format}-${captions ? "captions" : "plain"}.${format}`;
 }
 
 export class MovieStore {
@@ -386,57 +381,95 @@ export class MovieStore {
         return { demuxed, subtitles, sourcePersistent };
     }
 
-    private async removeLegacyWatch(name: string, signal?: AbortSignal): Promise<void> {
-        signal?.throwIfAborted();
-        const key = `${movieRoot(name)}/playback.mp4`;
-        this.memory.delete(key);
-        await this.cache?.remove(key);
+    private async removeLegacyArtifacts(name: string, signal?: AbortSignal): Promise<void> {
+        const keys = [`${movieRoot(name)}/playback.mp4`];
+        for (const format of LEGACY_OUTPUT_FORMATS) {
+            keys.push(
+                legacyExportKey(name, format, false),
+                legacyExportKey(name, format, true),
+            );
+        }
+        for (const key of keys) {
+            signal?.throwIfAborted();
+            this.memory.delete(key);
+            await this.cache?.remove(key);
+        }
         signal?.throwIfAborted();
     }
 
-    private conversionInput(demuxed: FmvDemux, cues: readonly SubtitleCue[],
-                            captions: boolean): MovieConversionInput {
-        return {
-            video: demuxed.video,
-            wav: demuxed.wav,
-            videoInfo: demuxed.videoInfo,
-            subtitleSrt: cues.length ? subtitlesToSrt(cues) : undefined,
-            embedCaptions: captions && cues.length > 0,
-        };
-    }
-
-    private async convert(entry: MovieEntry, format: MovieOutputFormat,
-                          captions: boolean, progress: MovieProgress,
-                          signal?: AbortSignal): Promise<Uint8Array> {
+    private async exportMp4(entry: MovieEntry, captions: boolean,
+                            progress: MovieProgress,
+                            signal?: AbortSignal): Promise<Uint8Array> {
         signal?.throwIfAborted();
-        const embeddedCaptions = format !== "webm" && captions;
-        const key = exportKey(entry.name, format, embeddedCaptions);
+        const key = directMp4Key(entry.name, captions);
         const sessionCached = this.memory.has(key);
-        signal?.throwIfAborted();
         const cached = await this.cachedRead(key, signal);
         signal?.throwIfAborted();
         if (cached) {
             progress(1, sessionCached
-                ? "using session-only conversion"
-                : "using cached conversion");
+                ? "using session-only Fast MP4"
+                : "using cached Fast MP4");
             return cached;
         }
+
+        progress(0.02, "reading Fast MP4 source");
+        const [source, subtitles] = await Promise.all([
+            this.source(entry, signal),
+            this.subtitles(entry, signal),
+        ]);
         signal?.throwIfAborted();
-        const { demuxed, subtitles } = await this.demux(entry, progress, signal);
+
+        progress(0.08, "persisting original movie source");
+        const root = movieRoot(entry.name);
+        let sourcePersistent = await this.cacheWrite(
+            `${root}/${entry.movie.name}`, source);
         signal?.throwIfAborted();
-        // The import keeps converter code out of playback; conversion then loads the 32.2 MiB GPL core.
-        progress(0.1, "loading conversion engine");
+        if (entry.subtitleBin && subtitles.bin) {
+            sourcePersistent = await this.cacheWrite(
+                `${root}/${entry.subtitleBin.name}`, subtitles.bin) && sourcePersistent;
+            signal?.throwIfAborted();
+        }
+        if (entry.subtitleSbt && subtitles.sbt) {
+            sourcePersistent = await this.cacheWrite(
+                `${root}/${entry.subtitleSbt.name}`, subtitles.sbt) && sourcePersistent;
+            signal?.throwIfAborted();
+        }
+        if (!sourcePersistent)
+            progress(0.14, "original source ready; cache is session-only");
+
+        const vtt = captions && subtitles.cues.length > 0
+            ? subtitlesToVtt(subtitles.cues)
+            : undefined;
+        progress(0.16, "loading Fast MP4 worker");
         signal?.throwIfAborted();
-        const converter = await import("./movie-converter.ts");
+        const exporter = await import("./movie-export-client.ts");
         signal?.throwIfAborted();
-        const converted = await converter.convertMovie(
-            this.conversionInput(demuxed, subtitles.cues, captions), format,
-            (value, stage) => progress(0.1 + value * 0.9, stage), signal);
+        progress(0.18, "starting Fast MP4 export");
+        const converted = await exporter.exportMovieMp4({
+            name: entry.name,
+            fmv: source,
+            ...(vtt === undefined ? {} : { vtt }),
+            cooperativeCopy: !sourcePersistent,
+            expectations: {
+                duration: entry.duration,
+                width: entry.video.width,
+                height: entry.video.height,
+                fieldOrder: entry.video.fieldOrder,
+                sampleAspect: entry.video.sampleAspect,
+                displayAspect: entry.video.displayAspect,
+                channels: entry.header.channels,
+                sampleRate: entry.header.sampleRate,
+            },
+        }, (value, stage) => progress(0.18 + value * 0.76, stage), signal);
         signal?.throwIfAborted();
+
+        progress(0.96, "caching Fast MP4");
         const persistent = await this.cacheWrite(key, converted);
         signal?.throwIfAborted();
-        if (!persistent)
-            progress(1, "conversion ready; export cache is session-only");
+        progress(1, persistent
+            ? "Fast MP4 ready"
+            : "Fast MP4 ready; export cache is session-only");
+        signal?.throwIfAborted();
         return converted;
     }
 
@@ -451,7 +484,7 @@ export class MovieStore {
         const seekIndex = indexMpeg2SeekPoints(
             demuxed.video, `${entry.name} MPEG-2 video`);
         signal?.throwIfAborted();
-        await this.removeLegacyWatch(entry.name, signal);
+        await this.removeLegacyArtifacts(entry.name, signal);
         signal?.throwIfAborted();
         progress(0.9, "reading movie cache");
         const cache = await this.cacheInfo(name, signal);
@@ -479,13 +512,10 @@ export class MovieStore {
         if (entry.subtitleBin) sourceKeys.push(`${root}/${entry.subtitleBin.name}`);
         if (entry.subtitleSbt) sourceKeys.push(`${root}/${entry.subtitleSbt.name}`);
         const sourceBytes = await this.totalSize(sourceKeys, signal);
-        const exportKeys: string[] = [];
-        for (const format of MOVIE_OUTPUT_FORMATS) {
-            exportKeys.push(
-                exportKey(name, format, false),
-                exportKey(name, format, true),
-            );
-        }
+        const exportKeys = [
+            directMp4Key(name, false),
+            directMp4Key(name, true),
+        ];
         const exportBytes = await this.totalSize(exportKeys, signal);
         signal?.throwIfAborted();
         return {
@@ -558,28 +588,13 @@ export class MovieStore {
             return { filename: `${name}-masters.zip`, bytes, mime: "application/zip" };
         }
         signal?.throwIfAborted();
-        const converted = await this.convert(
-            entry, kind, captions, progress, signal);
-        signal?.throwIfAborted();
-        if (kind === "webm" && entry.subtitleCues > 0) {
-            signal?.throwIfAborted();
-            const subtitles = await this.subtitles(entry, signal);
-            signal?.throwIfAborted();
-            const vtt = subtitlesToVtt(subtitles.cues);
-            signal?.throwIfAborted();
-            const bytes = storeZip([[`${name}.webm`, converted], [`${name}.vtt`, vtt]]);
-            signal?.throwIfAborted();
-            return {
-                filename: `${name}-webm.zip`,
-                bytes,
-                mime: "application/zip",
-            };
-        }
+        const converted = await this.exportMp4(
+            entry, captions, progress, signal);
         signal?.throwIfAborted();
         return {
-            filename: `${name}.${kind}`,
+            filename: `${name}.mp4`,
             bytes: converted,
-            mime: movieMime(kind),
+            mime: "video/mp4",
         };
     }
 }

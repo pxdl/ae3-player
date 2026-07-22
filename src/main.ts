@@ -177,6 +177,8 @@ const seCfg = {
 
 /* Cinema is a viewer-only channel. This controller owns source selection,
  * one source-backed playback session, cache state, and transport bridging. */
+type MovieStartMode = "preview" | "play";
+
 let viewerChannel: ViewerChannel = "music";
 let movieCatalog: MovieCatalog | null = null;
 let movieSelectedName: string | null = null;
@@ -190,6 +192,7 @@ let movieError = false;
 let movieAbort: AbortController | null = null;
 let moviePlaybackAbort: AbortController | null = null;
 let moviePlayIntentGeneration = 0;
+let moviePlaybackAutoplay = false;
 let moviePlaybackDisposal: Promise<void> = Promise.resolve();
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
@@ -1810,15 +1813,15 @@ function reportMovieError(error: unknown, signal: AbortSignal,
 
 function moviePlaybackStatus(state: MoviePlaybackState): string {
     switch (state) {
-    case "idle": return "Attaching original movie source…";
-    case "initializing-decoder": return "Starting the MPEG-2 decoder…";
-    case "priming": return "Buffering original movie frames…";
-    case "ready": return "Press Play to start the original movie.";
-    case "playing": return "Playing the original MPEG-2 stream.";
+    case "idle":
+    case "initializing-decoder":
+    case "priming": return "Loading preview…";
+    case "ready": return "Ready.";
+    case "playing": return "Playing.";
     case "paused": return "Paused.";
-    case "seeking": return "Seeking to the nearest source keyframe…";
+    case "seeking": return "Seeking…";
     case "buffering": return "Buffering…";
-    case "ended": return "Movie ended. Press Play to watch again.";
+    case "ended": return "Ended.";
     case "error": return movieStatus;
     case "disposed": return "";
     }
@@ -1826,6 +1829,7 @@ function moviePlaybackStatus(state: MoviePlaybackState): string {
 
 function invalidateMoviePlayIntent(): void {
     moviePlayIntentGeneration++;
+    moviePlaybackAutoplay = false;
     moviePlaybackAbort?.abort();
 }
 
@@ -1878,7 +1882,12 @@ async function loadMovieCatalog(target: DiscSession): Promise<void> {
             : "Reconnect the same disc once to scan its movie archive.";
         movieError = false;
         viewerRevision++;
-        if (movieSelectedName) await refreshMovieCache(movieSelectedName);
+        if (movieSelectedName) {
+            if (viewerChannel === "cinema")
+                await previewSelectedMovieIfAvailable("preview");
+            else
+                await refreshMovieCache(movieSelectedName);
+        }
     } catch (error) {
         if (session !== target) return;
         movieStatus = friendlyError(error);
@@ -1913,6 +1922,7 @@ async function chooseMovieDisc(): Promise<void> {
             if (movieAbort === controller && session === target)
                 reportMovieProgress(value, stage);
         };
+        let previewAfterAttach = false;
         try {
             await target.movies.attachIso(file, progress, controller.signal);
             controller.signal.throwIfAborted();
@@ -1923,35 +1933,69 @@ async function chooseMovieDisc(): Promise<void> {
             movieSelectedName ??= movieCatalog?.entries[0]?.name ?? null;
             movieStatus = `${movieCatalog?.entries.length ?? 0} movies indexed locally`;
             if (movieSelectedName) await refreshMovieCache(movieSelectedName);
+            previewAfterAttach = viewerChannel === "cinema"
+                && movieSelectedName !== null;
         } catch (error) {
             if (movieAbort === controller && session === target)
                 reportMovieError(error, controller.signal, "Movie scan cancelled.");
         } finally {
-            if (movieAbort === controller) movieAbort = null;
-            movieLoading = false;
-            viewerRevision++;
+            if (movieAbort === controller) {
+                movieAbort = null;
+                movieLoading = false;
+                viewerRevision++;
+            }
         }
+        if (previewAfterAttach && session === target && !controller.signal.aborted)
+            await previewSelectedMovieIfAvailable("preview");
     };
     input.click();
 }
 
-async function startSelectedMovie(): Promise<void> {
-    if (!session || !movieSelectedName || movieLoading || movieExporting
+async function prepareSelectedMovie(mode: MovieStartMode): Promise<void> {
+    if (!session || !movieSelectedName || movieExporting || movieAbort !== null
             || viewerChannel !== "cinema")
         return;
     const target = session;
     const name = movieSelectedName;
+    const activeController = moviePlaybackAbort;
+    if (activeController !== null && !activeController.signal.aborted) {
+        if (mode === "play" && movieStartIsCurrent(
+                target, name, activeController, moviePlayIntentGeneration)) {
+            moviePlaybackAutoplay = true;
+        }
+        return;
+    }
+    const existingPlayback = selectedMoviePlayback();
+    if (existingPlayback !== null && existingPlayback.state !== "error") {
+        if (mode !== "play") return;
+        try {
+            await existingPlayback.play();
+            if (session !== target || movieSelectedName !== name
+                    || viewerChannel !== "cinema" || moviePlayback !== existingPlayback)
+                existingPlayback.pause();
+        } catch (error) {
+            if (session !== target || movieSelectedName !== name
+                    || viewerChannel !== "cinema" || moviePlayback !== existingPlayback)
+                return;
+            movieStatus = friendlyError(error);
+            movieError = true;
+            viewerRevision++;
+        }
+        return;
+    }
+
     const generation = ++moviePlayIntentGeneration;
     const controller = new AbortController();
     moviePlaybackAbort = controller;
+    moviePlaybackAutoplay = mode === "play";
     movieLoading = true;
     movieProgress = 0;
-    movieStatus = "Starting original MPEG-2…";
+    movieStatus = "Loading preview…";
     movieError = false;
     viewerRevision++;
-    const progress = (value: number, stage: string): void => {
+    const progress = (value: number): void => {
         if (movieStartIsCurrent(target, name, controller, generation))
-            reportMovieProgress(value, stage);
+            reportMovieProgress(value, "Loading preview…");
     };
     try {
         const prepared = await target.movies.prepare(name, progress, controller.signal);
@@ -1980,18 +2024,59 @@ async function startSelectedMovie(): Promise<void> {
         sPlayer.pause();
         if (!movieStartIsCurrent(target, name, controller, generation, playback))
             return;
-        await playback.play();
-        if (!movieStartIsCurrent(target, name, controller, generation, playback)) {
-            playback.pause();
-            return;
+        if (moviePlaybackAutoplay) {
+            await playback.play();
+            if (!movieStartIsCurrent(target, name, controller, generation, playback)) {
+                playback.pause();
+                return;
+            }
         }
         movieStatus = moviePlaybackStatus(playback.state);
     } catch (error) {
         if (movieStartIsCurrent(target, name, controller, generation))
-            reportMovieError(error, controller.signal, "Playback start cancelled.");
+            reportMovieError(error, controller.signal, "Preview cancelled.");
     } finally {
-        if (moviePlaybackAbort === controller) moviePlaybackAbort = null;
-        movieLoading = false;
+        if (moviePlaybackAbort === controller) {
+            moviePlaybackAbort = null;
+            moviePlaybackAutoplay = false;
+            movieLoading = false;
+            viewerRevision++;
+        }
+    }
+}
+
+async function previewSelectedMovieIfAvailable(mode: MovieStartMode): Promise<void> {
+    const target = session;
+    const name = movieSelectedName;
+    const entry = selectedMovieEntry();
+    if (!target || !name || !entry || viewerChannel !== "cinema") return;
+    const playback = selectedMoviePlayback();
+    if (playback !== null) {
+        await prepareSelectedMovie(mode);
+        return;
+    }
+    try {
+        const cache = await target.movies.cacheInfo(name);
+        if (session !== target || movieSelectedName !== name
+                || viewerChannel !== "cinema" || selectedMovieEntry() !== entry)
+            return;
+        movieCache = cache;
+        viewerRevision++;
+        const completeSource = cache.sourceBytes
+            >= entry.sourceBytes + entry.subtitleBytes;
+        if (!target.movies.hasIso() && !completeSource) {
+            movieStatus = "Reconnect the same disc to preview this movie.";
+            movieError = false;
+            return;
+        }
+        await prepareSelectedMovie(mode);
+    } catch (error) {
+        if (session !== target || movieSelectedName !== name
+                || viewerChannel !== "cinema")
+            return;
+        console.error("movie preview availability check failed", error);
+        movieStatus = friendlyError(error);
+        movieError = true;
         viewerRevision++;
     }
 }
@@ -2002,7 +2087,9 @@ async function exportSelectedMovie(kind: MovieExportKind, captions: boolean): Pr
     const name = movieSelectedName;
     movieExporting = true;
     movieProgress = 0;
-    movieStatus = `preparing ${kind} export`;
+    movieStatus = kind === "mp4"
+        ? "Starting Fast MP4 export…"
+        : `preparing ${kind} export`;
     movieError = false;
     const controller = new AbortController();
     movieAbort = controller;
@@ -2419,11 +2506,35 @@ export function viewerSwitchChannel(channel: ViewerChannel): void {
         player?.pause();
         sPlayer.pause();
         viewerRevision++;
+        if (selectedMoviePlayback() === null)
+            void previewSelectedMovieIfAvailable("preview");
         return;
     }
     if (channel === "music") switchTab("bgm");
     else if (channel === "streams") switchTab("streams");
     else switchTab("se");
+}
+
+function activateMovie(name: string, mode: MovieStartMode): void {
+    if (!movieCatalog?.entries.some(entry => entry.name === name)) return;
+    if (name === movieSelectedName) {
+        if (selectedMoviePlayback() === null)
+            void previewSelectedMovieIfAvailable(mode);
+        else if (mode === "play")
+            void prepareSelectedMovie("play");
+        return;
+    }
+    invalidateMoviePlayIntent();
+    movieAbort?.abort();
+    void disposeMoviePlayback().catch((error) => {
+        console.error("movie playback disposal failed", error);
+    });
+    movieSelectedName = name;
+    movieCache = null;
+    movieStatus = "Loading preview…";
+    movieError = false;
+    viewerRevision++;
+    void previewSelectedMovieIfAvailable(mode);
 }
 
 export function viewerActivate(id: string): void {
@@ -2443,20 +2554,7 @@ export function viewerActivate(id: string): void {
         return;
     }
     if (id.startsWith("movie:")) {
-        const name = id.slice(6);
-        if (!movieCatalog?.entries.some(entry => entry.name === name)) return;
-        if (name === movieSelectedName) return;
-        invalidateMoviePlayIntent();
-        movieAbort?.abort();
-        void disposeMoviePlayback().catch((error) => {
-            console.error("movie playback disposal failed", error);
-        });
-        movieSelectedName = name;
-        movieCache = null;
-        movieStatus = "Press Play to start original-stream playback, or choose an export.";
-        movieError = false;
-        viewerRevision++;
-        void refreshMovieCache(name);
+        activateMovie(id.slice(6), "preview");
         return;
     }
     const index = seRows.findIndex((row) => id === (row.kind === "bank"
@@ -2476,11 +2574,54 @@ export function viewerMove(direction: number): void {
     viewerActivate(library.items[index]!.id);
 }
 
+export function viewerMoveAndPlayMovie(direction: number): void {
+    if (viewerChannel !== "cinema") {
+        viewerMove(direction);
+        return;
+    }
+    const library = viewerLibrary();
+    if (!library.items.length) return;
+    if (library.items.length === 1) {
+        const playback = selectedMoviePlayback();
+        if (playback === null) {
+            void previewSelectedMovieIfAvailable("play");
+            return;
+        }
+        const target = session;
+        const name = movieSelectedName;
+        void (async () => {
+            try {
+                await playback.seek(0);
+                if (session !== target || movieSelectedName !== name
+                        || viewerChannel !== "cinema" || moviePlayback !== playback)
+                    return;
+                await playback.play();
+                if (session !== target || movieSelectedName !== name
+                        || viewerChannel !== "cinema" || moviePlayback !== playback)
+                    playback.pause();
+            } catch (error) {
+                if (session !== target || movieSelectedName !== name
+                        || viewerChannel !== "cinema" || moviePlayback !== playback)
+                    return;
+                movieStatus = friendlyError(error);
+                movieError = true;
+                viewerRevision++;
+            }
+        })();
+        return;
+    }
+    const selected = library.items.findIndex((item) => item.id === library.selectedId);
+    const index = (Math.max(selected, 0) + direction + library.items.length)
+        % library.items.length;
+    const id = library.items[index]!.id;
+    if (id.startsWith("movie:")) activateMovie(id.slice(6), "play");
+}
+
 export function viewerTogglePlayback(): void {
     if (viewerChannel === "cinema") {
         const playback = selectedMoviePlayback();
         if (!playback || playback.state === "error") {
-            void startSelectedMovie();
+            void prepareSelectedMovie("play");
             return;
         }
         if (playback.playing) {

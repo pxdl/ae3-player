@@ -1,7 +1,7 @@
 /* Generate dist/sw.js after `vite build`: an app-shell service worker
  * (PWA/offline). Normal assets -- including public/synth/ -- are
- * precached. The MPEG-2 playback decoder and large movie converter are fetched
- * and cached independently, only when the user first prepares or converts a
+ * precached. The MPEG-2 decoder and direct movie-export modules are fetched
+ * and cached independently, only when the user first previews or exports a
  * movie. No runtime deps, mirroring the app (a build-time script instead of
  * vite-plugin-pwa). */
 
@@ -20,7 +20,7 @@ const files = [];
     }
 })(dist);
 files.sort();
-const lazyAsset = /^(?:libav\/|assets\/(?:ffmpeg-core|movie-converter|movie-decoder\.worker|worker)-)/;
+const lazyAsset = /^(?:libav\/|assets\/(?:movie-decoder\.worker|movie-export(?:\.worker|-client))-)/;
 
 const hash = createHash("sha256");
 const urls = [];

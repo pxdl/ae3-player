@@ -39,36 +39,36 @@ an explicit display-aspect picture box while the WebGL backing store stays at
 the coded source dimensions. A two-row Cinema transport sits directly below the
 picture and remains with captions and picture controls in fullscreen.
 Interlaced sources are bobbed to 59.94 fps, and local captions cover the ten
-subtitled scenes. Exports include byte-exact original `.str`/`.bin`/`.sbt` ZIPs;
-bit-exact MPEG-2, decoded WAV, and SRT masters; lossless MPEG-2/FLAC/SubRip MKV;
-quality H.264/AAC MP4; and VP9/Opus WebM with a WebVTT sidecar. The GPL
-conversion engine is never loaded for playback.
+subtitled scenes. Cinema offers three exports: byte-exact original
+`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters; and
+Fast MP4 with browser-encoded H.264/AAC plus optional embedded WebVTT captions.
+Fast MP4 uses a separate export worker and decoder session, so playback remains
+isolated and responsive.
 
 The app is a PWA: after the first visit its shell works offline and cached
 assets play without the ISO. Interrupted extractions resume where they left
 off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
-drives. The MPEG-2 playback decoder and 32 MiB conversion engine are excluded
-from the initial precache. Each is fetched and cached independently on first
-use.
+drives. The MPEG-2 decoder and direct Fast MP4 modules are excluded from the
+initial precache. Each is fetched and cached independently on first use.
 
-Browser support: Chrome/Chromium is the tested reference. Core audio and UI
-paths also work in Firefox and Safari. Safari's audio stack is created inside
-the first click because Safari ties autoplay dispensation to the gesture that
-created the `AudioContext`; a context built at page load can remain interrupted
-under stricter per-site Auto-Play policies. If audio still refuses to start,
-check Safari Settings > Websites > Auto-Play and the tab's mute state. Safari
-floors: `Promise.withResolvers` needs 17.4+; OPFS writes need 18.2+ and can be
-declined by the browser, in which case the app reads from the ISO again next
-visit.
+Browser support: Chrome/Chromium is the tested reference. Core audio, playback,
+and UI paths also work in Firefox and Safari. Fast MP4 additionally requires
+worker-side WebCodecs AVC and AAC encoding; unsupported browsers report that
+requirement explicitly, while Original ZIP and Masters ZIP remain available as
+the portable fallback. Safari's audio stack is created inside the first click
+because Safari ties autoplay dispensation to the gesture that created the
+`AudioContext`; a context built at page load can remain interrupted under
+stricter per-site Auto-Play policies. If audio still refuses to start, check
+Safari Settings > Websites > Auto-Play and the tab's mute state. Safari floors:
+`Promise.withResolvers` needs 17.4+; OPFS writes need 18.2+ and can be declined
+by the browser, in which case the app reads from the ISO again next visit.
 
-As of 2026-07-21, original MPEG-2 Cinema playback and conversion are verified
-in Chrome 150, Firefox 152, and Safari 26.4 with progressive, bobbed
-interlaced, caption, seek, cache-resume, and full-movie flows. The one-click
-startup path was additionally exercised in all three browsers with a delayed
-source read and cold decoder initialization; each reached `playing` without a
-stable `ready` pause or a suppressed autoplay rejection. Conversion uses the
-single-thread core because Pages does not provide the COOP/COEP isolation
-required by `SharedArrayBuffer`.
+As of 2026-07-21, original MPEG-2 Cinema playback was verified in Chrome 150,
+Firefox 152, and Safari 26.4 with progressive, bobbed interlaced, caption,
+seek, cache-resume, and full-movie flows. The one-click startup path was
+additionally exercised in all three browsers with a delayed source read and
+cold decoder initialization; each reached `playing` without a stable `ready`
+pause or a suppressed autoplay rejection.
 
 This repository never contains or serves game data. Your disc stays on your
 machine.
@@ -106,11 +106,13 @@ npm run typecheck
 `.github/workflows/deploy.yml` on every push to `main` (needs Pages set to
 the "GitHub Actions" source once the repo is public).
 
-The application source is MIT-licensed. Cinema playback distributes a custom
-libav.js/FFmpeg build under LGPL-2.1-or-later. The optional Cinema converter
-also distributes `@ffmpeg/core` under GPL-2.0-or-later and unmodified Mediabunny
-portions under MPL-2.0. Exact versions, license links, checksums, and
-corresponding-source links are deployed in
+The application source is MIT-licensed. Cinema playback and Fast MP4 frame
+extraction distribute a custom libav.js/FFmpeg build under
+LGPL-2.1-or-later. Direct MP4 muxing includes unmodified Mediabunny portions
+under MPL-2.0. The notices retain the former `@ffmpeg/*` GPL source offer while
+one previous service-worker cache generation can still serve that legacy
+release. Exact versions, license links, checksums, and corresponding-source
+links are deployed in
 [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt).
 
 License: MIT.

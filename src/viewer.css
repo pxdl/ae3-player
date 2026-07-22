@@ -363,7 +363,7 @@
     font-weight: 900;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    transition: color 160ms ease, background-color 160ms ease, transform 120ms var(--ease-out);
+    transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, transform 120ms var(--ease-out);
 }
 
 /* Monkey TV --------------------------------------------------------------- */
@@ -1135,22 +1135,28 @@
     background: oklch(0.03 0.01 280 / 0.82);
     border-radius: 4px;
     pointer-events: none;
+    transition: bottom 160ms var(--ease-out);
 }
 
 .cinema-screen-actions {
     position: absolute;
-    z-index: 3;
+    z-index: 5;
     top: 10px;
     right: 10px;
     display: flex;
     gap: 6px;
     opacity: 0;
-    transition: opacity 140ms ease;
+    pointer-events: none;
+    transform: translateY(-6px);
+    transition: opacity 140ms ease, transform 160ms var(--ease-out);
 }
 
 .cinema-picture:hover .cinema-screen-actions,
-.cinema-picture:focus-within .cinema-screen-actions {
+.cinema-picture:focus-within .cinema-screen-actions,
+.cinema-picture.controls-pinned .cinema-screen-actions {
     opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
 }
 
 .cinema-screen-actions button {
@@ -1179,14 +1185,15 @@
     display: grid;
     width: 100vw;
     height: 100vh;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 12px;
-    padding: 16px;
+    grid-template-rows: minmax(0, 1fr);
+    padding: 0;
+    place-items: center;
     background: black;
 }
 
 .cinema-player:fullscreen .cinema-screen {
     width: 100%;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
     background: black;
@@ -1202,39 +1209,6 @@
     border-radius: 0;
 }
 
-.cinema-prepare {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    display: flex;
-    min-width: 44px;
-    min-height: 44px;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    color: white;
-    background:
-        radial-gradient(circle, oklch(0.42 0.11 282 / 0.64), oklch(0.07 0.03 280 / 0.92)),
-        var(--tv-static-image);
-    border: 0;
-}
-
-.cinema-prepare svg {
-    width: 54px;
-    height: 54px;
-    padding: 12px;
-    fill: var(--indigo);
-    stroke: none;
-    background: var(--yellow);
-    border-radius: 50%;
-    box-shadow: 4px 4px 0 var(--red);
-    transition: transform 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
-}
-
-.cinema-prepare:active svg { box-shadow: 1px 1px 0 var(--red); transform: translate(3px, 3px) scale(0.96); }
-.cinema-prepare strong { font-size: 14px; letter-spacing: 0.02em; }
-.cinema-prepare small { font-size: 9px; font-weight: 800; opacity: 0.68; text-transform: uppercase; }
 
 .cinema-now { position: relative; z-index: 1; padding-inline: 4px; }
 .cinema-now .eyebrow { color: var(--yellow); }
@@ -1283,6 +1257,7 @@
 .caption-toggle { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 900; }
 .caption-toggle input { width: 16px; height: 16px; accent-color: var(--red); }
 .movie-export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-block-start: 12px; }
+.movie-export-grid [data-movie-export="mp4"] { grid-column: 1 / -1; }
 .movie-export-grid button {
     display: flex;
     min-height: 54px;
@@ -1414,28 +1389,66 @@
 }
 
 .cinema-transport.broadcast-transport {
-    position: relative;
-    inset-block-end: auto;
+    position: absolute;
+    inset: auto 12px 12px;
+    z-index: 4;
     grid-template-areas:
         "buttons title time export"
         "scrubber scrubber scrubber scrubber";
     grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 8px 14px;
-    width: 100%;
+    width: auto;
     max-width: none;
-    margin: 14px 0 0;
+    margin: 0;
+    padding: 10px 14px;
+    color: white;
+    background: oklch(0.07 0.025 278 / 0.78);
+    border: 1px solid oklch(1 0 0 / 0.2);
+    border-radius: 14px;
+    box-shadow: 0 12px 30px oklch(0 0 0 / 0.28);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    backdrop-filter: blur(16px) saturate(1.15);
+    transition: opacity 160ms ease, transform 180ms var(--ease-out);
+    -webkit-backdrop-filter: blur(16px) saturate(1.15);
 }
 
 .cinema-transport .transport-buttons { grid-area: buttons; }
 .cinema-transport .transport-title { grid-area: title; }
 .cinema-transport .scrubber { grid-area: scrubber; }
 .cinema-transport .time-readout { grid-area: time; }
-.cinema-transport .export-action { grid-area: export; }
+.cinema-transport .export-action {
+    grid-area: export;
+    gap: 5px;
+    padding-inline: 10px;
+    font-size: 9px;
+    letter-spacing: 0.05em;
+}
+
+.cinema-transport .export-action svg {
+    width: 18px;
+    height: 18px;
+}
+
+.cinema-picture:hover .cinema-transport,
+.cinema-picture:focus-within .cinema-transport,
+.cinema-picture.controls-pinned .cinema-transport {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.cinema-picture:hover .cinema-caption,
+.cinema-picture:focus-within .cinema-caption,
+.cinema-picture.controls-pinned .cinema-caption {
+    bottom: min(106px, 48%);
+}
 
 .cinema-player:fullscreen .cinema-transport {
-    margin: 0;
-    border-color: oklch(1 0 0 / 0.45);
-    box-shadow: none;
+    inset: auto 8px 8px;
+    border-color: oklch(1 0 0 / 0.24);
+    box-shadow: 0 10px 28px oklch(0 0 0 / 0.32);
 }
 
 .broadcast-transport .scrubber { color: var(--yellow); }
@@ -1444,7 +1457,11 @@
 
 @media (hover: hover) and (pointer: fine) {
     .play-button:hover { box-shadow: 0 10px 26px oklch(0.08 0.04 280 / 0.34), inset 0 1px white; }
-    .export-action:hover { color: var(--indigo); background: currentColor; }
+    .export-action:hover:not(:disabled) {
+        color: var(--indigo);
+        background: var(--yellow);
+        border-color: var(--yellow);
+    }
     .channel-card:hover { box-shadow: 3px 3px 0 white; transform: translate(4px, 4px); }
     .guide-list .track-row:hover:not([aria-current="true"]):not(.group-row) {
         background: oklch(0.91 0.025 95);
@@ -1510,11 +1527,10 @@
     .feature-art { min-height: 360px; }
     .cinema-stage { padding: 72px 18px 28px; }
     .cinema-screen { border-width: 4px; box-shadow: 5px 5px 0 var(--yellow); }
-    .cinema-player:fullscreen { gap: 8px; padding: 8px; }
+    .cinema-player:fullscreen { padding: 0; }
     .cinema-transport.broadcast-transport {
-        margin-inline: 0;
+        inset: auto 8px 8px;
         padding: 8px 10px;
-        border-width: 3px;
     }
     .cinema-inspector { padding: 24px 16px; }
     .feature-copy { padding: 28px 22px 34px; }
@@ -1533,6 +1549,13 @@
         min-width: 44px;
         min-height: 44px;
     }
+    .cinema-screen-actions,
+    .cinema-transport.broadcast-transport {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+    }
+    .cinema-caption { bottom: min(106px, 48%); }
 }
 
 @media (prefers-reduced-motion: reduce) {

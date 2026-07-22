@@ -8,9 +8,34 @@ import type {
     MovieDecoderResponse,
 } from "./movie-decoder-protocol.ts";
 import { isMovieDecoderResponse } from "./movie-decoder-protocol.ts";
+import type { FmvVideoInfo, Mpeg2SeekIndex } from "./vendor/extract/index.ts";
 
 export type MovieDecoderSource = Omit<InitializeDecoderRequest,
     "type" | "requestId" | "generation">;
+
+export interface MovieDecoderMedia {
+    video: ArrayBuffer;
+    videoInfo: FmvVideoInfo;
+    duration: number;
+    seekIndex: Mpeg2SeekIndex;
+}
+
+export function createMovieDecoderSource(media: MovieDecoderMedia): MovieDecoderSource {
+    return {
+        libavUrl: new URL(
+            `${import.meta.env.BASE_URL}${import.meta.env.DEV ? "public/" : ""}`
+                + "libav/libav-6.9.8.1-ae3-mpeg2.mjs",
+            location.href,
+        ).href,
+        video: media.video,
+        width: media.videoInfo.width,
+        height: media.videoInfo.height,
+        fieldOrder: media.videoInfo.fieldOrder,
+        duration: media.duration,
+        sourceFrames: media.seekIndex.frames,
+        seekPoints: media.seekIndex.points,
+    };
+}
 
 export interface MovieDecoderPullOptions {
     untilTimestamp: number;

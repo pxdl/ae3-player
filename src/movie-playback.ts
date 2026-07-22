@@ -1,7 +1,7 @@
 import {
+    createMovieDecoderSource,
     MovieDecoderCancelledError,
     MovieDecoderClient,
-    type MovieDecoderSource,
 } from "./movie-decoder-client.ts";
 import type { DecoderReadyResponse } from "./movie-decoder-protocol.ts";
 import { MovieFrameScheduler } from "./movie-scheduler.ts";
@@ -31,11 +31,6 @@ const NOOP_EVENTS: MoviePlaybackEvents = {
 };
 const CONTEXT_RESTORE_TIMEOUT_MS = 10_000;
 
-const LIBAV_URL = new URL(
-    `${import.meta.env.BASE_URL}${import.meta.env.DEV ? "public/" : ""}`
-        + "libav/libav-6.9.8.1-ae3-mpeg2.mjs",
-    location.href,
-).href;
 
 class PlaybackOperationCancelledError extends Error {
     constructor() {
@@ -391,16 +386,12 @@ export class MoviePlaybackSession {
         if (this.#initializeDecoder !== null)
             return this.#initializeDecoder;
 
-        const source: MovieDecoderSource = {
-            libavUrl: LIBAV_URL,
+        const source = createMovieDecoderSource({
             video: transferableBuffer(this.#source.video),
-            width: this.#source.videoInfo.width,
-            height: this.#source.videoInfo.height,
-            fieldOrder: this.#source.videoInfo.fieldOrder,
+            videoInfo: this.#source.videoInfo,
             duration: this.duration,
-            sourceFrames: this.#source.seekIndex.frames,
-            seekPoints: this.#source.seekIndex.points,
-        };
+            seekIndex: this.#source.seekIndex,
+        });
         const initialization = this.#decoder.initialize(source).then(info => {
             if (info.width !== this.#source.videoInfo.width
                     || info.height !== this.#source.videoInfo.height

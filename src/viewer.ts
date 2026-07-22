@@ -12,6 +12,7 @@ import {
     viewerMeterLevels,
     viewerMovieDetails,
     viewerMove,
+    viewerMoveAndPlayMovie,
     viewerReportMovieError,
     viewerRemoveMovie,
     viewerSeek,
@@ -148,7 +149,7 @@ function broadcastTransport(selected: ViewerItem | null, cinema = false): string
             <button type="button" class="icon-button" data-action="next"
                 aria-label="Next asset" ${selected ? "" : "disabled"}>${icon("forward")}</button>
         </div>
-        <div class="transport-title"><small data-player-status>Now tuned to</small><strong data-player-title>${escapeHtml(title)}</strong></div>
+        <div class="transport-title">${cinema ? "" : "<small data-player-status>Now tuned to</small>"}<strong data-player-title>${escapeHtml(title)}</strong></div>
         <label class="scrubber"><span class="sr-only">Playback position</span>
             <input type="range" min="0" max="1000" value="${Math.round(percent * 10)}"
                 data-action="seek" ${state.duration > 0 ? "" : "disabled"} />
@@ -157,7 +158,9 @@ function broadcastTransport(selected: ViewerItem | null, cinema = false): string
         <span class="time-readout"><b data-current-time>${formatTime(state.current)}</b> /
             <span data-duration>${formatTime(state.duration)}</span></span>
         <button type="button" class="export-action" data-action="export"
-            ${state.canExport && !state.exporting ? "" : "disabled"}>${icon("download")} Export</button>
+            aria-label="${cinema ? `Export ${escapeHtml(title)} as Fast MP4` : `Export ${escapeHtml(title)}`}"
+            title="${cinema ? "Export current movie as Fast MP4" : "Export current asset"}"
+            ${state.canExport && !state.exporting ? "" : "disabled"}>${icon("download")} ${cinema ? "Fast MP4" : "Export"}</button>
     </section>`;
 }
 
@@ -188,10 +191,12 @@ function cinemaFeature(library: ViewerLibrary): string {
     if (entry.group === "story") groupLabel = "Story scene";
     else if (entry.group === "gameplay") groupLabel = "Gameplay reel";
     const cached = details.cache?.totalBytes ?? 0;
+    const sourceComplete = (details.cache?.sourceBytes ?? 0)
+        >= entry.sourceBytes + entry.subtitleBytes;
     const captions = entry.subtitleCues > 0;
     const selected = library.items.find(item => item.id === library.selectedId) ?? null;
     const displayAspect = entry.video.displayAspect[0] / entry.video.displayAspect[1];
-    const cinemaTransport = details.prepared ? broadcastTransport(selected, true) : "";
+    const cinemaTransport = broadcastTransport(selected, true);
     let captionDetails = "None on disc";
     if (captions) {
         captionDetails = `${entry.subtitleCues} cues · UTF-8`;
@@ -208,19 +213,17 @@ function cinemaFeature(library: ViewerLibrary): string {
                         <canvas id="cinema-canvas" aria-label="${escapeHtml(entry.label)}"></canvas>
                         <div class="cinema-caption" data-movie-caption
                             ${details.captionsEnabled && details.caption !== null ? "" : "hidden"}>${escapeHtml(details.caption ?? "")}</div>
-                        ${details.prepared ? `<div class="cinema-screen-actions">
-                            ${captions ? `<button type="button" data-action="movie-caption-toggle"
+                        <div class="cinema-screen-actions">
+                            ${details.prepared && captions ? `<button type="button"
+                                data-action="movie-caption-toggle"
                                 aria-pressed="${details.captionsEnabled}">CC</button>` : ""}
                             <button type="button" data-action="movie-fullscreen"
                                 aria-label="Full screen">${icon("fullscreen")}</button>
-                        </div>` : `<button type="button" class="cinema-prepare"
-                            data-action="play" ${busy ? "disabled" : ""}>
-                            ${icon("play")}<strong>${busy ? "Starting original MPEG-2…" : "Play original movie"}</strong>
-                            <small>${busy ? "Preparing source and decoder" : "Original MPEG-2 · starts after a short buffer"}</small>
-                        </button>`}
+                        </div>
+                        ${cinemaTransport}
                     </div>
                 </div>
-                ${cinemaTransport}
+
             </div>
             <div class="cinema-now">
                 <span class="eyebrow">${escapeHtml(groupLabel)}</span>
@@ -243,18 +246,14 @@ function cinemaFeature(library: ViewerLibrary): string {
             <div class="conversion-studio">
                 <div class="conversion-head"><span class="eyebrow">Local export lab</span>
                     <label class="caption-toggle"><input type="checkbox" data-action="movie-captions"
-                        ${captions ? "checked" : "disabled"} /> Include English captions</label></div>
+                        ${captions ? "checked" : "disabled"} /> Include English captions in Fast MP4</label></div>
                 <div class="movie-export-grid">
                     <button type="button" data-movie-export="original" ${busy ? "disabled" : ""}>
                         <b>Original ZIP</b><small>.str / .bin / .sbt · byte-exact</small></button>
                     <button type="button" data-movie-export="masters" ${busy ? "disabled" : ""}>
                         <b>Masters ZIP</b><small>MPEG-2 / PCM WAV / SRT</small></button>
-                    <button type="button" data-movie-export="mkv" ${busy ? "disabled" : ""}>
-                        <b>Lossless MKV</b><small>MPEG-2 / FLAC / SubRip</small></button>
                     <button type="button" data-movie-export="mp4" ${busy ? "disabled" : ""}>
-                        <b>Compatible MP4</b><small>Quality H.264 / AAC${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
-                    <button type="button" data-movie-export="webm" ${busy ? "disabled" : ""}>
-                        <b>Open WebM</b><small>VP9 / Opus / VTT sidecar</small></button>
+                        <b>Fast MP4</b><small>H.264 / AAC · direct browser encode${entry.video.fieldOrder === "progressive" ? "" : " · 59.94p"}</small></button>
                 </div>
                 <progress data-movie-progress max="1" value="${details.progress}"
                     ${busy ? "" : "hidden"}></progress>
@@ -262,14 +261,14 @@ function cinemaFeature(library: ViewerLibrary): string {
                     aria-live="polite">${escapeHtml(details.status || "Nothing leaves this browser.")}</p>
                 <div class="cache-actions">
                     ${details.cancellable ? `<button type="button" data-action="movie-cancel">Cancel current job</button>` : ""}
-                    ${details.hasIso ? "" : `<button type="button" data-action="tune">Reconnect source disc</button>`}
+                    ${details.hasIso || sourceComplete ? "" : `<button type="button" data-action="tune">Reconnect source disc</button>`}
                     <button type="button" data-action="movie-remove" ${cached && !busy ? "" : "disabled"}>
                         Remove ${cached ? formatBytes(cached) : "cached copies"}</button>
                 </div>
                 <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
                     · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
-                <p class="converter-license">The LGPL MPEG-2 playback decoder loads only after Play is requested.
-                    The GPL conversion core loads only for converted exports. Original disc data remains local.
+                <p class="converter-license">The LGPL MPEG-2 decoder powers previews and Fast MP4 frame extraction.
+                    MediaBunny muxes the browser-encoded result. Original disc data remains local.
                     <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
                     target="_blank" rel="license">Licenses</a> ·
                     <a href="${import.meta.env.BASE_URL}libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz"
@@ -435,39 +434,41 @@ function render(): void {
 
 function updateFunctionalUi(now: number): void {
     const state = viewerTransport();
+    const channel = viewerLibrary().channel;
     const nextPlayUiKey = `${state.playing}:${state.loading}:${state.title}`;
     if (nextPlayUiKey !== playUiKey) {
         viewerRoot.querySelectorAll<HTMLButtonElement>("[data-action='play']").forEach((button) => {
             const featureButton = button.classList.contains("broadcast-play");
-            const cinemaButton = button.classList.contains("cinema-prepare");
-            if (cinemaButton) {
-                button.innerHTML = `${icon("play")}<strong>${state.loading
-                    ? "Starting original MPEG-2…" : "Play original movie"}</strong>
-                    <small>${state.loading ? "Preparing source and decoder"
-                        : "Original MPEG-2 · starts after a short buffer"}</small>`;
-            } else {
-                button.innerHTML = `${icon(state.playing ? "pause" : "play")}${featureButton
-                    ? ` ${state.playing ? "Pause transmission" : "Play transmission"}` : ""}`;
-            }
-            button.setAttribute("aria-label", cinemaButton && state.loading
-                ? `Starting ${state.title}` : `${state.playing ? "Pause" : "Play"} ${state.title}`);
+            button.innerHTML = `${icon(state.playing ? "pause" : "play")}${featureButton
+                ? ` ${state.playing ? "Pause transmission" : "Play transmission"}` : ""}`;
+            button.setAttribute("aria-label",
+                `${state.playing ? "Pause" : "Play"} ${state.title}`);
             button.setAttribute("aria-busy", String(state.loading));
         });
         playUiKey = nextPlayUiKey;
     }
     viewerRoot.querySelectorAll<HTMLElement>("[data-player-title]")
         .forEach((element) => { element.textContent = state.title || "Waiting for signal"; });
-    const nextExportUiKey = `${state.exporting}:${state.canExport}:${state.title}`;
+    const nextExportUiKey = `${channel}:${state.exporting}:${state.canExport}:${state.title}`;
     if (nextExportUiKey !== exportUiKey) {
+        const cinemaExport = channel === "cinema";
         viewerRoot.querySelectorAll<HTMLButtonElement>("[data-action='export']").forEach((button) => {
             const roundButton = button.classList.contains("round-action");
-            button.innerHTML = roundButton
-                ? icon("download")
-                : `${icon("download")} ${state.exporting ? "Exporting…" : "Export"}`;
+            const label = cinemaExport
+                ? state.exporting ? "Exporting Fast MP4…" : "Fast MP4"
+                : state.exporting ? "Exporting…" : "Export";
+            button.innerHTML = roundButton ? icon("download") : `${icon("download")} ${label}`;
             button.disabled = state.exporting || !state.canExport;
             button.setAttribute("aria-busy", String(state.exporting));
-            button.setAttribute("aria-label", state.exporting
-                ? `Exporting ${state.title}` : `Export ${state.title}`);
+            const accessibleLabel = cinemaExport
+                ? state.exporting
+                    ? `Exporting ${state.title} as Fast MP4`
+                    : `Export ${state.title} as Fast MP4`
+                : state.exporting ? `Exporting ${state.title}` : `Export ${state.title}`;
+            button.setAttribute("aria-label", accessibleLabel);
+            button.title = cinemaExport
+                ? "Export current movie as Fast MP4"
+                : "Export current asset";
         });
         exportUiKey = nextExportUiKey;
     }
@@ -517,6 +518,10 @@ function updateFunctionalUi(now: number): void {
         if (captionButton.getAttribute("aria-pressed") !== pressed)
             captionButton.setAttribute("aria-pressed", pressed);
     }
+    viewerRoot.querySelector<HTMLElement>(".cinema-picture")?.classList.toggle(
+        "controls-pinned",
+        !movie.prepared || !state.playing || state.loading,
+    );
 
     const levels = viewerRoot.querySelector<HTMLElement>("#broadcast-levels");
     if (levels) {
@@ -675,10 +680,14 @@ function wireInteractions(): void {
             viewerExportMovie(movieExport.dataset.movieExport as MovieExportKind, captions);
             return;
         }
-        const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+        const actionElement = target.closest<HTMLElement>("[data-action]");
+        const action = actionElement?.dataset.action;
+        const cinemaSkip = Boolean(actionElement?.closest(".cinema-transport"));
         if (action === "play") viewerTogglePlayback();
-        if (action === "previous") viewerMove(-1);
-        if (action === "next") viewerMove(1);
+        if (action === "previous")
+            cinemaSkip ? viewerMoveAndPlayMovie(-1) : viewerMove(-1);
+        if (action === "next")
+            cinemaSkip ? viewerMoveAndPlayMovie(1) : viewerMove(1);
         if (action === "export") viewerExport();
         if (action === "tune") viewerChooseDisc();
         if (action === "movie-cancel") viewerCancelMovieWork();
