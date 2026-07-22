@@ -9,7 +9,6 @@ import {
     Input,
     Mp4OutputFormat,
     Output,
-    QUALITY_HIGH,
     TextSubtitleSource,
     VideoSample,
     VideoSampleSource,
@@ -20,9 +19,10 @@ import {
     createMovieDecoderSource,
     MovieDecoderClient,
 } from "./movie-decoder-client.ts";
-import type {
-    DecodedMovieFrame,
-    MovieDecoderStats,
+import {
+    movieOutputFrameDuration,
+    type DecodedMovieFrame,
+    type MovieDecoderStats,
 } from "./movie-decoder-protocol.ts";
 import type {
     MovieMp4ExportErrorStage,
@@ -39,14 +39,28 @@ const AUDIO_BITRATE = 256_000;
 const MAX_DECODER_FRAMES = 32;
 const MAX_DECODER_BYTES = 16 * 1024 * 1024;
 const MICROSECONDS_PER_SECOND = 1_000_000;
+const VIDEO_BITS_PER_PIXEL = 0.15;
+const VIDEO_MIN_BITRATE = 1_250_000;
+const VIDEO_MAX_BITRATE = 2_000_000;
 const CAPABILITY_MESSAGE = "Fast MP4 export is unavailable in this browser. "
     + "Download Masters ZIP to convert locally.";
 const VIDEO_ENCODING_OPTIONS = {
-    bitrate: QUALITY_HIGH,
+    bitrateMode: "variable" as const,
     latencyMode: "quality" as const,
     hardwareAcceleration: "no-preference" as const,
     contentHint: "motion",
 };
+
+export function movieExportVideoBitrate(width: number, height: number,
+                                        frameRate: number): number {
+    if (!Number.isFinite(width) || width <= 0
+            || !Number.isFinite(height) || height <= 0
+            || !Number.isFinite(frameRate) || frameRate <= 0)
+        throw new RangeError("video dimensions and frame rate must be positive and finite");
+    const bitrate = width * height * frameRate * VIDEO_BITS_PER_PIXEL;
+    const rounded = Math.ceil(bitrate / 1_000) * 1_000;
+    return Math.min(VIDEO_MAX_BITRATE, Math.max(VIDEO_MIN_BITRATE, rounded));
+}
 
 export type MovieExportProgress = (progress: number, stage: string) => void;
 
@@ -176,6 +190,7 @@ export async function exportMovieMp4(request: MovieMp4ExportRequest,
         const videoSource = new VideoSampleSource({
             codec: "avc",
             ...VIDEO_ENCODING_OPTIONS,
+            bitrate: movieExportVideoBitrate(ready.width, ready.height, ready.outputRate),
             keyFrameInterval: 2,
         });
         const audioSource = new ClippedAudioEncoderSource(duration);
@@ -257,12 +272,16 @@ function validateRuntimeSupport(): void {
 }
 
 async function preflight(request: MovieMp4ExportRequest): Promise<void> {
-    const { width, height, channels, sampleRate } = request.expectations;
+    const { width, height, fieldOrder, channels, sampleRate } = request.expectations;
+    const frameRate = 1 / movieOutputFrameDuration(fieldOrder);
+    const bitrate = movieExportVideoBitrate(width, height, frameRate);
     let videoSupported: boolean;
     let audioSupported: boolean;
     try {
         [videoSupported, audioSupported] = await Promise.all([
-            canEncodeVideo("avc", { width, height, ...VIDEO_ENCODING_OPTIONS }),
+            canEncodeVideo("avc", {
+                width, height, bitrate, ...VIDEO_ENCODING_OPTIONS,
+            }),
             canEncodeAudio("aac", {
                 numberOfChannels: channels,
                 sampleRate,

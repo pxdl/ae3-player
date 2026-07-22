@@ -14,6 +14,7 @@ import {
     createMovieVideoSample,
     exactDisplaySize,
     MovieMp4ExportController,
+    movieExportVideoBitrate,
     normalizeAacMetadata,
     snapEncodedAudioPacket,
 } from "../src/movie-exporter.ts";
@@ -129,6 +130,13 @@ test("MediaBunny accepts generated PCM WAV metadata", async () => {
     } finally {
         input.dispose();
     }
+});
+
+test("video bitrate adapts to frame cadence within quality bounds", () => {
+    assert.equal(movieExportVideoBitrate(512, 320, 30_000 / 1_001), 1_250_000);
+    assert.equal(movieExportVideoBitrate(512, 384, 60_000 / 1_001), 1_768_000);
+    assert.equal(movieExportVideoBitrate(320, 240, 24), 1_250_000);
+    assert.equal(movieExportVideoBitrate(1_920, 1_080, 60), 2_000_000);
 });
 
 test("display metadata preserves exact authored DAR", () => {
