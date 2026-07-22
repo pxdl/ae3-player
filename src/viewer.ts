@@ -139,8 +139,14 @@ function broadcastTransport(selected: ViewerItem | null, cinema = false): string
     const title = state.title || selected?.label || "Waiting for signal";
     const percent = state.progress * 100;
     const canPlay = selected?.kind === "media";
+    const scrubber = `<label class="scrubber"><span class="sr-only">Playback position</span>
+        <input type="range" min="0" max="1000" value="${Math.round(percent * 10)}"
+            data-action="seek" ${state.duration > 0 ? "" : "disabled"} />
+        <span class="scrubber-fill" style="--progress:${percent}%"></span>
+    </label>`;
     return `<section class="broadcast-transport${cinema ? " cinema-transport" : ""}"
         aria-label="${cinema ? "Cinema player" : "Player"} transport">
+        ${cinema ? scrubber : ""}
         <div class="transport-buttons">
             <button type="button" class="icon-button" data-action="previous"
                 aria-label="Previous asset" ${selected ? "" : "disabled"}>${icon("back")}</button>
@@ -150,11 +156,7 @@ function broadcastTransport(selected: ViewerItem | null, cinema = false): string
                 aria-label="Next asset" ${selected ? "" : "disabled"}>${icon("forward")}</button>
         </div>
         <div class="transport-title">${cinema ? "" : "<small data-player-status>Now tuned to</small>"}<strong data-player-title>${escapeHtml(title)}</strong></div>
-        <label class="scrubber"><span class="sr-only">Playback position</span>
-            <input type="range" min="0" max="1000" value="${Math.round(percent * 10)}"
-                data-action="seek" ${state.duration > 0 ? "" : "disabled"} />
-            <span class="scrubber-fill" style="--progress:${percent}%"></span>
-        </label>
+        ${cinema ? "" : scrubber}
         <span class="time-readout"><b data-current-time>${formatTime(state.current)}</b> /
             <span data-duration>${formatTime(state.duration)}</span></span>
         <button type="button" class="export-action" data-action="export"

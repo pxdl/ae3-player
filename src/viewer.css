@@ -1393,8 +1393,8 @@
     inset: auto 12px 12px;
     z-index: 4;
     grid-template-areas:
-        "buttons title time export"
-        "scrubber scrubber scrubber scrubber";
+        "scrubber scrubber scrubber scrubber"
+        "buttons title time export";
     grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 8px 14px;
     width: auto;
@@ -1502,8 +1502,8 @@
     .export-action { display: none; }
     .cinema-transport.broadcast-transport {
         grid-template-areas:
-            "buttons time"
-            "scrubber scrubber";
+            "scrubber scrubber"
+            "buttons time";
         grid-template-columns: auto minmax(0, 1fr);
         gap: 8px 12px;
     }
