@@ -19,6 +19,7 @@
         <button id="tab-bgm" class="tab on" title="Sequenced music through the SPU2 synth">BGM</button>
         <button id="tab-streams" class="tab" title="Streamed audio -- phone calls, cutscene voice, minigame music">STREAMS</button>
         <button id="tab-se" class="tab" title="Embedded sequenced sound effects through the shared SPU2 synth">SE</button>
+        <button id="tab-fmv" class="tab" title="Original FMV movies, source metadata, playback, captions, and exports">FMV</button>
       </div>
       <ul id="songlist"></ul>
       <div id="streamview" hidden>
@@ -28,6 +29,12 @@
       <div id="seview" hidden>
         <input id="se-search" type="search" placeholder="search SE banks" spellcheck="false" autocomplete="off" />
         <ul id="selist"></ul>
+      </div>
+      <div id="fmvview" hidden>
+        <label class="search-label" for="fmv-search">FILTER MOVIES</label>
+        <input id="fmv-search" type="search" placeholder="label, filename, or path"
+          spellcheck="false" autocomplete="off" />
+        <ul id="fmvlist" aria-label="Movies"></ul>
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
@@ -195,6 +202,99 @@
             <progress id="se-progress" max="1" value="0" hidden></progress>
           </div>
         </div>
+      </section>
+      <section id="fmv-main" hidden>
+        <header id="fmv-head">
+          <div>
+            <span class="fmv-kicker">DISC CINEMA / ADVANCED INSPECTION</span>
+            <h2 id="fmv-heading">FMV ASSETS</h2>
+          </div>
+          <p>Original MPEG-2 video, PS-ADPCM audio, subtitle sidecars, and local derivatives.</p>
+        </header>
+
+        <section id="fmv-setup" aria-labelledby="fmv-setup-title">
+          <div>
+            <span class="fmv-kicker">SOURCE CONNECTION</span>
+            <h3 id="fmv-setup-title">MOVIE CATALOG</h3>
+            <p id="fmv-setup-status">Loading the local movie catalog&hellip;</p>
+          </div>
+          <label class="fmv-file-button" for="fmv-iso">
+            <input id="fmv-iso" type="file" accept=".iso,application/x-iso9660-image" />
+            <span>RECONNECT ISO</span>
+          </label>
+          <progress id="fmv-setup-progress" max="1" value="0" hidden></progress>
+          <button id="fmv-setup-cancel" type="button" hidden>CANCEL</button>
+        </section>
+
+        <div id="fmv-workspace">
+          <section id="fmv-player" aria-label="Movie player">
+            <div id="fmv-picture">
+              <canvas id="fmv-canvas" aria-label="Selected movie picture"></canvas>
+              <div id="fmv-caption" hidden aria-live="off"></div>
+              <div id="fmv-picture-controls">
+                <button id="fmv-cc" type="button" aria-label="Toggle captions"
+                  aria-pressed="true" disabled>CC</button>
+                <button id="fmv-fullscreen" type="button" aria-label="Toggle full screen">FULL</button>
+              </div>
+            </div>
+            <div id="fmv-bar" role="slider" tabindex="0" aria-label="Movie position"
+              aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0">
+              <div id="fmv-bar-fill"></div>
+              <div id="fmv-bar-head"></div>
+            </div>
+            <div id="fmv-transport">
+              <div class="fmv-transport-buttons">
+                <button id="fmv-prev" type="button" aria-label="Previous movie">&larr;</button>
+                <button id="fmv-play" type="button" aria-label="Play selected movie"
+                  disabled><span>&#9654;</span></button>
+                <button id="fmv-next" type="button" aria-label="Next movie">&rarr;</button>
+              </div>
+              <div id="fmv-now">
+                <strong id="fmv-title">&mdash;</strong>
+                <span id="fmv-status" aria-live="polite">Choose an FMV asset.</span>
+              </div>
+              <div id="fmv-time"><span id="fmv-current">0:00.0</span> /
+                <span id="fmv-duration">0:00.0</span></div>
+            </div>
+          </section>
+
+          <aside id="fmv-inspector" aria-label="Selected movie metadata">
+            <div class="fmv-empty">Select a movie to inspect its disc metadata.</div>
+          </aside>
+        </div>
+
+        <section id="fmv-export" aria-labelledby="fmv-export-title">
+          <header>
+            <div>
+              <span class="fmv-kicker">LOCAL EXPORT LAB</span>
+              <h3 id="fmv-export-title">DERIVATIVES</h3>
+            </div>
+            <label class="fmv-caption-export">
+              <input id="fmv-export-captions" type="checkbox" />
+              INCLUDE AVAILABLE CAPTIONS
+            </label>
+          </header>
+          <div id="fmv-export-grid">
+            <button type="button" data-fmv-export="original">
+              <strong>ORIGINAL ZIP</strong><span>.str / .bin / .sbt &middot; byte-exact</span>
+            </button>
+            <button type="button" data-fmv-export="masters">
+              <strong>MASTERS ZIP</strong><span>MPEG-2 / PCM WAV / SRT</span>
+            </button>
+            <button type="button" data-fmv-export="mkv">
+              <strong>LOSSLESS MKV</strong><span>Original video / lossless PCM</span>
+            </button>
+            <button type="button" data-fmv-export="mp4">
+              <strong>FAST MP4</strong><span>H.264 / AAC &middot; browser encode</span>
+            </button>
+          </div>
+          <div id="fmv-job">
+            <progress id="fmv-job-progress" max="1" value="0" hidden></progress>
+            <button id="fmv-cancel" type="button" hidden>CANCEL CURRENT JOB</button>
+            <button id="fmv-reconnect" type="button">RECONNECT SOURCE DISC</button>
+            <button id="fmv-remove-cache" type="button" disabled>REMOVE LOCAL CACHE</button>
+          </div>
+        </section>
       </section>
       <footer id="foot">
         <div id="foot-stats">

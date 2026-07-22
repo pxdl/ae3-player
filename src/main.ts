@@ -16,10 +16,14 @@ import { StreamViz } from "./sviz.ts";
 import { SeInspector, type SeBankEntry, type SeCatalog,
          type SeMeasureFiles, type SeRequestInfo } from "./se.ts";
 import { SeSequenceViz, SeSourceLoopViz } from "./seviz.ts";
-import type {
-    MovieCacheInfo, MovieCatalog, MovieEntry, MovieExportKind,
-} from "./movies.ts";
-import { MoviePlaybackSession, type MoviePlaybackState } from "./movie-playback.ts";
+import { MovieController, type MovieControllerSnapshot } from "./movie-controller.ts";
+import {
+    formatMovieBytes,
+    movieGroupLabel,
+    movieScanLabel,
+    movieSourceComplete,
+} from "./movie-presentation.ts";
+import type { MovieEntry, MovieExportKind } from "./movies.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
@@ -64,18 +68,6 @@ export interface ViewerTransport {
     error: boolean;
 }
 
-export interface ViewerMovieDetails {
-    entry: MovieEntry | null;
-    cache: MovieCacheInfo | null;
-    prepared: boolean;
-    hasIso: boolean;
-    cancellable: boolean;
-    progress: number;
-    status: string;
-    error: boolean;
-    caption: string | null;
-    captionsEnabled: boolean;
-}
 
 const LOOP_FOREVER = 0x7f;
 const SE_SEEK_LIMIT = 5 * 60 * RATE;
@@ -122,7 +114,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 }
 
 /* streams tab (VIEWER_PLAN §2) */
-let tab: "bgm" | "streams" | "se" = "bgm";
+let tab: "bgm" | "streams" | "se" | "fmv" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
@@ -144,6 +136,12 @@ let sExtracting = false;
 const sDecoder = new StreamDecoder();
 const sPlayer = new StreamPlayer();
 let sViz: StreamViz | null = null;
+let fmvRenderedRevision = -1;
+let fmvAttachedRevision = -1;
+let fmvGlyph = "";
+let fmvVisibleNames: string[] = [];
+let fmvRenderedSearch = "";
+let fmvRenderedEntryName: string | null = null;
 
 /* embedded sequenced effects */
 type SeRow =
@@ -175,25 +173,17 @@ const seCfg = {
 };
 
 
-/* Cinema is a viewer-only channel. This controller owns source selection,
- * one source-backed playback session, cache state, and transport bridging. */
-type MovieStartMode = "preview" | "play";
-
 let viewerChannel: ViewerChannel = "music";
-let movieCatalog: MovieCatalog | null = null;
-let movieSelectedName: string | null = null;
-let moviePlayback: MoviePlaybackSession | null = null;
-let movieCache: MovieCacheInfo | null = null;
-let movieLoading = false;
-let movieExporting = false;
-let movieProgress = 0;
-let movieStatus = "";
-let movieError = false;
-let movieAbort: AbortController | null = null;
-let moviePlaybackAbort: AbortController | null = null;
-let moviePlayIntentGeneration = 0;
-let moviePlaybackAutoplay = false;
-let moviePlaybackDisposal: Promise<void> = Promise.resolve();
+export const movieController = new MovieController({
+    changed() { viewerRevision++; },
+    pauseOtherMedia() {
+        player?.pause();
+        sPlayer.pause();
+    },
+    deliver(output) {
+        download(output.bytes, output.filename, output.mime);
+    },
+});
 const engineConfig = (): EngineConfig => ({
     songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
     gaussian: cfg.gaussian, loop: cfg.loop ? LOOP_FOREVER : 0,
@@ -438,6 +428,8 @@ const KEYS_STREAMS = "SPACE play · ↑↓ move · ←→ fold · ENTER load/fol
 const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u00B7 ENTER load/fold "
     + "\u00B7 L stream loop/once \u00B7 - = volume \u00B7 T timing \u00B7 G kernel "
     + "\u00B7 R reverb \u00B7 E wav \u00B7 X bank \u00B7 click bar/score to seek \u00B7 H help";
+const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
+    + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -448,27 +440,278 @@ function fmtSec(t: number): string {
     return `${m}:${s < 10 ? "0" : ""}${s.toFixed(1)}`;
 }
 
-function switchTab(t: "bgm" | "streams" | "se"): void {
+function escapeMarkup(value: string | number): string {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;");
+}
+
+function movieHex(value: number, width = 0): string {
+    return `0x${Math.max(0, value).toString(16).toUpperCase().padStart(width, "0")}`;
+}
+
+function movieBytesDetail(bytes: number): string {
+    return `${movieHex(bytes)} · ${formatMovieBytes(bytes)}`;
+}
+
+function renderFmvList(snapshot: MovieControllerSnapshot): void {
+    const list = $("fmvlist");
+    const query = $<HTMLInputElement>("fmv-search").value.trim().toLocaleLowerCase();
+    fmvRenderedSearch = query;
+    const entries = snapshot.catalog?.entries ?? [];
+    const visible = entries.filter(entry => {
+        if (!query) return true;
+        return entry.label.toLocaleLowerCase().includes(query)
+            || entry.name.toLocaleLowerCase().includes(query)
+            || entry.movie.path.toLocaleLowerCase().includes(query);
+    });
+    fmvVisibleNames = visible.map(entry => entry.name);
+    if (!snapshot.catalog) {
+        list.innerHTML = `<li class="fmv-list-message">${snapshot.error
+            ? "Movie catalog unavailable"
+            : "Loading movie catalog…"}</li>`;
+        return;
+    }
+    if (!visible.length) {
+        list.innerHTML = `<li class="fmv-list-message">No matching movies</li>`;
+        return;
+    }
+    const groups = ["opening", "story", "gameplay"] as const;
+    list.innerHTML = groups.map(group => {
+        const groupEntries = visible.filter(entry => entry.group === group);
+        if (!groupEntries.length) return "";
+        const heading = movieGroupLabel(groupEntries[0]!);
+        const rows = groupEntries.map(entry => {
+            const selected = entry.name === snapshot.entry?.name;
+            return `<li class="fmv-row${selected ? " selected" : ""}">
+                <button type="button" data-fmv-name="${escapeMarkup(entry.name)}"
+                    title="${escapeMarkup(entry.movie.path)}"
+                    aria-current="${selected ? "true" : "false"}"
+                    ${snapshot.exporting ? "disabled" : ""}>
+                    <span class="fmv-row-main"><strong>${escapeMarkup(entry.label)}</strong>
+                        <code>${escapeMarkup(entry.name)}</code></span>
+                    <span class="fmv-row-meta"><span>${fmtSec(entry.duration)}</span>
+                        <span>${escapeMarkup(movieScanLabel(entry, false))}</span></span>
+                </button>
+            </li>`;
+        }).join("");
+        return `<li class="fmv-group"><h3>${escapeMarkup(heading)}</h3></li>${rows}`;
+    }).join("");
+    list.querySelector<HTMLElement>('[aria-current="true"]')
+        ?.scrollIntoView({ block: "nearest" });
+}
+
+function metadataSection(title: string, rows: readonly (readonly [string, string])[]): string {
+    return `<section><h3>${escapeMarkup(title)}</h3><dl>${rows.map(([label, value]) =>
+        `<div><dt>${escapeMarkup(label)}</dt><dd>${value}</dd></div>`).join("")}</dl></section>`;
+}
+
+function movieSidecarRows(label: string, entry: MovieEntry["subtitleBin"]): [string, string][] {
+    if (!entry) return [
+        [`${label} name`, "None"],
+        [`${label} path`, "None"],
+        [`${label} size`, "None"],
+    ];
+    return [
+        [`${label} name`, `<code>${escapeMarkup(entry.name)}</code>`],
+        [`${label} path`, `<code>${escapeMarkup(entry.path)}</code>`],
+        [`${label} size`, movieBytesDetail(entry.size)],
+    ];
+}
+
+function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
+    const inspector = $("fmv-inspector");
+    const entry = snapshot.entry;
+    if (!entry) {
+        inspector.innerHTML = `<div class="fmv-empty">Select a movie to inspect its disc metadata.</div>`;
+        return;
+    }
+    const cacheValue = (value: number | undefined): string =>
+        value === undefined ? "—" : movieBytesDetail(value);
+    const complete = snapshot.cache
+        ? movieSourceComplete(entry, snapshot.cache) ? "Yes" : "No"
+        : "—";
+    const order = entry.video.fieldOrder;
+    const subtitles = entry.subtitleCues
+        ? `${entry.subtitleCues} cues · final cue ${fmtSec(entry.subtitleEnd ?? 0)}`
+        : "None on disc";
+    inspector.innerHTML = [
+        metadataSection("Asset", [
+            ["Movie name", `<code>${escapeMarkup(entry.movie.name)}</code>`],
+            ["Movie path", `<code>${escapeMarkup(entry.movie.path)}</code>`],
+            ["VFI sector", `${entry.movie.sector} · ${movieHex(entry.movie.sector)}`],
+            ["Byte offset", movieHex(entry.movie.sector * 0x800)],
+            [".str size", movieBytesDetail(entry.movie.size)],
+            ...movieSidecarRows(".bin", entry.subtitleBin),
+            ...movieSidecarRows(".sbt", entry.subtitleSbt),
+        ]),
+        metadataSection("Container & picture", [
+            ["Fields", String(entry.header.fields)],
+            ["Groups", String(entry.header.groups)],
+            ["Field rate", `${entry.header.fieldRate} Hz`],
+            ["Duration", fmtSec(entry.duration)],
+            ["Coded picture", `${entry.video.width} × ${entry.video.height}`],
+            ["Video frame rate", `${entry.video.frameRate} fps`],
+            ["Field order", `<code>${order}</code> · ${escapeMarkup(movieScanLabel(entry, true))}`],
+            ["Sample aspect", entry.video.sampleAspect.join(":")],
+            ["Display aspect", entry.video.displayAspect.join(":")],
+        ]),
+        metadataSection("Audio", [
+            ["Channels", String(entry.header.channels)],
+            ["Sample rate", `${entry.header.sampleRate} Hz`],
+            ["Codec", "PS-ADPCM"],
+            ["Interleave", movieBytesDetail(entry.header.interleave)],
+            ["Audio block", movieBytesDetail(entry.header.audioBlock)],
+            ["Preload", movieBytesDetail(entry.header.preload)],
+            ["Compressed payload", movieBytesDetail(entry.header.audioBytes)],
+        ]),
+        metadataSection("Subtitles", [
+            ["Disc cues", subtitles],
+            ["Attached ISO", snapshot.hasIso ? "Yes" : "No"],
+        ]),
+        metadataSection("Local cache", [
+            ["Source bytes", cacheValue(snapshot.cache?.sourceBytes)],
+            ["Export bytes", cacheValue(snapshot.cache?.exportBytes)],
+            ["Total bytes", cacheValue(snapshot.cache?.totalBytes)],
+            ["Complete source", complete],
+        ]),
+    ].join("");
+}
+
+function renderFmvSetup(snapshot: MovieControllerSnapshot): void {
+    const setup = $("fmv-setup");
+    setup.hidden = snapshot.catalog !== null && !snapshot.loading && !snapshot.error;
+    const statusElement = $("fmv-setup-status");
+    statusElement.textContent = snapshot.status || (snapshot.hasIso
+        ? "Disc connected. The metadata-only catalog can be indexed locally."
+        : "Reconnect the same disc to index or prepare movie sources.");
+    statusElement.classList.toggle("err", snapshot.error);
+    $<HTMLInputElement>("fmv-iso").disabled =
+        snapshot.exporting || snapshot.loading;
+    const setupCancel = $<HTMLButtonElement>("fmv-setup-cancel");
+    setupCancel.hidden = !snapshot.cancellable;
+    setupCancel.disabled = !snapshot.cancellable;
+}
+
+function renderFmvExport(snapshot: MovieControllerSnapshot): void {
+    const entryChanged = fmvRenderedEntryName !== snapshot.entry?.name;
+    fmvRenderedEntryName = snapshot.entry?.name ?? null;
+    const captions = $<HTMLInputElement>("fmv-export-captions");
+    captions.disabled = !snapshot.entry?.subtitleCues;
+    if (entryChanged) captions.checked = (snapshot.entry?.subtitleCues ?? 0) > 0;
+    const mp4Detail = document.querySelector<HTMLElement>(
+        "[data-fmv-export='mp4'] span");
+    if (mp4Detail) {
+        mp4Detail.textContent = snapshot.entry?.video.fieldOrder === "progressive"
+            ? "H.264 / AAC · browser encode"
+            : "H.264 / AAC · 59.94p browser encode";
+    }
+    const remove = $<HTMLButtonElement>("fmv-remove-cache");
+    remove.textContent = snapshot.cache?.totalBytes
+        ? `REMOVE ${formatMovieBytes(snapshot.cache.totalBytes)} LOCAL CACHE`
+        : "REMOVE LOCAL CACHE";
+    const sourceComplete = snapshot.entry && snapshot.cache
+        ? movieSourceComplete(snapshot.entry, snapshot.cache)
+        : false;
+    $("fmv-reconnect").hidden = snapshot.hasIso || sourceComplete;
+}
+
+function renderFmvStatic(snapshot: MovieControllerSnapshot): void {
+    fmvRenderedRevision = snapshot.revision;
+    renderFmvList(snapshot);
+    renderFmvInspector(snapshot);
+    renderFmvSetup(snapshot);
+    renderFmvExport(snapshot);
+    const entry = snapshot.entry;
+    $("fmv-title").textContent = entry?.label ?? "—";
+    $("fmv-heading").textContent = entry
+        ? `${entry.label.toLocaleUpperCase()} / ${entry.name}`
+        : "FMV ASSETS";
+    const picture = $("fmv-picture");
+    const displayAspect = entry?.video.displayAspect ?? [16, 9];
+    picture.style.aspectRatio = `${displayAspect[0]} / ${displayAspect[1]}`;
+    picture.style.setProperty(
+        "--fmv-aspect-value", String(displayAspect[0] / displayAspect[1]));
+    $<HTMLCanvasElement>("fmv-canvas").setAttribute(
+        "aria-label", entry?.label ?? "Selected movie picture");
+    if (snapshot.prepared && snapshot.active
+            && fmvAttachedRevision !== snapshot.revision) {
+        movieController.attach($<HTMLCanvasElement>("fmv-canvas"));
+        fmvAttachedRevision = snapshot.revision;
+    } else if (!snapshot.prepared) {
+        fmvAttachedRevision = -1;
+    }
+}
+
+function moveFmv(delta: number, mode: "preview" | "play"): void {
+    const query = $<HTMLInputElement>("fmv-search").value.trim();
+    if (!query) {
+        movieController.move(delta, mode);
+        return;
+    }
+    if (!fmvVisibleNames.length) return;
+    const current = movieController.snapshot().entry?.name;
+    const selected = fmvVisibleNames.indexOf(current ?? "");
+    const origin = selected < 0 ? (delta > 0 ? -1 : 0) : selected;
+    const index = (origin + delta + fmvVisibleNames.length) % fmvVisibleNames.length;
+    movieController.select(fmvVisibleNames[index]!, mode);
+}
+
+function toggleFmvFullscreen(): void {
+    const playerElement = $("fmv-player");
+    const entering = document.fullscreenElement === null;
+    const operation = entering
+        ? playerElement.requestFullscreen()
+        : document.exitFullscreen();
+    void operation.catch(error => {
+        console.error("FMV fullscreen request failed", error);
+        movieController.reportError(entering
+            ? "Full screen was blocked. Allow full-screen access for this site."
+            : "Could not leave full screen. Press Escape or use the browser command.");
+    });
+}
+
+function exitFmvFullscreen(): boolean {
+    if (document.fullscreenElement !== $("fmv-player")) return false;
+    void document.exitFullscreen().catch(error => {
+        console.error("FMV fullscreen exit failed", error);
+        movieController.reportError(
+            "Could not leave full screen. Press Escape or use the browser command.");
+    });
+    return true;
+}
+
+function switchTab(t: "bgm" | "streams" | "se" | "fmv"): void {
     if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
     $("tab-streams").classList.toggle("on", t === "streams");
     $("tab-se").classList.toggle("on", t === "se");
+    $("tab-fmv").classList.toggle("on", t === "fmv");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
     $("seview").hidden = t !== "se";
+    $("fmvview").hidden = t !== "fmv";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
-    $("foot-stats").hidden = t === "streams";
+    $("foot-stats").hidden = t === "streams" || t === "fmv";
     $("stream-main").hidden = t !== "streams";
     $("se-main").hidden = t !== "se";
-    $("keys").textContent =
-        t === "bgm" ? keysBgmText : t === "streams" ? KEYS_STREAMS : KEYS_SE;
+    $("fmv-main").hidden = t !== "fmv";
+    $("keys").textContent = t === "bgm"
+        ? keysBgmText
+        : t === "streams"
+            ? KEYS_STREAMS
+            : t === "se" ? KEYS_SE : KEYS_FMV;
     status("");
     viewerRevision++;
+    movieController.setActive(t === "fmv" || viewerChannel === "cinema");
     if (t === "streams") void ensureStreams();
     if (t === "se") void ensureSeCatalog();
+    if (t === "fmv") renderFmvStatic(movieController.snapshot());
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
@@ -1412,6 +1655,82 @@ function fmtTime(samples: number): string {
 
 function tick(): void {
     requestAnimationFrame(tick);
+    if (tab === "fmv") {
+        const movie = movieController.snapshot();
+        const search = $<HTMLInputElement>("fmv-search").value.trim().toLocaleLowerCase();
+        if (movie.revision !== fmvRenderedRevision)
+            renderFmvStatic(movie);
+        else if (search !== fmvRenderedSearch)
+            renderFmvList(movie);
+
+        const glyph = movie.playing ? "&#10074;&#10074;" : "&#9654;";
+        if (glyph !== fmvGlyph) {
+            fmvGlyph = glyph;
+            $("fmv-play").innerHTML = `<span>${glyph}</span>`;
+        }
+        const play = $<HTMLButtonElement>("fmv-play");
+        play.disabled = !movie.entry || movie.exporting;
+        play.setAttribute("aria-busy", String(movie.loading));
+        play.setAttribute("aria-label",
+            `${movie.playing ? "Pause" : "Play"} ${movie.entry?.label ?? "selected movie"}`);
+
+        const fraction = movie.duration > 0
+            ? Math.min(Math.max(movie.current / movie.duration, 0), 1)
+            : 0;
+        $("fmv-bar-fill").style.width = `${(fraction * 100).toFixed(3)}%`;
+        $("fmv-bar-head").style.left = `calc(${(fraction * 100).toFixed(3)}% - 1px)`;
+        const bar = $("fmv-bar");
+        bar.setAttribute("aria-valuenow", String(Math.round(fraction * 1000)));
+        bar.setAttribute("aria-valuetext",
+            `${fmtSec(movie.current)} of ${fmtSec(movie.duration)}`);
+        $("fmv-current").textContent = fmtSec(movie.current);
+        $("fmv-duration").textContent = fmtSec(movie.duration);
+
+        const caption = $("fmv-caption");
+        const captionText = movie.caption ?? "";
+        if (caption.textContent !== captionText) caption.textContent = captionText;
+        caption.hidden = !movie.captionsEnabled || movie.caption === null;
+        const cc = $<HTMLButtonElement>("fmv-cc");
+        cc.disabled = !movie.prepared || !movie.entry?.subtitleCues;
+        cc.setAttribute("aria-pressed", String(movie.captionsEnabled));
+
+        const statusElement = $("fmv-status");
+        const message = movie.status || "Nothing leaves this browser.";
+        if (statusElement.textContent !== message) statusElement.textContent = message;
+        statusElement.classList.toggle("err", movie.error);
+        const setupStatus = $("fmv-setup-status");
+        if (!setupStatus.parentElement?.parentElement?.hidden) {
+            if (setupStatus.textContent !== message) setupStatus.textContent = message;
+            setupStatus.classList.toggle("err", movie.error);
+        }
+
+        const busy = movie.loading || movie.exporting;
+        const setupProgress = $<HTMLProgressElement>("fmv-setup-progress");
+        setupProgress.value = movie.progress;
+        setupProgress.hidden = !movie.loading;
+        const jobProgress = $<HTMLProgressElement>("fmv-job-progress");
+        jobProgress.value = movie.progress;
+        jobProgress.hidden = !busy;
+        const cancel = $<HTMLButtonElement>("fmv-cancel");
+        cancel.hidden = !movie.cancellable;
+        cancel.disabled = !movie.cancellable;
+        const setupCancel = $<HTMLButtonElement>("fmv-setup-cancel");
+        setupCancel.hidden = !movie.cancellable;
+        setupCancel.disabled = !movie.cancellable;
+
+        const navigationDisabled = !movie.catalog?.entries.length || movie.exporting;
+        $<HTMLButtonElement>("fmv-prev").disabled = navigationDisabled;
+        $<HTMLButtonElement>("fmv-next").disabled = navigationDisabled;
+        document.querySelectorAll<HTMLButtonElement>("[data-fmv-name]")
+            .forEach(button => { button.disabled = movie.exporting; });
+        document.querySelectorAll<HTMLButtonElement>("[data-fmv-export]")
+            .forEach(button => { button.disabled = !movie.entry || busy; });
+        $<HTMLInputElement>("fmv-iso").disabled = busy;
+        $<HTMLButtonElement>("fmv-reconnect").disabled = busy;
+        $<HTMLButtonElement>("fmv-remove-cache").disabled =
+            busy || !movie.cache?.totalBytes;
+        return;
+    }
     /* streams transport (independent of the BGM branch below) */
     if (tab === "streams" && sPlayer.decoded()) {
         const cur = sPlayer.pos(), dur = sPlayer.dur();
@@ -1636,11 +1955,71 @@ function showSeExportMenu(show: boolean): void {
 function onKey(e: KeyboardEvent): void {
     if (document.documentElement.hasAttribute("data-viewer")) return;
     if (!session || $("app").hidden) return;
+    if (tab === "fmv" && e.key === "Escape" && exitFmvFullscreen()) {
+        e.preventDefault();
+        return;
+    }
     const target = e.target;
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
-        || target instanceof HTMLSelectElement
-        || target instanceof HTMLElement && target.isContentEditable) {
-        if (e.key === "Escape" && target instanceof HTMLElement) target.blur();
+    if (target instanceof HTMLElement
+            && (target.matches("input, textarea, select, button, [contenteditable='true']")
+                || target.closest("input, textarea, select, button, [contenteditable='true']"))) {
+        if (e.key === "Escape") target.blur();
+        return;
+    }
+    if (tab === "fmv") {
+        let handled = true;
+        switch (e.key) {
+        case " ":
+            movieController.togglePlayback();
+            break;
+        case "ArrowUp":
+            moveFmv(-1, "preview");
+            break;
+        case "ArrowDown":
+            moveFmv(1, "preview");
+            break;
+        case "Enter": {
+            const name = movieController.snapshot().entry?.name;
+            if (name) movieController.select(name, "play");
+            else handled = false;
+            break;
+        }
+        case "ArrowLeft":
+            movieController.seekBy(-5);
+            break;
+        case "ArrowRight":
+            movieController.seekBy(5);
+            break;
+        case "c":
+        case "C": {
+            const movie = movieController.snapshot();
+            if (movie.prepared && movie.entry?.subtitleCues)
+                movieController.toggleCaptions();
+            else handled = false;
+            break;
+        }
+        case "f":
+        case "F":
+            toggleFmvFullscreen();
+            break;
+        case "e":
+        case "E": {
+            const button = document.querySelector<HTMLButtonElement>(
+                "[data-fmv-export]:not(:disabled)");
+            if (button) button.focus({ preventScroll: true });
+            else handled = false;
+            break;
+        }
+        case "Escape": {
+            const movie = movieController.snapshot();
+            if (movie.cancellable || movie.exporting) movieController.cancel();
+            else handled = false;
+            break;
+        }
+        default:
+            handled = false;
+        }
+        if (handled) e.preventDefault();
         return;
     }
     if (tab === "se") {
@@ -1768,476 +2147,6 @@ function onKey(e: KeyboardEvent): void {
     e.preventDefault();
 }
 
-function selectedMovieEntry(): MovieEntry | null {
-    return movieCatalog?.entries.find(entry => entry.name === movieSelectedName) ?? null;
-}
-
-function selectedMoviePlayback(): MoviePlaybackSession | null {
-    const playback = moviePlayback;
-    return playback?.name === movieSelectedName ? playback : null;
-}
-
-function movieScanLabel(entry: MovieEntry): string {
-    if (entry.video.fieldOrder === "progressive") return "29.97p";
-    const fieldOrder = entry.video.fieldOrder === "tt" ? "TFF" : "BFF";
-    return `59.94p · source ${fieldOrder}`;
-}
-
-function movieGroupLabel(entry: MovieEntry): string {
-    switch (entry.group) {
-    case "opening": return "Station IDs & openings";
-    case "story": return "Story scenes";
-    case "gameplay": return "Gameplay reels";
-    }
-}
-
-function reportMovieProgress(progress: number, stage: string): void {
-    movieProgress = progress;
-    movieStatus = stage;
-}
-
-
-function reportMovieError(error: unknown, signal: AbortSignal,
-                          cancelledStatus: string): void {
-    const cancelled = signal.aborted && (error === signal.reason
-        || (error instanceof DOMException && error.name === "AbortError"));
-    if (cancelled) {
-        movieStatus = cancelledStatus;
-        movieError = false;
-        return;
-    }
-    console.error("movie operation failed", error);
-    movieStatus = friendlyError(error);
-    movieError = true;
-}
-
-function moviePlaybackStatus(state: MoviePlaybackState): string {
-    switch (state) {
-    case "idle":
-    case "initializing-decoder":
-    case "priming": return "Loading preview…";
-    case "ready": return "Ready.";
-    case "playing": return "Playing.";
-    case "paused": return "Paused.";
-    case "seeking": return "Seeking…";
-    case "buffering": return "Buffering…";
-    case "ended": return "Ended.";
-    case "error": return movieStatus;
-    case "disposed": return "";
-    }
-}
-
-function invalidateMoviePlayIntent(): void {
-    moviePlayIntentGeneration++;
-    moviePlaybackAutoplay = false;
-    moviePlaybackAbort?.abort();
-}
-
-function movieStartIsCurrent(target: DiscSession, name: string,
-                             controller: AbortController, generation: number,
-                             playback?: MoviePlaybackSession): boolean {
-    return moviePlaybackAbort === controller && !controller.signal.aborted
-        && session === target && movieSelectedName === name
-        && viewerChannel === "cinema" && moviePlayIntentGeneration === generation
-        && (playback === undefined || moviePlayback === playback);
-}
-
-function disposeMoviePlayback(): Promise<void> {
-    const playback = moviePlayback;
-    moviePlayback = null;
-    if (playback === null)
-        return moviePlaybackDisposal;
-    const disposal = moviePlaybackDisposal.then(() => playback.dispose());
-    moviePlaybackDisposal = disposal.catch(() => {});
-    return disposal;
-}
-
-async function refreshMovieCache(name: string): Promise<void> {
-    const target = session;
-    if (!target) return;
-    try {
-        const cache = await target.movies.cacheInfo(name);
-        if (session !== target || movieSelectedName !== name) return;
-        movieCache = cache;
-        viewerRevision++;
-    } catch (error) {
-        if (session !== target || movieSelectedName !== name) {
-            console.error(`stale movie cache refresh failed for ${name}`, error);
-            return;
-        }
-        movieStatus = friendlyError(error);
-        movieError = true;
-        viewerRevision++;
-    }
-}
-
-async function loadMovieCatalog(target: DiscSession): Promise<void> {
-    try {
-        const catalog = await target.movies.catalog();
-        if (session !== target) return;
-        movieCatalog = catalog;
-        movieSelectedName = catalog?.entries[0]?.name ?? null;
-        movieStatus = catalog
-            ? `${catalog.entries.length} movies indexed locally`
-            : "Reconnect the same disc once to scan its movie archive.";
-        movieError = false;
-        viewerRevision++;
-        if (movieSelectedName) {
-            if (viewerChannel === "cinema")
-                await previewSelectedMovieIfAvailable("preview");
-            else
-                await refreshMovieCache(movieSelectedName);
-        }
-    } catch (error) {
-        if (session !== target) return;
-        movieStatus = friendlyError(error);
-        movieError = true;
-        viewerRevision++;
-    }
-}
-
-async function chooseMovieDisc(): Promise<void> {
-    if (!session || movieLoading || movieExporting) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".iso,application/x-iso9660-image";
-    input.hidden = true;
-    document.body.append(input);
-    input.onchange = async () => {
-        const file = input.files?.[0];
-        input.remove();
-        if (!file || !session) return;
-        invalidateMoviePlayIntent();
-        await disposeMoviePlayback();
-        if (!session) return;
-        const target = session;
-        const controller = new AbortController();
-        movieAbort = controller;
-        movieLoading = true;
-        movieProgress = 0;
-        movieStatus = "reading disc image";
-        movieError = false;
-        viewerRevision++;
-        const progress = (value: number, stage: string): void => {
-            if (movieAbort === controller && session === target)
-                reportMovieProgress(value, stage);
-        };
-        let previewAfterAttach = false;
-        try {
-            await target.movies.attachIso(file, progress, controller.signal);
-            controller.signal.throwIfAborted();
-            if (session !== target) return;
-            movieCatalog = await target.movies.catalog(controller.signal);
-            controller.signal.throwIfAborted();
-            if (session !== target) return;
-            movieSelectedName ??= movieCatalog?.entries[0]?.name ?? null;
-            movieStatus = `${movieCatalog?.entries.length ?? 0} movies indexed locally`;
-            if (movieSelectedName) await refreshMovieCache(movieSelectedName);
-            previewAfterAttach = viewerChannel === "cinema"
-                && movieSelectedName !== null;
-        } catch (error) {
-            if (movieAbort === controller && session === target)
-                reportMovieError(error, controller.signal, "Movie scan cancelled.");
-        } finally {
-            if (movieAbort === controller) {
-                movieAbort = null;
-                movieLoading = false;
-                viewerRevision++;
-            }
-        }
-        if (previewAfterAttach && session === target && !controller.signal.aborted)
-            await previewSelectedMovieIfAvailable("preview");
-    };
-    input.click();
-}
-
-async function prepareSelectedMovie(mode: MovieStartMode): Promise<void> {
-    if (!session || !movieSelectedName || movieExporting || movieAbort !== null
-            || viewerChannel !== "cinema")
-        return;
-    const target = session;
-    const name = movieSelectedName;
-    const activeController = moviePlaybackAbort;
-    if (activeController !== null && !activeController.signal.aborted) {
-        if (mode === "play" && movieStartIsCurrent(
-                target, name, activeController, moviePlayIntentGeneration)) {
-            moviePlaybackAutoplay = true;
-        }
-        return;
-    }
-    const existingPlayback = selectedMoviePlayback();
-    if (existingPlayback !== null && existingPlayback.state !== "error") {
-        if (mode !== "play") return;
-        try {
-            await existingPlayback.play();
-            if (session !== target || movieSelectedName !== name
-                    || viewerChannel !== "cinema" || moviePlayback !== existingPlayback)
-                existingPlayback.pause();
-        } catch (error) {
-            if (session !== target || movieSelectedName !== name
-                    || viewerChannel !== "cinema" || moviePlayback !== existingPlayback)
-                return;
-            movieStatus = friendlyError(error);
-            movieError = true;
-            viewerRevision++;
-        }
-        return;
-    }
-
-    const generation = ++moviePlayIntentGeneration;
-    const controller = new AbortController();
-    moviePlaybackAbort = controller;
-    moviePlaybackAutoplay = mode === "play";
-    movieLoading = true;
-    movieProgress = 0;
-    movieStatus = "Loading preview…";
-    movieError = false;
-    viewerRevision++;
-    const progress = (value: number): void => {
-        if (movieStartIsCurrent(target, name, controller, generation))
-            reportMovieProgress(value, "Loading preview…");
-    };
-    try {
-        const prepared = await target.movies.prepare(name, progress, controller.signal);
-        controller.signal.throwIfAborted();
-        if (!movieStartIsCurrent(target, name, controller, generation)) return;
-        await disposeMoviePlayback();
-        if (!movieStartIsCurrent(target, name, controller, generation)) return;
-        let playback: MoviePlaybackSession;
-        playback = new MoviePlaybackSession(prepared, {
-            stateChanged() {},
-            captionChanged() {},
-            error(error) {
-                if (moviePlayback !== playback) return;
-                movieStatus = friendlyError(error);
-                movieError = true;
-            },
-        });
-        if (!movieStartIsCurrent(target, name, controller, generation)) {
-            await playback.dispose();
-            return;
-        }
-        moviePlayback = playback;
-        movieCache = prepared.cache;
-        movieProgress = 1;
-        player?.pause();
-        sPlayer.pause();
-        if (!movieStartIsCurrent(target, name, controller, generation, playback))
-            return;
-        if (moviePlaybackAutoplay) {
-            await playback.play();
-            if (!movieStartIsCurrent(target, name, controller, generation, playback)) {
-                playback.pause();
-                return;
-            }
-        }
-        movieStatus = moviePlaybackStatus(playback.state);
-    } catch (error) {
-        if (movieStartIsCurrent(target, name, controller, generation))
-            reportMovieError(error, controller.signal, "Preview cancelled.");
-    } finally {
-        if (moviePlaybackAbort === controller) {
-            moviePlaybackAbort = null;
-            moviePlaybackAutoplay = false;
-            movieLoading = false;
-            viewerRevision++;
-        }
-    }
-}
-
-async function previewSelectedMovieIfAvailable(mode: MovieStartMode): Promise<void> {
-    const target = session;
-    const name = movieSelectedName;
-    const entry = selectedMovieEntry();
-    if (!target || !name || !entry || viewerChannel !== "cinema") return;
-    const playback = selectedMoviePlayback();
-    if (playback !== null) {
-        await prepareSelectedMovie(mode);
-        return;
-    }
-    try {
-        const cache = await target.movies.cacheInfo(name);
-        if (session !== target || movieSelectedName !== name
-                || viewerChannel !== "cinema" || selectedMovieEntry() !== entry)
-            return;
-        movieCache = cache;
-        viewerRevision++;
-        const completeSource = cache.sourceBytes
-            >= entry.sourceBytes + entry.subtitleBytes;
-        if (!target.movies.hasIso() && !completeSource) {
-            movieStatus = "Reconnect the same disc to preview this movie.";
-            movieError = false;
-            return;
-        }
-        await prepareSelectedMovie(mode);
-    } catch (error) {
-        if (session !== target || movieSelectedName !== name
-                || viewerChannel !== "cinema")
-            return;
-        console.error("movie preview availability check failed", error);
-        movieStatus = friendlyError(error);
-        movieError = true;
-        viewerRevision++;
-    }
-}
-
-async function exportSelectedMovie(kind: MovieExportKind, captions: boolean): Promise<void> {
-    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
-    const target = session;
-    const name = movieSelectedName;
-    movieExporting = true;
-    movieProgress = 0;
-    movieStatus = kind === "mp4"
-        ? "Starting Fast MP4 export…"
-        : kind === "mkv"
-            ? "Starting Lossless MKV export…"
-            : `preparing ${kind} export`;
-    movieError = false;
-    const controller = new AbortController();
-    movieAbort = controller;
-    viewerRevision++;
-    const progress = (value: number, stage: string): void => {
-        if (movieAbort === controller && session === target && movieSelectedName === name)
-            reportMovieProgress(value, stage);
-    };
-    try {
-        const output = await target.movies.export(
-            name, kind, captions, progress, controller.signal);
-        controller.signal.throwIfAborted();
-        if (session !== target || movieSelectedName !== name) return;
-        download(output.bytes, output.filename, output.mime);
-        const cache = await target.movies.cacheInfo(name, controller.signal);
-        controller.signal.throwIfAborted();
-        if (session !== target || movieSelectedName !== name) return;
-        movieCache = cache;
-        movieProgress = 1;
-        movieStatus = `${output.filename} ready`;
-    } catch (error) {
-        if (movieAbort === controller && session === target && movieSelectedName === name)
-            reportMovieError(error, controller.signal, "Export cancelled.");
-    } finally {
-        if (movieAbort === controller) movieAbort = null;
-        movieExporting = false;
-        viewerRevision++;
-    }
-}
-
-function currentMovieStatus(playback: MoviePlaybackSession | null): string {
-    if (movieError) return movieStatus;
-    if (!movieLoading && !movieExporting && playback !== null)
-        return moviePlaybackStatus(playback.state);
-    return movieStatus;
-}
-
-export function viewerMovieDetails(): ViewerMovieDetails {
-    const playback = selectedMoviePlayback();
-    return {
-        entry: selectedMovieEntry(),
-        cache: movieCache,
-        prepared: playback !== null && playback.state !== "error",
-        hasIso: session?.movies.hasIso() ?? false,
-        cancellable: movieAbort !== null || moviePlaybackAbort !== null,
-        progress: movieProgress,
-        status: currentMovieStatus(playback),
-        error: movieError || playback?.state === "error",
-        caption: playback?.caption ?? null,
-        captionsEnabled: playback?.captionsEnabled ?? true,
-    };
-}
-
-export function viewerBindMovieCanvas(canvas: HTMLCanvasElement): void {
-    const playback = selectedMoviePlayback();
-    if (!playback) return;
-    void playback.attach(canvas).catch((error) => {
-        if (moviePlayback !== playback) return;
-        movieStatus = friendlyError(error);
-        movieError = true;
-    });
-}
-
-export function viewerToggleMovieCaptions(): void {
-    const playback = selectedMoviePlayback();
-    if (!playback) return;
-    playback.setCaptionsEnabled(!playback.captionsEnabled);
-}
-
-
-export function viewerExportMovie(kind: MovieExportKind, captions: boolean): void {
-    void exportSelectedMovie(kind, captions);
-}
-
-export function viewerCancelMovieWork(): void {
-    let cancelling = false;
-    const cancellingStart = moviePlaybackAbort !== null;
-    if (cancellingStart) {
-        invalidateMoviePlayIntent();
-        cancelling = true;
-    } else {
-        moviePlayIntentGeneration++;
-    }
-    if (movieAbort !== null) {
-        movieAbort.abort();
-        cancelling = true;
-    }
-    const playback = selectedMoviePlayback();
-    if (playback !== null && (playback.state === "initializing-decoder"
-            || playback.state === "priming" || playback.state === "seeking"
-            || playback.state === "buffering")) {
-        cancelling = true;
-        const name = playback.name;
-        void disposeMoviePlayback().then(() => {
-            if (movieSelectedName !== name)
-                return;
-            movieStatus = "Playback cancelled. Press Play to try again.";
-            movieError = false;
-            viewerRevision++;
-        }).catch(error => {
-            console.error("movie playback cancellation failed", error);
-            if (movieSelectedName !== name)
-                return;
-            movieStatus = friendlyError(error);
-            movieError = true;
-            viewerRevision++;
-        });
-    }
-    if (!cancelling)
-        return;
-    movieStatus = cancellingStart && playback === null
-        ? "Playback start cancelled. Press Play to try again."
-        : "Cancelling…";
-    viewerRevision++;
-}
-
-export function viewerReportMovieError(message: string): void {
-    movieStatus = message;
-    movieError = true;
-}
-
-export function viewerRemoveMovie(): void {
-    if (!session || !movieSelectedName || movieLoading || movieExporting) return;
-    const target = session;
-    const name = movieSelectedName;
-    invalidateMoviePlayIntent();
-    void (async () => {
-        if (moviePlayback?.name === name) await disposeMoviePlayback();
-        await target.movies.remove(name);
-        if (session !== target || movieSelectedName !== name) return;
-        const cache = await target.movies.cacheInfo(name);
-        if (session !== target || movieSelectedName !== name) return;
-        movieCache = cache;
-        movieStatus = "Cached copies removed. Original disc files were untouched.";
-        movieError = false;
-        viewerRevision++;
-    })().catch((error) => {
-        if (session !== target || movieSelectedName !== name) {
-            console.error("stale movie cache removal failed", error);
-            return;
-        }
-        movieStatus = friendlyError(error);
-        movieError = true;
-        viewerRevision++;
-    });
-}
 
 /* ---- asset-viewer bridge ----------------------------------------------- */
 export function viewerVersion(): number {
@@ -2252,6 +2161,7 @@ export function viewerLibrary(): ViewerLibrary {
     const channel = viewerChannel;
     const items: ViewerItem[] = [];
     let selectedId: string | null = null;
+    const movie = movieController.snapshot();
 
     if (session && channel === "music") {
         for (let index = 0; index < session.songs.length; index++) {
@@ -2317,21 +2227,20 @@ export function viewerLibrary(): ViewerLibrary {
             }
         }
         selectedId ??= items[0]?.id ?? null;
-    } else if (session && channel === "cinema" && movieCatalog) {
-        for (const entry of movieCatalog.entries) {
+    } else if (session && channel === "cinema" && movie.catalog) {
+        for (const entry of movie.catalog.entries) {
             const id = `movie:${entry.name}`;
-            const field = movieScanLabel(entry);
             items.push({
                 id,
                 label: entry.label,
-                detail: `${entry.video.width}×${entry.video.height} · ${field}`
+                detail: `${entry.video.width}×${entry.video.height} · ${movieScanLabel(entry, false)}`
                     + `${entry.subtitleCues ? ` · ${entry.subtitleCues} captions` : ""}`,
                 duration: entry.duration,
                 kind: "media",
-                playing: entry.name === moviePlayback?.name && moviePlayback.playing,
+                playing: entry.name === movie.entry?.name && movie.playing,
                 group: movieGroupLabel(entry),
             });
-            if (entry.name === movieSelectedName) selectedId = id;
+            if (entry.name === movie.entry?.name) selectedId = id;
         }
         selectedId ??= items[0]?.id ?? null;
     }
@@ -2342,27 +2251,28 @@ export function viewerLibrary(): ViewerLibrary {
         connected: session !== null,
         channel,
         discLabel: session ? session.serial ?? session.volumeId : "",
-        status: channel === "cinema" ? movieStatus : statusElement.textContent ?? "",
-        error: channel === "cinema" ? movieError : statusElement.classList.contains("err"),
+        status: channel === "cinema" ? movie.status : statusElement.textContent ?? "",
+        error: channel === "cinema" ? movie.error : statusElement.classList.contains("err"),
         items,
         selectedId,
         counts: {
             music: session?.songs.length ?? null,
             streams: sCatalog?.entries.length ?? null,
             effects: seCatalog?.entries.length ?? null,
-            cinema: movieCatalog?.entries.length ?? null,
+            cinema: movie.catalog?.entries.length ?? null,
         },
     };
 }
 
 export function viewerSetup(): ViewerSetup | null {
-    if (session && viewerChannel === "cinema" && !movieCatalog) {
+    const movie = movieController.snapshot();
+    if (session && viewerChannel === "cinema" && !movie.catalog) {
         return {
             label: "Reconnect the movie archive",
-            detail: movieStatus || (session.movies.hasIso()
+            detail: movie.status || (movie.hasIso
                 ? "Scan the attached disc for its 22 local movies."
                 : "Choose the same disc once to index its movie archive."),
-            progress: movieLoading ? movieProgress : null,
+            progress: movie.loading ? movie.progress : null,
         };
     }
     if (session && viewerChannel === "cinema") return null;
@@ -2399,8 +2309,10 @@ export function viewerSetup(): ViewerSetup | null {
 
 function viewerCanExport(): boolean {
     if (!session) return false;
-    if (viewerChannel === "cinema")
-        return !!selectedMovieEntry() && !movieLoading && !movieExporting;
+    if (viewerChannel === "cinema") {
+        const movie = movieController.snapshot();
+        return !!movie.entry && !movie.loading && !movie.exporting;
+    }
     if (tab === "bgm")
         return !loading && playingIdx >= 0 && sel === playingIdx
             && session.songs[playingIdx] !== undefined;
@@ -2419,17 +2331,13 @@ export function viewerTransport(): ViewerTransport {
     let duration = 0;
     let isPlaying = false;
     let isLoading = false;
-    let playback: MoviePlaybackSession | null = null;
+    const movie = movieController.snapshot();
     if (viewerChannel === "cinema") {
-        const entry = selectedMovieEntry();
-        title = entry?.label ?? "";
-        playback = selectedMoviePlayback();
-        current = playback?.currentTime ?? 0;
-        duration = playback?.duration ?? entry?.duration ?? 0;
-        isPlaying = playback?.playing ?? false;
-        const state = playback?.state;
-        isLoading = movieLoading || state === "initializing-decoder" || state === "priming"
-            || state === "seeking" || state === "buffering";
+        title = movie.entry?.label ?? "";
+        current = movie.current;
+        duration = movie.duration;
+        isPlaying = movie.playing;
+        isLoading = movie.loading || movie.cancellable && !movie.exporting;
     } else if (tab === "bgm") {
         title = session?.songs[playingIdx >= 0 ? playingIdx : sel]?.name ?? "";
         current = displaySample() / RATE;
@@ -2461,11 +2369,11 @@ export function viewerTransport(): ViewerTransport {
         loading: isLoading,
         canExport: viewerCanExport(),
         exporting: viewerChannel === "cinema"
-            ? movieExporting : exporter.busy || sBusy || seBusy,
+            ? movie.exporting : exporter.busy || sBusy || seBusy,
         status: viewerChannel === "cinema"
-            ? currentMovieStatus(playback) : $("status").textContent ?? "",
+            ? movie.status : $("status").textContent ?? "",
         error: viewerChannel === "cinema"
-            ? movieError || playback?.state === "error" : $("status").classList.contains("err"),
+            ? movie.error : $("status").classList.contains("err"),
     };
 }
 
@@ -2502,46 +2410,14 @@ export function viewerMeterLevels(target: Float32Array): boolean {
 }
 
 export function viewerSwitchChannel(channel: ViewerChannel): void {
-    if (viewerChannel === "cinema" && channel !== "cinema") {
-        invalidateMoviePlayIntent();
-        moviePlayback?.pause();
-        moviePlayback?.detach();
-    }
     viewerChannel = channel;
-    if (channel === "cinema") {
-        player?.pause();
-        sPlayer.pause();
-        viewerRevision++;
-        if (selectedMoviePlayback() === null)
-            void previewSelectedMovieIfAvailable("preview");
-        return;
-    }
+    movieController.setActive(channel === "cinema");
+    if (channel === "cinema") return;
     if (channel === "music") switchTab("bgm");
     else if (channel === "streams") switchTab("streams");
     else switchTab("se");
 }
 
-function activateMovie(name: string, mode: MovieStartMode): void {
-    if (!movieCatalog?.entries.some(entry => entry.name === name)) return;
-    if (name === movieSelectedName) {
-        if (selectedMoviePlayback() === null)
-            void previewSelectedMovieIfAvailable(mode);
-        else if (mode === "play")
-            void prepareSelectedMovie("play");
-        return;
-    }
-    invalidateMoviePlayIntent();
-    movieAbort?.abort();
-    void disposeMoviePlayback().catch((error) => {
-        console.error("movie playback disposal failed", error);
-    });
-    movieSelectedName = name;
-    movieCache = null;
-    movieStatus = "Loading preview…";
-    movieError = false;
-    viewerRevision++;
-    void previewSelectedMovieIfAvailable(mode);
-}
 
 export function viewerActivate(id: string): void {
     if (!session) return;
@@ -2560,7 +2436,7 @@ export function viewerActivate(id: string): void {
         return;
     }
     if (id.startsWith("movie:")) {
-        activateMovie(id.slice(6), "play");
+        movieController.select(id.slice(6), "play");
         return;
     }
     const index = seRows.findIndex((row) => id === (row.kind === "bank"
@@ -2572,79 +2448,29 @@ export function viewerActivate(id: string): void {
 }
 
 export function viewerMove(direction: number): void {
+    if (viewerChannel === "cinema") {
+        movieController.move(direction, "preview");
+        return;
+    }
     const library = viewerLibrary();
     if (!library.items.length) return;
     const selected = library.items.findIndex((item) => item.id === library.selectedId);
     const index = (Math.max(selected, 0) + direction + library.items.length)
         % library.items.length;
-    const id = library.items[index]!.id;
-    if (id.startsWith("movie:"))
-        activateMovie(id.slice(6), "preview");
-    else
-        viewerActivate(id);
+    viewerActivate(library.items[index]!.id);
 }
 
 export function viewerMoveAndPlayMovie(direction: number): void {
-    if (viewerChannel !== "cinema") {
-        viewerMove(direction);
+    if (viewerChannel === "cinema") {
+        movieController.move(direction, "play");
         return;
     }
-    const library = viewerLibrary();
-    if (!library.items.length) return;
-    if (library.items.length === 1) {
-        const playback = selectedMoviePlayback();
-        if (playback === null) {
-            void previewSelectedMovieIfAvailable("play");
-            return;
-        }
-        const target = session;
-        const name = movieSelectedName;
-        void (async () => {
-            try {
-                await playback.seek(0);
-                if (session !== target || movieSelectedName !== name
-                        || viewerChannel !== "cinema" || moviePlayback !== playback)
-                    return;
-                await playback.play();
-                if (session !== target || movieSelectedName !== name
-                        || viewerChannel !== "cinema" || moviePlayback !== playback)
-                    playback.pause();
-            } catch (error) {
-                if (session !== target || movieSelectedName !== name
-                        || viewerChannel !== "cinema" || moviePlayback !== playback)
-                    return;
-                movieStatus = friendlyError(error);
-                movieError = true;
-                viewerRevision++;
-            }
-        })();
-        return;
-    }
-    const selected = library.items.findIndex((item) => item.id === library.selectedId);
-    const index = (Math.max(selected, 0) + direction + library.items.length)
-        % library.items.length;
-    const id = library.items[index]!.id;
-    if (id.startsWith("movie:")) activateMovie(id.slice(6), "play");
+    viewerMove(direction);
 }
 
 export function viewerTogglePlayback(): void {
     if (viewerChannel === "cinema") {
-        const playback = selectedMoviePlayback();
-        if (!playback || playback.state === "error") {
-            void prepareSelectedMovie("play");
-            return;
-        }
-        if (playback.playing) {
-            playback.pause();
-            return;
-        }
-        player?.pause();
-        sPlayer.pause();
-        void playback.play().catch((error) => {
-            if (moviePlayback !== playback) return;
-            movieStatus = friendlyError(error);
-            movieError = true;
-        });
+        movieController.togglePlayback();
         return;
     }
     if (tab === "streams") sTogglePlay();
@@ -2655,13 +2481,7 @@ export function viewerTogglePlayback(): void {
 export function viewerSeek(ratio: number): void {
     const clamped = Math.max(0, Math.min(ratio, 1));
     if (viewerChannel === "cinema") {
-        const playback = selectedMoviePlayback();
-        if (playback)
-            void playback.seek(clamped * playback.duration).catch((error) => {
-                if (moviePlayback !== playback) return;
-                movieStatus = friendlyError(error);
-                movieError = true;
-            });
+        movieController.seek(clamped);
     } else if (tab === "streams") {
         if (sPlayer.decoded()) sPlayer.seek(clamped * sPlayer.dur());
     } else if (tab === "se") {
@@ -2675,8 +2495,8 @@ export function viewerExport(): void {
     const state = viewerTransport();
     if (!state.canExport || state.exporting) return;
     if (viewerChannel === "cinema") {
-        const captions = (selectedMovieEntry()?.subtitleCues ?? 0) > 0;
-        void exportSelectedMovie("mp4", captions);
+        const movie = movieController.snapshot();
+        movieController.startExport("mp4", (movie.entry?.subtitleCues ?? 0) > 0);
     } else if (tab === "streams") void sExport();
     else if (tab === "se") void exportSeCue(false);
     else void exportWav("current");
@@ -2686,7 +2506,15 @@ export function viewerChooseDisc(): void {
     if (!session) {
         $<HTMLInputElement>("file").click();
     } else if (viewerChannel === "cinema") {
-        void chooseMovieDisc();
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".iso,application/x-iso9660-image";
+        input.onchange = () => {
+            const file = input.files?.[0];
+            input.remove();
+            if (file) void movieController.attachIso(file);
+        };
+        input.click();
     } else if (tab === "streams" && !sCatalog) {
         if (session.streams.hasIso()) void extractStreams();
         else $<HTMLInputElement>("s-iso").click();
@@ -2698,16 +2526,8 @@ export function viewerChooseDisc(): void {
 
 /* ---- app states --------------------------------------------------------- */
 async function enterPlayer(s: DiscSession): Promise<void> {
-    invalidateMoviePlayIntent();
-    movieAbort?.abort();
-    await disposeMoviePlayback();
     session = s;
-    movieCatalog = null;
-    movieSelectedName = null;
-    movieCache = null;
-    movieStatus = "Loading movie catalog…";
-    movieError = false;
-    void loadMovieCatalog(s);
+    await movieController.connect(s);
     $("picker").hidden = true;
     $("app").hidden = false;
     $("disc-id").textContent =
@@ -2831,6 +2651,50 @@ async function main(): Promise<void> {
     $("tab-bgm").onclick = () => switchTab("bgm");
     $("tab-streams").onclick = () => switchTab("streams");
     $("tab-se").onclick = () => switchTab("se");
+    $("tab-fmv").onclick = () => switchTab("fmv");
+    $("fmvlist").addEventListener("click", event => {
+        const button = (event.target as Element).closest<HTMLButtonElement>("[data-fmv-name]");
+        if (button?.dataset.fmvName)
+            movieController.select(button.dataset.fmvName, "play");
+    });
+    $<HTMLInputElement>("fmv-search").oninput = () =>
+        renderFmvList(movieController.snapshot());
+    $<HTMLInputElement>("fmv-iso").onchange = async () => {
+        const input = $<HTMLInputElement>("fmv-iso");
+        const file = input.files?.[0];
+        if (!file) return;
+        await movieController.attachIso(file);
+        input.value = "";
+    };
+    $("fmv-prev").onclick = () => moveFmv(-1, "play");
+    $("fmv-play").onclick = () => movieController.togglePlayback();
+    $("fmv-next").onclick = () => moveFmv(1, "play");
+    $("fmv-bar").onclick = event => {
+        const rect = $("fmv-bar").getBoundingClientRect();
+        movieController.seek((event.clientX - rect.left) / rect.width);
+    };
+    $("fmv-cc").onclick = () => movieController.toggleCaptions();
+    $("fmv-fullscreen").onclick = toggleFmvFullscreen;
+    $("fmv-picture").ondblclick = event => {
+        if (!(event.target as Element).closest("button")) toggleFmvFullscreen();
+    };
+    document.querySelectorAll<HTMLButtonElement>("[data-fmv-export]")
+        .forEach(button => {
+            button.onclick = () => movieController.startExport(
+                button.dataset.fmvExport as MovieExportKind,
+                $<HTMLInputElement>("fmv-export-captions").checked,
+            );
+        });
+    $("fmv-cancel").onclick = () => movieController.cancel();
+    $("fmv-setup-cancel").onclick = () => movieController.cancel();
+    $("fmv-reconnect").onclick = () => $<HTMLInputElement>("fmv-iso").click();
+    $("fmv-remove-cache").onclick = () => movieController.removeCached();
+    document.addEventListener("fullscreenchange", () => {
+        fmvAttachedRevision = -1;
+        const movie = movieController.snapshot();
+        if (tab === "fmv" && movie.prepared)
+            movieController.attach($<HTMLCanvasElement>("fmv-canvas"));
+    });
     $("s-playbtn").onclick = sTogglePlay;
     $("s-trim").onclick = sToggleTrim;
     $("s-exportbtn").onclick = () => void sExport();
@@ -2971,27 +2835,21 @@ async function main(): Promise<void> {
         if (!session) return;
         const target = session;
         player?.pause();
-        movieAbort?.abort();
-        invalidateMoviePlayIntent();
         try {
-            await disposeMoviePlayback();
+            await movieController.dispose();
             await target.forget();
             location.reload();
         } catch (error) {
             console.error("forget disc failed", error);
-            movieStatus = friendlyError(error);
-            movieError = true;
-            viewerRevision++;
-            status(movieStatus, true);
+            const message = friendlyError(error);
+            movieController.reportError(message);
+            status(message, true);
         }
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("pagehide", () => {
-        invalidateMoviePlayIntent();
-        movieAbort?.abort();
-        viewerRevision++;
-        void disposeMoviePlayback().catch((error) => {
-            console.error("movie playback disposal failed", error);
+        void movieController.dispose().catch((error) => {
+            console.error("movie controller disposal failed", error);
         });
     });
 

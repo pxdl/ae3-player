@@ -757,6 +757,492 @@ button.ex-row:disabled {
     margin-top: 8px;
 }
 
+/* ---- advanced FMV browser ---------------------------------------------- */
+#fmvview {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+}
+#fmvview[hidden], #fmv-main[hidden], #fmv-setup[hidden],
+#fmv-caption[hidden], #fmv-job-progress[hidden],
+#fmv-setup-progress[hidden], #fmv-cancel[hidden],
+#fmv-setup-cancel[hidden], #fmv-reconnect[hidden] {
+    display: none;
+}
+.search-label {
+    padding: 4px 14px 3px;
+    color: var(--dim);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+}
+#fmv-search {
+    width: calc(100% - 28px);
+    margin: 0 14px 8px;
+    padding: 8px 9px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--panel-hi);
+    border-radius: 3px;
+    font: inherit;
+    outline: none;
+}
+#fmv-search:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+#fmvlist {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    list-style: none;
+    padding-bottom: 8px;
+}
+.fmv-group h3 {
+    position: sticky;
+    z-index: 1;
+    top: 0;
+    padding: 8px 14px 5px;
+    color: var(--accent);
+    background: var(--panel);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.fmv-row button {
+    display: grid;
+    width: 100%;
+    min-height: 52px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px;
+    border: 0;
+    border-radius: 0;
+    color: var(--dim);
+    text-align: left;
+}
+.fmv-row button:hover,
+.fmv-row button:focus-visible {
+    color: var(--text);
+    background: var(--panel-hi);
+    outline: none;
+}
+.fmv-row.selected button {
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+    box-shadow: inset 3px 0 var(--accent);
+}
+.fmv-row-main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+.fmv-row-main strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.fmv-row-main code {
+    overflow: hidden;
+    color: var(--dim);
+    font: 10px/1.2 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.fmv-row-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: var(--dim);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+.fmv-list-message {
+    padding: 18px 14px;
+    color: var(--dim);
+    font-size: 11px;
+}
+
+#fmv-main {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    gap: 12px;
+    overflow: auto;
+    padding: 14px 18px 18px;
+}
+#fmv-head {
+    display: flex;
+    flex: none;
+    align-items: end;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--panel-hi);
+}
+#fmv-head h2,
+#fmv-setup h3,
+#fmv-export h3 {
+    color: var(--text);
+    font-size: 15px;
+    letter-spacing: 0.06em;
+}
+#fmv-head p {
+    max-width: 620px;
+    color: var(--dim);
+    font-size: 10px;
+    line-height: 1.45;
+    text-align: right;
+}
+.fmv-kicker {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+}
+#fmv-setup {
+    display: grid;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    background: var(--panel);
+    box-shadow: inset 3px 0 var(--accent);
+}
+#fmv-setup p {
+    margin-top: 5px;
+    color: var(--dim);
+    font-size: 11px;
+    line-height: 1.4;
+}
+#fmv-setup p.err,
+#fmv-status.err {
+    color: var(--bad);
+}
+.fmv-file-button {
+    min-height: 40px;
+    padding: 11px 13px;
+    border: 1px solid var(--panel-hi);
+    border-radius: 3px;
+    color: var(--accent);
+    cursor: pointer;
+    user-select: none;
+}
+.fmv-file-button:hover {
+    border-color: var(--accent);
+}
+.fmv-file-button input {
+    display: none;
+}
+#fmv-setup-progress {
+    width: 140px;
+    accent-color: var(--accent);
+}
+
+#fmv-workspace {
+    display: grid;
+    flex: 1 0 auto;
+    min-width: 0;
+    min-height: 400px;
+    grid-template-columns: minmax(360px, 1.35fr) minmax(320px, 1fr);
+    gap: 12px;
+}
+#fmv-player {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    align-self: start;
+    background: var(--panel);
+    box-shadow: 0 10px 32px #0006, inset 0 0 0 1px #fff0d;
+}
+#fmv-picture {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    background: #050506;
+    outline: 1px solid #ffffff1a;
+    outline-offset: -1px;
+}
+#fmv-canvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+#fmv-caption {
+    position: absolute;
+    right: 8%;
+    bottom: 6%;
+    left: 8%;
+    padding: 5px 9px;
+    color: #fff;
+    background: #000c;
+    font-size: clamp(12px, 1.35vw, 18px);
+    line-height: 1.35;
+    text-align: center;
+    text-shadow: 0 1px 2px #000;
+}
+#fmv-picture-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 6px;
+}
+#fmv-picture-controls button,
+.fmv-transport-buttons button {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0 10px;
+    color: var(--text);
+    background: #101116d9;
+    border-color: #ffffff2b;
+}
+#fmv-picture-controls button[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+#fmv-bar {
+    position: relative;
+    height: 40px;
+    flex: none;
+    overflow: hidden;
+    background: var(--bg);
+    border-top: 1px solid var(--panel-hi);
+    border-bottom: 1px solid var(--panel-hi);
+    cursor: crosshair;
+}
+#fmv-bar::before {
+    position: absolute;
+    top: 19px;
+    right: 0;
+    left: 0;
+    height: 2px;
+    background: var(--panel-hi);
+    content: "";
+}
+#fmv-bar-fill {
+    position: absolute;
+    top: 19px;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+}
+#fmv-bar-head {
+    position: absolute;
+    top: 13px;
+    width: 3px;
+    height: 14px;
+    background: var(--text);
+}
+#fmv-transport {
+    display: grid;
+    min-height: 66px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+}
+.fmv-transport-buttons {
+    display: flex;
+    gap: 6px;
+}
+#fmv-play {
+    color: var(--accent);
+}
+#fmv-play span {
+    pointer-events: none;
+}
+#fmv-now {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+#fmv-title {
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#fmv-status {
+    overflow: hidden;
+    color: var(--dim);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#fmv-time {
+    color: var(--dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+#fmv-inspector {
+    min-width: 0;
+    max-height: min(680px, calc(100vh - 210px));
+    overflow: auto;
+    padding: 12px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px #fff0d;
+}
+#fmv-inspector section + section {
+    margin-top: 16px;
+    padding-top: 13px;
+    border-top: 1px solid var(--panel-hi);
+}
+#fmv-inspector h3 {
+    margin-bottom: 8px;
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+#fmv-inspector dl div {
+    display: grid;
+    grid-template-columns: minmax(118px, 0.72fr) minmax(0, 1.28fr);
+    gap: 10px;
+    padding: 4px 0;
+    font-size: 10px;
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+}
+#fmv-inspector dt {
+    color: var(--dim);
+}
+#fmv-inspector dd,
+#fmv-inspector code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    user-select: text;
+}
+.fmv-empty {
+    padding: 18px 4px;
+    color: var(--dim);
+    line-height: 1.5;
+}
+
+#fmv-export {
+    flex: none;
+    padding: 12px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px #fff0d;
+}
+#fmv-export > header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 10px;
+}
+.fmv-caption-export {
+    display: flex;
+    min-height: 40px;
+    align-items: center;
+    gap: 8px;
+    color: var(--dim);
+    font-size: 10px;
+    cursor: pointer;
+}
+.fmv-caption-export input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+}
+#fmv-export-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+#fmv-export-grid button {
+    min-height: 64px;
+    padding: 10px;
+    text-align: left;
+}
+#fmv-export-grid button:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+#fmv-export-grid strong,
+#fmv-export-grid span {
+    display: block;
+}
+#fmv-export-grid span {
+    margin-top: 5px;
+    color: var(--dim);
+    font-size: 9px;
+    line-height: 1.35;
+}
+#fmv-job {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+#fmv-job progress {
+    min-width: 120px;
+    flex: 1;
+    accent-color: var(--accent);
+}
+#fmv-job button,
+#fmv-setup button {
+    min-height: 40px;
+    padding: 8px 12px;
+}
+#fmv-remove-cache:hover:not(:disabled),
+#fmv-cancel:hover:not(:disabled) {
+    color: var(--bad);
+    border-color: var(--bad);
+}
+
+#fmv-player:fullscreen {
+    display: grid;
+    width: 100vw;
+    height: 100vh;
+    grid-template-rows: minmax(0, 1fr) 40px 68px;
+    padding: 0;
+    place-items: center;
+    background: #000;
+    container-type: size;
+}
+#fmv-player:fullscreen #fmv-picture {
+    width: min(100cqw, calc((100cqh - 108px) * var(--fmv-aspect-value, 1.7778)));
+    max-width: none;
+    height: auto;
+    max-height: calc(100cqh - 108px);
+    margin: 0;
+}
+#fmv-player:fullscreen #fmv-transport {
+    width: 100%;
+    background: var(--panel);
+}
+
+@media (max-width: 900px) {
+    #fmv-workspace {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #fmv-inspector {
+        max-height: none;
+    }
+    #fmv-export-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
 #foot {
     display: flex;
     flex-direction: column;
@@ -921,6 +1407,59 @@ button.ex-row:disabled {
     .se-viz-title span {
         display: block;
         margin-inline-start: 0;
+    }
+    #fmv-search {
+        font-size: 16px;
+    }
+    #fmv-main {
+        width: 100%;
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 10px;
+    }
+    #fmv-head {
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 6px;
+    }
+    #fmv-head p {
+        text-align: left;
+    }
+    #fmv-setup {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #fmv-setup-progress {
+        width: 100%;
+    }
+    #fmv-workspace {
+        min-height: 0;
+    }
+    #fmv-transport {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .fmv-transport-buttons {
+        grid-column: 1 / -1;
+        justify-content: center;
+    }
+    #fmv-inspector {
+        overflow-x: hidden;
+    }
+    #fmv-inspector dl div {
+        grid-template-columns: minmax(90px, 0.65fr) minmax(0, 1.35fr);
+    }
+    #fmv-export > header {
+        align-items: start;
+        flex-direction: column;
+    }
+    #fmv-export-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #fmv-job {
+        flex-wrap: wrap;
+    }
+    #fmv-job progress {
+        flex-basis: 100%;
     }
     #foot {
         padding: 6px 10px 8px;

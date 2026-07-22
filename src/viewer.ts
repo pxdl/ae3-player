@@ -2,30 +2,30 @@ import "./viewer.css";
 import { loadViewerArt } from "./viewer-assets.ts";
 import type { ViewerArt } from "./viewer-assets.ts";
 import {
+    movieController,
     viewerActivate,
     viewerAssetSession,
-    viewerBindMovieCanvas,
-    viewerCancelMovieWork,
     viewerChooseDisc,
     viewerExport,
-    viewerExportMovie,
     viewerLibrary,
     viewerMeterLevels,
-    viewerMovieDetails,
     viewerMove,
     viewerMoveAndPlayMovie,
-    viewerReportMovieError,
-    viewerRemoveMovie,
     viewerSeek,
     viewerSetup,
     viewerSwitchChannel,
-    viewerToggleMovieCaptions,
     viewerTogglePlayback,
     viewerTransport,
     viewerVersion,
 } from "./main.ts";
 import type { ViewerChannel, ViewerItem, ViewerLibrary } from "./main.ts";
 import type { MovieExportKind } from "./movies.ts";
+import {
+    formatMovieBytes,
+    movieGroupLabel,
+    movieScanLabel,
+    movieSourceComplete,
+} from "./movie-presentation.ts";
 
 let viewerArt: ViewerArt | null = null;
 let artDiscAttempt: ReturnType<typeof viewerAssetSession> = null;
@@ -167,35 +167,22 @@ function broadcastTransport(selected: ViewerItem | null, cinema = false): string
     </section>`;
 }
 
-function formatBytes(bytes: number): string {
-    if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(bytes >= 10485760 ? 1 : 2)} MiB`;
-    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-    return `${bytes} B`;
-}
 
 function cinemaFeature(library: ViewerLibrary): string {
-    const details = viewerMovieDetails();
+    const details = movieController.snapshot();
     const entry = details.entry;
     if (!entry) return "";
     const state = viewerTransport();
     const busy = state.loading || state.exporting;
-    let fieldOrder: string;
-    if (entry.video.fieldOrder === "progressive") {
-        fieldOrder = "Progressive · 29.97 fps";
-    } else {
-        const firstField = entry.video.fieldOrder === "tt" ? "Top" : "Bottom";
-        fieldOrder = `${firstField} field first · bobbed to 59.94 fps`;
-    }
+    const fieldOrder = movieScanLabel(entry, true);
     let liveState: string;
     if (state.playing) liveState = "Live";
     else if (busy) liveState = "Tuning";
     else liveState = "Ready";
-    let groupLabel = "Station presentation";
-    if (entry.group === "story") groupLabel = "Story scene";
-    else if (entry.group === "gameplay") groupLabel = "Gameplay reel";
+    const groupLabel = movieGroupLabel(entry);
     const cached = details.cache?.totalBytes ?? 0;
-    const sourceComplete = (details.cache?.sourceBytes ?? 0)
-        >= entry.sourceBytes + entry.subtitleBytes;
+    const sourceComplete = details.cache !== null
+        && movieSourceComplete(entry, details.cache);
     const captions = entry.subtitleCues > 0;
     const selected = library.items.find(item => item.id === library.selectedId) ?? null;
     const displayAspect = entry.video.displayAspect[0] / entry.video.displayAspect[1];
@@ -231,7 +218,7 @@ function cinemaFeature(library: ViewerLibrary): string {
             <div class="cinema-now">
                 <span class="eyebrow">${escapeHtml(groupLabel)}</span>
                 <h2>${escapeHtml(entry.label)}</h2>
-                <p>${escapeHtml(entry.name)} · ${formatTime(entry.duration)} · ${formatBytes(entry.sourceBytes)}</p>
+                <p>${escapeHtml(entry.name)} · ${formatTime(entry.duration)} · ${formatMovieBytes(entry.sourceBytes)}</p>
             </div>
         </div>
         <div class="cinema-inspector">
@@ -243,7 +230,7 @@ function cinemaFeature(library: ViewerLibrary): string {
                     <div><dt>Shape</dt><dd>SAR ${entry.video.sampleAspect.join(":")} · DAR ${entry.video.displayAspect.join(":")}</dd></div>
                     <div><dt>Audio</dt><dd>${entry.header.channels}ch · ${entry.header.sampleRate / 1000} kHz · PS-ADPCM</dd></div>
                     <div><dt>Captions</dt><dd>${captionDetails}</dd></div>
-                    <div><dt>Original</dt><dd>${formatBytes(entry.sourceBytes + entry.subtitleBytes)} · untouched</dd></div>
+                    <div><dt>Original</dt><dd>${formatMovieBytes(entry.sourceBytes + entry.subtitleBytes)} · untouched</dd></div>
                 </dl>
             </div>
             <div class="conversion-studio">
@@ -268,10 +255,10 @@ function cinemaFeature(library: ViewerLibrary): string {
                     ${details.cancellable ? `<button type="button" data-action="movie-cancel">Cancel current job</button>` : ""}
                     ${details.hasIso || sourceComplete ? "" : `<button type="button" data-action="tune">Reconnect source disc</button>`}
                     <button type="button" data-action="movie-remove" ${cached && !busy ? "" : "disabled"}>
-                        Remove ${cached ? formatBytes(cached) : "cached copies"}</button>
+                        Remove ${cached ? formatMovieBytes(cached) : "cached copies"}</button>
                 </div>
-                <p class="cache-readout">Cache · source ${formatBytes(details.cache?.sourceBytes ?? 0)}
-                    · exports ${formatBytes(details.cache?.exportBytes ?? 0)}</p>
+                <p class="cache-readout">Cache · source ${formatMovieBytes(details.cache?.sourceBytes ?? 0)}
+                    · exports ${formatMovieBytes(details.cache?.exportBytes ?? 0)}</p>
                 <p class="converter-license">The LGPL MPEG-2 decoder powers previews and Fast MP4 frame extraction.
                     MediaBunny muxes Fast MP4 and remuxes the original MPEG-2 into Lossless MKV. Disc data remains local.
                     <a href="${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt"
@@ -420,7 +407,7 @@ function render(): void {
     viewerRoot.innerHTML = `<a class="skip-link" href="#viewer">Skip to viewer</a>
         <div class="viewer-page">${viewerHeader()}${viewerMarkup()}</div>`;
     const movieCanvas = viewerRoot.querySelector<HTMLCanvasElement>("#cinema-canvas");
-    if (movieCanvas) viewerBindMovieCanvas(movieCanvas);
+    if (movieCanvas) movieController.attach(movieCanvas);
     playUiKey = "";
     exportUiKey = "";
     const nextGuide = viewerRoot.querySelector<HTMLElement>(".guide-list");
@@ -502,7 +489,7 @@ function updateFunctionalUi(now: number): void {
         .forEach((time) => { time.textContent = formatTime(state.current); });
     viewerRoot.querySelectorAll<HTMLElement>("[data-duration]")
         .forEach((duration) => { duration.textContent = formatTime(state.duration); });
-    const movie = viewerMovieDetails();
+    const movie = movieController.snapshot();
     viewerRoot.querySelectorAll<HTMLElement>("[data-movie-status]").forEach((element) => {
         if (element.textContent !== movie.status) element.textContent = movie.status;
         element.classList.toggle("error", movie.error);
@@ -561,23 +548,23 @@ function interactiveKeyTarget(target: EventTarget | null): target is HTMLElement
 }
 
 function toggleMovieCaptions(): boolean {
-    const details = viewerMovieDetails();
+    const details = movieController.snapshot();
     if (!details.prepared || details.entry?.subtitleCues === 0) return false;
-    viewerToggleMovieCaptions();
+    movieController.toggleCaptions();
     return true;
 }
 
 function toggleMovieFullscreen(): boolean {
     const player = viewerRoot.querySelector<HTMLElement>(".cinema-player");
     if (!player) return false;
-    const movieName = viewerMovieDetails().entry?.name;
+    const movieName = movieController.snapshot().entry?.name;
     const entering = document.fullscreenElement === null;
     const operation = entering ? player.requestFullscreen() : document.exitFullscreen();
     void operation.catch((error) => {
         console.error("movie fullscreen request failed", error);
-        if (viewerMovieDetails().entry?.name !== movieName)
+        if (movieController.snapshot().entry?.name !== movieName)
             return;
-        viewerReportMovieError(entering
+        movieController.reportError(entering
             ? "Full screen was blocked. Allow full-screen access for this site or use the browser's full-screen command."
             : "Could not leave full screen. Press Escape or use the browser's full-screen command.");
     });
@@ -590,7 +577,7 @@ function exitMovieFullscreen(): boolean {
         return false;
     void document.exitFullscreen().catch((error) => {
         console.error("movie fullscreen exit failed", error);
-        viewerReportMovieError(
+        movieController.reportError(
             "Could not leave full screen. Press Escape or use the browser's full-screen command.",
         );
     });
@@ -618,7 +605,7 @@ function onViewerKey(event: KeyboardEvent): void {
             event.target.blur();
             const transport = viewerTransport();
             if (library.channel === "cinema" && (transport.loading || transport.exporting)) {
-                viewerCancelMovieWork();
+                movieController.cancel();
                 event.preventDefault();
             }
         }
@@ -653,7 +640,7 @@ function onViewerKey(event: KeyboardEvent): void {
     case "Escape": {
         const transport = viewerTransport();
         if (library.channel === "cinema" && (transport.loading || transport.exporting))
-            viewerCancelMovieWork();
+            movieController.cancel();
         else handled = false;
         break;
     }
@@ -682,7 +669,7 @@ function wireInteractions(): void {
         if (movieExport?.dataset.movieExport) {
             const captions = viewerRoot
                 .querySelector<HTMLInputElement>("[data-action='movie-captions']")?.checked ?? false;
-            viewerExportMovie(movieExport.dataset.movieExport as MovieExportKind, captions);
+            movieController.startExport(movieExport.dataset.movieExport as MovieExportKind, captions);
             return;
         }
         const actionElement = target.closest<HTMLElement>("[data-action]");
@@ -695,8 +682,8 @@ function wireInteractions(): void {
             cinemaSkip ? viewerMoveAndPlayMovie(1) : viewerMove(1);
         if (action === "export") viewerExport();
         if (action === "tune") viewerChooseDisc();
-        if (action === "movie-cancel") viewerCancelMovieWork();
-        if (action === "movie-remove") viewerRemoveMovie();
+        if (action === "movie-cancel") movieController.cancel();
+        if (action === "movie-remove") movieController.removeCached();
         if (action === "movie-caption-toggle") toggleMovieCaptions();
         if (action === "movie-fullscreen") toggleMovieFullscreen();
         if (action === "activate-selected") {
