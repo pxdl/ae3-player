@@ -31,7 +31,10 @@
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
-        <a id="monkey-tv-link" href="?viewer">Monkey TV</a>
+        <span class="monkey-tv-disabled" title="Monkey TV is in development.">
+          <button id="monkey-tv-link" type="button" disabled
+            aria-label="Monkey TV — in development">Monkey TV</button>
+        </span>
         <button id="forget" title="Wipe the extracted assets from this browser">forget my disc</button>
       </div>
     </aside>
@@ -363,7 +366,10 @@
       </label>
       <p id="picker-status"></p>
       <progress id="picker-progress" max="1" value="0" hidden></progress>
-      <a id="monkey-tv-picker-link" href="?viewer">open the Monkey TV viewer &rarr;</a>
+      <span class="monkey-tv-disabled monkey-tv-picker-disabled" title="Monkey TV is in development.">
+        <button id="monkey-tv-picker-link" type="button" disabled
+          aria-label="Open the Monkey TV viewer — in development">open the Monkey TV viewer &rarr;</button>
+      </span>
     </div>
   </div>
 </body>

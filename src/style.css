@@ -186,20 +186,26 @@ button:not(:disabled):active {
     gap: 8px;
 }
 #disc-id { color: var(--dim); font-size: 11px; }
+.monkey-tv-disabled {
+    display: inline-flex;
+    cursor: not-allowed;
+}
+.monkey-tv-disabled > button {
+    pointer-events: none;
+}
 #monkey-tv-link {
     display: inline-flex;
     min-height: 40px;
     align-items: center;
     padding-inline: 8px;
-    color: var(--accent);
-    border: 1px solid var(--accent);
+    color: var(--dim);
+    border: 1px solid var(--dim);
     border-radius: 4px;
     font-size: 10px;
     letter-spacing: 0.04em;
-    text-decoration: none;
     text-transform: uppercase;
+    opacity: 0.62;
 }
-#monkey-tv-link:hover { color: var(--text); border-color: var(--text); }
 #forget {
     color: var(--dim);
     font-size: 11px;
@@ -862,21 +868,18 @@ button.ex-row:disabled {
     accent-color: var(--accent);
 }
 
+.monkey-tv-picker-disabled { margin-top: 18px; }
 #monkey-tv-picker-link {
     display: inline-flex;
-    align-items: center;
     min-height: 40px;
-    margin-top: 18px;
-    color: var(--accent);
+    align-items: center;
+    padding-inline: 0;
+    color: var(--dim);
+    border: 0;
     font-size: 11px;
     letter-spacing: 0.05em;
-    text-decoration: none;
     text-transform: uppercase;
-}
-#monkey-tv-picker-link:hover { color: var(--text); }
-#monkey-tv-picker-link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
+    opacity: 0.62;
 }
 
 @media (max-width: 600px) {
