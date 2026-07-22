@@ -1,103 +1,122 @@
-# ae3-player
+# AE3 Asset Lab
 
-Browser player and local media viewer for Ape Escape 3 — point it at your own
-game disc image and it extracts assets **client-side** (nothing uploaded,
-nothing shipped). It plays the game's sequenced music, streams, and embedded
-sound effects, and exposes all 22 full-motion videos in an FMV workspace.
-Sequenced audio runs through a WebAssembly build of the
-[ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer core.
+AE3 Asset Lab is a browser-based asset explorer for Ape Escape 3. Point it at
+your own game disc image and it extracts everything it needs in the browser.
+Nothing is uploaded, and the repository ships no game data.
 
-Working today: ISO picker → in-browser extraction → OPFS cache ("forget my
-disc" wipes it); all 68 BGM songs at the game's authored per-song volumes;
-341 MB of lazily extracted streamed music, dialogue, and cutscene audio; and
-101 embedded SE banks exposing 2,699 assembled bank:request entries through
-the same 48-voice synth. BGM includes AudioWorklet playback, latency-aligned
-transport and seek, loop/timing/kernel/reverb/volume dials, a loop-unwound
-piano roll, voice slots, waveform and clip meters, Worker-rendered WAV, raw
-MIDI, bank-pair, and decoded sample-kit export. Streams include pad-aware
-decode, waveform/spectrogram transport, raw `.x`, and WAV export. SE includes
-exact or console-tick request timing, caller volume, gaussian/bright
-resampling, reverb, transport and event-score seeking, a 48-voice grid, a live
-output waveform, and a 480 Hz bytecode score with command values and sample,
-noise, source-loop, and reverb-source markers. A separate live source-loop
-panel gives every active looped SE voice its own stable slot row, intro/loop
-boundaries, decoder phase and seam count, plus an ADSR display that continues
-across source seams. It reports event-track/cycle duration separately from
-measured audible completion and authored source-envelope lifetime. Infinite
-stream jumps can loop or execute once; sample loops remain identified even when
-their envelopes are technically finite. Velocity-zero voice-stop requests are
-labeled as control-only rather than silent effects. WAV export offers one pass
-or 10/30/60-second caps, alongside raw `.hd`/`.bd` bank export.
-The production FMV workspace performs a lightweight 22-movie catalog scan, then
-caches only the movie the user chooses. Clicking an FMV list item retains
-play intent through source reading, decoder startup, canvas attachment, and
-priming; playback begins without a separate Play click. Keyboard browsing still
-prepares the selected movie's first frame without starting playback. The disc's
-original MPEG-2 elementary stream goes to a
-dedicated worker, which decodes bounded frame batches with a custom LGPL
-libav.js/FFmpeg WebAssembly build and presents packed I420 through WebGL2 with
-the decoded WAV as the master clock. The SDK's 7:6 sample aspect ratio controls
-an explicit display-aspect picture box while the WebGL backing store stays at
-the coded source dimensions. A two-row FMV transport sits directly below the
-picture and remains with captions and picture controls in fullscreen.
-Interlaced sources are bobbed to 59.94 fps, and local captions cover the ten
-subtitled scenes. The workspace offers four exports: byte-exact original
-`.str`/`.bin`/`.sbt` ZIPs; bit-exact MPEG-2, decoded WAV, and SRT masters;
-Lossless MKV that remuxes the original MPEG-2 with decoded 16-bit PCM and
-optional embedded WebVTT captions; and Fast MP4 with browser-encoded H.264/AAC.
-Both containers use a separate export worker, so playback remains isolated and
-responsive.
-The production surface is the original Asset Lab's **FMV** tab. The alternate
-Monkey TV viewer remains an in-development route and is not exposed in the UI.
+The app plays the game's sequenced music, streamed audio, embedded sound
+effects, and all 22 full-motion videos. Sequenced audio runs through a
+WebAssembly build of the [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer.
 
-The app is a PWA: after the first visit its shell works offline and cached
-assets play without the ISO. Interrupted extractions resume where they left
-off, with explicit errors for wrong/truncated/non-AE3 images and unplugged
-drives. The MPEG-2 decoder and movie-export modules are excluded from the
-initial precache. Each is fetched and cached independently on first use.
+## Music and audio
 
-Browser support: Chrome/Chromium is the tested reference. Core audio, playback,
-UI, and Lossless MKV export paths also work without WebCodecs encoding. Fast MP4
-requires worker-side WebCodecs AVC and AAC encoding; unsupported browsers report
-that requirement explicitly, while Original ZIP, Masters ZIP, and Lossless MKV
-remain available. Safari's audio stack is created inside the first click
-because Safari ties autoplay dispensation to the gesture that created the
-`AudioContext`; a context built at page load can remain interrupted under
-stricter per-site Auto-Play policies. If audio still refuses to start, check
-Safari Settings > Websites > Auto-Play and the tab's mute state. Safari floors:
-`Promise.withResolvers` needs 17.4+; OPFS writes need 18.2+ and can be declined
-by the browser, in which case the app reads from the ISO again next visit.
+After you choose an ISO, the app extracts assets into an OPFS cache. Use
+`clear data` to close the session, remove those cached assets, and return to the
+disc picker. Interrupted extractions resume where they stopped, and the app
+reports wrong, truncated, or non-AE3 images and unplugged drives directly.
 
-As of 2026-07-21, original MPEG-2 Cinema playback was verified in Chrome 150,
-Firefox 152, and Safari 26.4 with progressive, bobbed interlaced, caption,
-seek, cache-resume, and full-movie flows. The one-click startup path was
-additionally exercised in all three browsers with a delayed source read and
-cold decoder initialization; each reached `playing` without a stable `ready`
-pause or a suppressed autoplay rejection.
+The music library contains all 68 BGM songs at their authored per-song volumes.
+Playback runs in an AudioWorklet with latency-aligned transport and seeking.
+Controls cover loops, timing, interpolation, reverb, and volume. The UI also has
+a loop-unwound piano roll, live voice slots, waveform and clipping meters, and
+exports for Worker-rendered WAV, raw MIDI, bank pairs, and decoded sample kits.
 
-This repository never contains or serves game data. Your disc stays on your
-machine.
+The Streams tab lazily extracts 341 MB of music, dialogue, and cutscene audio.
+It has waveform and spectrogram transport, pad-aware decoding, and raw `.x` or
+WAV export.
+
+The sound-effect library contains 101 banks and 2,699 assembled bank:request
+entries, all played through the same 48-voice synth. Requests can use exact or
+console-tick timing, caller volume, bright or Gaussian resampling, and reverb.
+The transport seeks by time or event score. Its displays include the 48 voice
+slots, the live output waveform, and a 480 Hz bytecode score with command values
+and markers for samples, noise, source loops, and reverb sources.
+
+Looped sound effects get a separate live panel. Each active voice keeps a stable
+row with its intro and loop boundaries, decoder phase, seam count, and an ADSR
+display that continues across source seams. The panel reports the event cycle,
+measured audible completion, and authored source-envelope lifetime separately.
+Infinite stream jumps can either loop or run once. Sample loops stay identified
+even when their envelopes are finite, and velocity-zero stop requests are shown
+as controls rather than silent effects. WAV export can render one pass or stop
+at 10, 30, or 60 seconds. Raw `.hd` and `.bd` bank export is also available.
+
+## FMV playback and export
+
+The FMV tab scans the 22-movie catalog without loading every movie, then reads
+and caches only the one you select. Clicking a movie carries the play request
+through the source read, decoder startup, canvas attachment, and priming, so it
+starts without another click. Keyboard selection prepares the first frame but
+does not start playback.
+
+A dedicated worker decodes bounded batches from the original MPEG-2 elementary
+stream with a custom LGPL libav.js/FFmpeg WebAssembly build. WebGL2 presents the
+packed I420 frames while the decoded WAV supplies the master clock. The SDK's
+7:6 sample aspect ratio sets the displayed picture box; the WebGL backing store
+keeps the coded source dimensions. Interlaced video uses bob deinterlacing at
+59.94 fps. Local captions are available for the ten subtitled scenes.
+
+The two-row transport sits below the picture. It stays with the captions and
+picture controls in fullscreen. Four export options are available:
+
+- Original ZIP preserves the `.str`, `.bin`, and `.sbt` files byte for byte.
+- Masters ZIP contains the original MPEG-2 stream, decoded WAV, and SRT captions.
+- Lossless MKV remuxes the original MPEG-2 with decoded 16-bit PCM and optional
+  embedded WebVTT captions.
+- Fast MP4 uses browser-encoded H.264 and AAC.
+
+MKV and MP4 exports run in a separate worker, so export work does not share the
+playback worker. FMV playback and export live in the Asset Lab's FMV tab. Monkey
+TV appears as a disabled, in-development option.
+
+## Offline use and browser support
+
+The app is a PWA. After the first visit, its shell works offline and cached
+assets play without the ISO. The MPEG-2 decoder and movie export modules are not
+part of the initial precache; the app fetches and caches each one on first use.
+
+Chrome and Chromium are the reference browsers. Core audio, playback, the UI,
+and Lossless MKV export do not require WebCodecs. Fast MP4 does require AVC and
+AAC encoding through WebCodecs in a worker. When those encoders are unavailable,
+the app says so and keeps Original ZIP, Masters ZIP, and Lossless MKV enabled.
+
+Safari creates its `AudioContext` inside the first click because autoplay
+permission is tied to the gesture that created it. A context created at page
+load may remain interrupted under stricter per-site Auto-Play settings. If audio
+does not start, check Safari Settings > Websites > Auto-Play and the tab's mute
+state. `Promise.withResolvers` requires Safari 17.4 or newer. OPFS writes require
+Safari 18.2 or newer and may still be declined by the browser; in that case, the
+app reads from the ISO again on the next visit.
+
+Testing on July 21, 2026 covered original MPEG-2 playback in Chrome 150, Firefox
+152, and Safari 26.4. The tested paths included progressive video, bobbed
+interlaced video, captions, seeking, cache resume, and complete movies. The
+one-click startup path was also tested in all three browsers with a delayed
+source read and a cold decoder. Each browser reached `playing` without getting
+stuck at `ready` or suppressing an autoplay rejection.
 
 ## Architecture
 
-- `src/` — Vite + TypeScript app: disc session (extraction + OPFS), worklet
-  controller, timeline, media stores, bounded movie decoder/renderer/session,
-  lazy movie exporter, and UI. No framework.
-- `src/vendor/extract/` — vendored `@ae3/extract` (TS source, bundled).
-- `public/synth/` — the **unbundled audio path**: vendored `@ae3/synth`
-  binding + `ae3synth.wasm`, plus the app's engine + `AudioWorkletProcessor`.
-  Served verbatim; see `public/synth/README.md` for why.
-- `public/libav/` and `vendor/libav/` — reproducible minimal LGPL MPEG-2
-  decoder artifacts, a directly deployed corresponding-source bundle, pinned
-  configuration, checksums, and build script.
-- Vendored artifacts refresh via `npm run sync-sdk` (set `AE3_SDK` to your
-  ae3-sdk checkout; provenance lands in `src/vendor/SDK_COMMIT`).
+- `src/` contains the Vite and TypeScript app: disc sessions, OPFS extraction,
+  worklet control, timelines, media stores, the movie playback pipeline, lazy
+  export, and the UI. It does not use a framework.
+- `src/vendor/extract/` is the bundled TypeScript source for `@ae3/extract`.
+- `public/synth/` contains the unbundled audio path: the vendored `@ae3/synth`
+  binding, `ae3synth.wasm`, the app engine, and its `AudioWorkletProcessor`.
+  These files are served verbatim. See `public/synth/README.md` for details.
+- `public/libav/` and `vendor/libav/` contain the reproducible minimal LGPL
+  MPEG-2 decoder, its deployed source bundle, pinned configuration, checksums,
+  and build script.
 
-The audio-path equality gate (engine output hashed against the SDK's native
-`wavdump`, worklet-quantum rendering, seek continuity) lives in the private
-research repo — it needs the disc.
+Run `npm run sync-sdk` to refresh vendored SDK artifacts. Set `AE3_SDK` if the
+SDK checkout is not in the default sibling directory. The command records the
+source revision in `src/vendor/SDK_COMMIT`.
 
-## Dev
+The private research repository contains the audio equality gate because it
+needs a disc. It checks engine output against the SDK's native `wavdump`, along
+with worklet-quantum rendering and seek continuity.
+
+## Development
 
 ```
 npm install
@@ -107,19 +126,21 @@ npm run typecheck
 npm test
 ```
 
-`npm run build` also generates `dist/sw.js` (the precache service worker;
-`scripts/gen-sw.mjs`). Deploys go to GitHub Pages via
-`.github/workflows/deploy.yml` on every push to `main` (needs Pages set to
-the "GitHub Actions" source once the repo is public).
+`npm run build` also generates `dist/sw.js`, the precache service worker, through
+`scripts/gen-sw.mjs`. GitHub Pages deployments use
+`.github/workflows/deploy.yml` on every push to `main`. Once the repository is
+public, Pages must use the "GitHub Actions" source.
 
-The application source is MIT-licensed. Cinema playback and Fast MP4 frame
-extraction distribute a custom libav.js/FFmpeg build under
-LGPL-2.1-or-later. Movie muxing includes Mediabunny portions plus the
-MPEG-2 Matroska codec registration in `scripts/patch-mediabunny-mpeg2.mjs`,
-under MPL-2.0. The notices retain the former `@ffmpeg/*` GPL source offer while
-one previous service-worker cache generation can still serve that legacy
-release. Exact versions, license links, checksums, and corresponding-source
-links are deployed in
+## Licensing
+
+The application source is MIT-licensed. FMV playback and Fast MP4 frame
+extraction use a custom libav.js/FFmpeg build under LGPL-2.1-or-later. Movie
+muxing includes parts of Mediabunny and the MPEG-2 Matroska codec registration
+in `scripts/patch-mediabunny-mpeg2.mjs`, under MPL-2.0.
+
+The notices retain the former `@ffmpeg/*` GPL source offer because one older
+service-worker cache can still serve that release. Exact versions, license
+links, checksums, and corresponding-source links are in
 [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt).
 
 License: MIT.
