@@ -10,6 +10,7 @@
     --good: #6edc82;
     --bad: #f05a50;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --side-width: 252px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -44,12 +45,39 @@ button:not(:disabled):active {
 #app[hidden] { display: none; }
 
 #side {
-    width: 252px;
+    width: var(--side-width);
     flex: none;
     background: var(--panel);
     display: flex;
     flex-direction: column;
     min-height: 0;
+}
+#side-resizer {
+    position: relative;
+    z-index: 4;
+    width: 9px;
+    flex: none;
+    cursor: col-resize;
+    touch-action: none;
+    outline: none;
+}
+#side-resizer::after {
+    position: absolute;
+    inset-block: 0;
+    left: 4px;
+    width: 1px;
+    background: var(--panel-hi);
+    content: "";
+}
+#side-resizer:hover::after,
+#side-resizer:focus-visible::after,
+body.resizing-sidebar #side-resizer::after {
+    width: 2px;
+    background: var(--accent);
+}
+body.resizing-sidebar {
+    cursor: col-resize;
+    user-select: none;
 }
 #side-brand {
     display: flex;
@@ -1533,7 +1561,7 @@ button.ex-row:disabled {
 }
 #imagelist.image-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
     align-content: start;
     gap: 8px;
     padding: 0 10px 10px;
@@ -1761,6 +1789,7 @@ button.ex-row:disabled {
         height: 36vh;
         min-height: 250px;
     }
+    #side-resizer { display: none; }
     #side-brand { padding-block: 8px 6px; }
     #side-foot { padding-block: 6px; }
     #main {

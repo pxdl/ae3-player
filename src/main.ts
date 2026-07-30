@@ -173,6 +173,11 @@ let imageThumbnailQueue: Array<{
 let imageThumbnailActive = 0;
 let imageExtracting = false;
 let imageExporting = false;
+const DEFAULT_SIDE_WIDTH = 252;
+const MIN_SIDE_WIDTH = 220;
+const SIDE_WIDTH_KEY = "ae3.sideWidth";
+let sideWidth = DEFAULT_SIDE_WIDTH;
+
 
 /* embedded sequenced effects */
 type SeRow =
@@ -1132,6 +1137,7 @@ async function extractImages(): Promise<void> {
                 : `scanning ${path} (${done}/${total})`;
         });
         installImageCatalog(catalog);
+        $("image-setup").hidden = true;
         renderImageList();
         status(`${imageAllRows.length} images and sprite sheets · select one to preview`);
     } catch (error) {
@@ -3173,6 +3179,60 @@ async function selftest(): Promise<void> {
     put("press-play-to-test-audio-unlock");
 }
 
+function applySideWidth(requested: number, persist = false): void {
+    const max = Math.max(MIN_SIDE_WIDTH, Math.min(720, window.innerWidth - 480));
+    sideWidth = Math.round(Math.max(MIN_SIDE_WIDTH, Math.min(max, requested)));
+    document.documentElement.style.setProperty("--side-width", `${sideWidth}px`);
+    const handle = $("side-resizer");
+    handle.setAttribute("aria-valuemax", String(Math.round(max)));
+    handle.setAttribute("aria-valuenow", String(sideWidth));
+    if (persist) localStorage.setItem(SIDE_WIDTH_KEY, String(sideWidth));
+}
+
+function wireSideResizer(): void {
+    const handle = $("side-resizer");
+    const saved = Number.parseFloat(localStorage.getItem(SIDE_WIDTH_KEY) ?? "");
+    applySideWidth(Number.isFinite(saved) ? saved : DEFAULT_SIDE_WIDTH);
+    let pointerId: number | null = null;
+    let grabOffset = 0;
+
+    handle.onpointerdown = event => {
+        if (event.button !== 0) return;
+        pointerId = event.pointerId;
+        grabOffset = event.clientX - handle.getBoundingClientRect().left;
+        handle.setPointerCapture(event.pointerId);
+        document.body.classList.add("resizing-sidebar");
+        event.preventDefault();
+    };
+    handle.onpointermove = event => {
+        if (event.pointerId !== pointerId) return;
+        const appLeft = $("app").getBoundingClientRect().left;
+        applySideWidth(event.clientX - appLeft - grabOffset);
+    };
+    const finish = (event: PointerEvent): void => {
+        if (event.pointerId !== pointerId) return;
+        pointerId = null;
+        document.body.classList.remove("resizing-sidebar");
+        applySideWidth(sideWidth, true);
+    };
+    handle.onpointerup = finish;
+    handle.onpointercancel = finish;
+    handle.ondblclick = () => applySideWidth(DEFAULT_SIDE_WIDTH, true);
+    handle.onkeydown = event => {
+        let next = sideWidth;
+        if (event.key === "ArrowLeft") next -= event.shiftKey ? 64 : 24;
+        else if (event.key === "ArrowRight") next += event.shiftKey ? 64 : 24;
+        else if (event.key === "Home") next = MIN_SIDE_WIDTH;
+        else if (event.key === "End") next = 720;
+        else return;
+        event.preventDefault();
+        applySideWidth(next, true);
+    };
+    window.addEventListener("resize", () => {
+        if (window.innerWidth > 600) applySideWidth(sideWidth);
+    });
+}
+
 async function main(): Promise<void> {
     /* diagnostics handle (dev tools) */
     (window as any).__ae3 = {
@@ -3200,6 +3260,7 @@ async function main(): Promise<void> {
         },
     };
     wirePicker();
+    wireSideResizer();
     $("playbtn").onclick = togglePlay;
     $("bar").onclick = (e) => {
         if (!timeline) return;

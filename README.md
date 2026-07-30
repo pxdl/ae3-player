@@ -48,9 +48,10 @@ The Images tab scans direct TIM2 files and every TIM2 member of the disc's
 compressed PCK packages. The searchable catalog preserves the package path,
 member attributes, picture count, dimensions, pixel format, and original byte
 size. A lazy thumbnail grid is the default; a dense flat list and a
-source-hierarchy tree provide alternate views. Grid and list results append
-automatically near the end of the scroll, while tree folders populate only
-when opened.
+source-hierarchy tree provide alternate views. The desktop asset browser is
+horizontally resizable, and the grid adds or removes columns with its width.
+Grid and list results append automatically near the end of the scroll, while
+tree folders populate only when opened.
 Category filters separate UI/sprites referenced by UIS layouts from 3D
 textures referenced by I3D models. Package context fills clear single-purpose
 cases; ambiguous assets stay under Other, and the inspector shows the evidence
@@ -61,8 +62,9 @@ checkerboard canvas. The decoder linearizes GS CSM1 palettes and expands the
 PS2 0..128 alpha range to browser RGBA. A selected picture exports as PNG or as
 its byte-exact source `.tm2`; Export All PNG preserves the package hierarchy in
 one ZIP and avoids a second archive-sized memory copy. Multi-picture TIM2 files
-produce one catalog row and PNG per picture. Completed scans and source
-textures stay in the disc's OPFS cache for later ISO-free browsing.
+produce one catalog row and PNG per picture. Completed scans and the original
+source containers stay in the disc's OPFS cache for later ISO-free browsing
+without creating one browser file per texture.
 Declared TIM2 dimensions are preserved exactly: transparent margins authored
 into a texture or sprite sheet are displayed and exported rather than cropped.
 

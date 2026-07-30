@@ -30,6 +30,7 @@ export interface ImageTexture {
 export interface ImageScanOptions {
     progress?: (done: number, total: number, path: string) => void;
     texture?: (texture: ImageTexture, bytes: Uint8Array) => void | Promise<void>;
+    container?: (entry: VfiEntry, bytes: Uint8Array) => void | Promise<void>;
 }
 
 function isTim2(data: Uint8Array): boolean {
@@ -72,6 +73,7 @@ function classifyMembers(pck: Uint8Array, members: PckMember[],
                              role: ImageRole;
                              evidence: ImageRoleEvidence;
                          }> {
+    if (textures.length === 0) return new Map();
     const names = new Set(textures.map(member => memberStem(member.name)));
     const uiReferences = new Set<string>();
     const modelReferences = new Set<string>();
@@ -83,6 +85,7 @@ function classifyMembers(pck: Uint8Array, members: PckMember[],
         if (type === "uis") hasUi = true;
         else hasModel = true;
         const target = type === "uis" ? uiReferences : modelReferences;
+        if (target.size === names.size) continue;
         for (const name of referencedTextureNames(memberBytes(pck, member), names))
             target.add(name);
     }
@@ -116,6 +119,63 @@ export function locateImageContainers(vfi: Vfi): VfiEntry[] {
         /\.tm2$/i.test(entry.path) || /\.pck(?:\.sz)?$/i.test(entry.path));
 }
 
+interface ScannedImageContainer {
+    entry: VfiEntry;
+    stored: Uint8Array;
+    images: Array<{ texture: ImageTexture; bytes: Uint8Array }>;
+}
+
+const IMAGE_SCAN_CONCURRENCY = 8;
+
+async function scanImageContainer(vfi: Vfi,
+                                  entry: VfiEntry): Promise<ScannedImageContainer> {
+    const stored = await vfi.read(entry);
+    if (/\.tm2$/i.test(entry.path)) {
+        const fileName = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+        return {
+            entry,
+            stored,
+            images: [{
+                texture: {
+                    id: textureId(entry, null), sourcePath: entry.path,
+                    memberIndex: null, memberName: null, fileName, attrs: "tm2",
+                    byteLength: stored.length, role: "other", roleEvidence: "direct",
+                    pictures: inspectTim2(stored, entry.path),
+                },
+                bytes: stored,
+            }],
+        };
+    }
+
+    const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored) : stored;
+    const members = unpackPck(pck);
+    if (!members) throw new Error(`${entry.path}: not a PCK`);
+    const names = pckFileNames(members);
+    const imageMembers = members.filter(member => {
+        const bytes = memberBytes(pck, member);
+        return typeOf(member.attrs) === "tm2" || isTim2(bytes);
+    });
+    const roles = classifyMembers(pck, members, imageMembers);
+    const images = imageMembers.map(member => {
+        const bytes = memberBytes(pck, member);
+        const label = `${entry.path}#${member.index}:${member.name}`;
+        const classification = roles.get(member.index)!;
+        return {
+            texture: {
+                id: textureId(entry, member.index), sourcePath: entry.path,
+                memberIndex: member.index, memberName: member.name,
+                fileName: names[member.index]!, attrs: member.attrs,
+                byteLength: bytes.length,
+                role: classification.role,
+                roleEvidence: classification.evidence,
+                pictures: inspectTim2(bytes, label),
+            },
+            bytes,
+        };
+    });
+    return { entry, stored, images };
+}
+
 /**
  * Inspect every direct TIM2 and every TIM2 member of every PCK in DATA.BIN.
  * The callback receives each original source texture once, including
@@ -125,48 +185,19 @@ export async function scanImageTextures(vfi: Vfi,
                                         options: ImageScanOptions = {}): Promise<ImageTexture[]> {
     const containers = locateImageContainers(vfi);
     const textures: ImageTexture[] = [];
-    for (let containerIndex = 0; containerIndex < containers.length; containerIndex++) {
-        const entry = containers[containerIndex]!;
-        options.progress?.(containerIndex, containers.length, entry.path);
-        const stored = await vfi.read(entry);
-        if (/\.tm2$/i.test(entry.path)) {
-            const fileName = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-            const texture: ImageTexture = {
-                id: textureId(entry, null), sourcePath: entry.path,
-                memberIndex: null, memberName: null, fileName, attrs: "tm2",
-                byteLength: stored.length, role: "other", roleEvidence: "direct",
-                pictures: inspectTim2(stored, entry.path),
-            };
-            textures.push(texture);
-            await options.texture?.(texture, stored);
-            continue;
-        }
-
-        const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored) : stored;
-        const members = unpackPck(pck);
-        if (!members) throw new Error(`${entry.path}: not a PCK`);
-        const names = pckFileNames(members);
-        const imageMembers = members.filter(member => {
-            const bytes = memberBytes(pck, member);
-            return typeOf(member.attrs) === "tm2" || isTim2(bytes);
-        });
-        const roles = classifyMembers(pck, members, imageMembers);
-        for (const member of imageMembers) {
-            const bytes = memberBytes(pck, member);
-            const label = `${entry.path}#${member.index}:${member.name}`;
-            const classification = roles.get(member.index)!;
-            const texture: ImageTexture = {
-                id: textureId(entry, member.index), sourcePath: entry.path,
-                memberIndex: member.index, memberName: member.name,
-                fileName: names[member.index]!, attrs: member.attrs,
-                byteLength: bytes.length,
-                role: classification.role,
-                roleEvidence: classification.evidence,
-                pictures: inspectTim2(bytes, label),
-            };
-            textures.push(texture);
-            await options.texture?.(texture, bytes);
-        }
+    for (let start = 0; start < containers.length; start += IMAGE_SCAN_CONCURRENCY) {
+        const batch = containers.slice(start, start + IMAGE_SCAN_CONCURRENCY);
+        for (let offset = 0; offset < batch.length; offset++)
+            options.progress?.(start + offset, containers.length, batch[offset]!.path);
+        const scanned = await Promise.all(batch.map(entry => scanImageContainer(vfi, entry)));
+        for (const container of scanned)
+            for (const image of container.images) textures.push(image.texture);
+        await Promise.all(scanned.map(async container => {
+            if (container.images.length === 0) return;
+            await options.container?.(container.entry, container.stored);
+            for (const image of container.images)
+                await options.texture?.(image.texture, image.bytes);
+        }));
     }
     options.progress?.(containers.length, containers.length, "done");
     return textures;

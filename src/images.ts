@@ -1,9 +1,12 @@
 import {
     BlobSource,
     decodeTim2,
+    inflateSz,
+    memberBytes,
     openDisc,
     OpfsCache,
     readImageTexture,
+    unpackPck,
     scanImageTextures,
     type ImageRole,
     type ImageTexture,
@@ -11,9 +14,12 @@ import {
 } from "./vendor/extract/index.ts";
 
 const META = "image_meta.json";
+const CONTAINER_CACHE_LIMIT = 4;
+
 
 export interface ImageCatalog {
     v: 2;
+    storage?: "textures" | "containers";
     textures: ImageTexture[];
 }
 
@@ -96,6 +102,7 @@ export class ImageStore {
     private vfi: Vfi | null;
     private readonly cacheKey: string | null;
     private catalog: ImageCatalog | null = null;
+    private containerCache = new Map<string, Promise<Uint8Array | null>>();
 
     constructor(cache: OpfsCache | null, vfi: Vfi | null,
                 cacheKey: string | null) {
@@ -114,6 +121,9 @@ export class ImageStore {
         try {
             const catalog = JSON.parse(new TextDecoder().decode(raw)) as ImageCatalog;
             if (catalog.v !== 2 || !Array.isArray(catalog.textures)
+                || (catalog.storage !== undefined
+                    && catalog.storage !== "textures"
+                    && catalog.storage !== "containers")
                 || catalog.textures.some(texture =>
                     !Array.isArray(texture.pictures)
                     || !["sprite", "texture", "other"].includes(texture.role)))
@@ -139,9 +149,10 @@ export class ImageStore {
         let cache = this.cache;
         const textures = await scanImageTextures(this.vfi, {
             progress,
-            texture: async (texture, bytes) => {
+            container: async (entry, bytes) => {
                 if (!cache) return;
-                const path = `image/${texture.id}.tm2`;
+                const id = entry.entryOff.toString(16).padStart(8, "0");
+                const path = `image-container/${id}.bin`;
                 try {
                     if (!await cache.has(path)) await cache.write(path, bytes);
                 } catch (error) {
@@ -150,7 +161,7 @@ export class ImageStore {
                 }
             },
         });
-        const catalog: ImageCatalog = { v: 2, textures };
+        const catalog: ImageCatalog = { v: 2, storage: "containers", textures };
         if (cache)
             await cache.write(META,
                 new TextEncoder().encode(JSON.stringify(catalog)));
@@ -158,10 +169,47 @@ export class ImageStore {
         return catalog;
     }
 
+    private async readContainer(texture: ImageTexture): Promise<Uint8Array | null> {
+        if (!this.cache) return null;
+        const id = texture.id.slice(0, 8);
+        let pending = this.containerCache.get(id);
+        if (pending) {
+            this.containerCache.delete(id);
+            this.containerCache.set(id, pending);
+        } else {
+            pending = this.cache.read(`image-container/${id}.bin`).then(stored => {
+                if (!stored) return null;
+                return /\.sz$/i.test(texture.sourcePath) ? inflateSz(stored) : stored;
+            });
+            this.containerCache.set(id, pending);
+            if (this.containerCache.size > CONTAINER_CACHE_LIMIT) {
+                const oldest = this.containerCache.keys().next().value as string | undefined;
+                if (oldest !== undefined) this.containerCache.delete(oldest);
+            }
+        }
+        const container = await pending;
+        if (!container) {
+            this.containerCache.delete(id);
+            return null;
+        }
+        if (texture.memberIndex === null) return container;
+        const members = unpackPck(container);
+        const member = members?.[texture.memberIndex];
+        if (!member || member.name !== texture.memberName)
+            throw new Error(`${texture.sourcePath}: cached image member changed`);
+        return memberBytes(container, member);
+    }
+
     async read(texture: ImageTexture): Promise<Uint8Array | null> {
         if (this.cache) {
-            const cached = await this.cache.read(`image/${texture.id}.tm2`);
-            if (cached) return cached;
+            const catalog = this.catalog ?? await this.cached();
+            if (catalog?.storage === "containers") {
+                const cached = await this.readContainer(texture);
+                if (cached) return cached;
+            } else {
+                const cached = await this.cache.read(`image/${texture.id}.tm2`);
+                if (cached) return cached;
+            }
         }
         return this.vfi ? readImageTexture(this.vfi, texture) : null;
     }
