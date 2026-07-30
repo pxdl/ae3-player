@@ -34,12 +34,11 @@ export interface DecodedMesh {
     name: string;
     material: string;
     positions: Float32Array;
+    normals: Float32Array;
     uvs: Float32Array;
     indices: Uint32Array;
-    /** Indices into jointBones; four values per vertex. */
     skinIndices: Uint16Array;
     skinWeights: Float32Array;
-    /** Global indices into DecodedModel.bones. */
     jointBones: Uint16Array;
     /** One column-major MAT4 per jointBones entry. */
     inverseBindMatrices: Float32Array;
@@ -482,6 +481,13 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
     const vertexPayload = BASE + vertexNode.data;
     const vertexCount = u8(data, vertexPayload + 6, label);
     const sourcePositions = readVec4Buffer(data, vertexPayload, vertexCount, label);
+    const normalNode = pieceNode.children[2]?.children[0];
+    const sourceNormals = normalNode
+        ? readVec4Buffer(data, BASE + normalNode.data,
+                         u8(data, BASE + normalNode.data + 6, label), label)
+        : null;
+    if (sourceNormals && sourceNormals.length / 4 !== vertexCount)
+        throw new Error(`${label}: ${name} normal count does not match its vertices`);
 
     const influences: Array<Array<[number, number]>> = Array.from({ length: vertexCount }, () => []);
     const weightNodes = byType(pieceNode, 0x31);
@@ -539,6 +545,7 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
     const remap = new Map<string, number>();
     const positions: number[] = [];
     const uvs: number[] = [];
+    const normals: number[] = [];
     const indices: number[] = [];
     const skinIndices: number[] = [];
     const skinWeights: number[] = [];
@@ -553,6 +560,9 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
                     throw new Error(`${label}: triangle references vertex ${corner.vertex}/${vertexCount}`);
                 const source = corner.vertex * 4;
                 positions.push(sourcePositions[source]!, sourcePositions[source + 1]!, sourcePositions[source + 2]!);
+                if (sourceNormals)
+                    normals.push(sourceNormals[source]!, sourceNormals[source + 1]!,
+                                 sourceNormals[source + 2]!);
                 uvs.push(sourceUvs[corner.uv * 2] ?? 0, sourceUvs[corner.uv * 2 + 1] ?? 0);
                 const weighted: Array<[number, number]> = isSkinned
                     ? [...influences[corner.vertex]!].sort((a, b) => b[1] - a[1]).slice(0, 4)
@@ -574,8 +584,9 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
     }
     return {
         name, material,
-        positions: new Float32Array(positions), uvs: new Float32Array(uvs),
-        indices: new Uint32Array(indices), skinIndices: new Uint16Array(skinIndices),
+        positions: new Float32Array(positions), normals: new Float32Array(normals),
+        uvs: new Float32Array(uvs), indices: new Uint32Array(indices),
+        skinIndices: new Uint16Array(skinIndices),
         skinWeights: new Float32Array(skinWeights),
         jointBones: new Uint16Array(jointBones), inverseBindMatrices,
     };

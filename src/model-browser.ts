@@ -141,8 +141,10 @@ function textureFor(packageData: ModelPackage | null, name: string): THREE.DataT
     return texture;
 }
 
+type ModelMaterial = THREE.MeshLambertMaterial | THREE.MeshBasicMaterial;
+
 function materialFor(name: string, packageData: ModelPackage | null,
-                     textureNames: string[]): THREE.MeshLambertMaterial {
+                     textureNames: string[], lit: boolean): ModelMaterial {
     const map = textureFor(packageData, name);
     let zeroAlpha = 0;
     let partialAlpha = 0;
@@ -160,7 +162,7 @@ function materialFor(name: string, packageData: ModelPackage | null,
     const usesMask = zeroAlpha > 0 && visiblePixels > 0;
     const usesBlending = partialAlpha / Math.max(pixelCount, 1) >= 0.05;
     if (map) textureNames.push(name);
-    return new THREE.MeshLambertMaterial({
+    const options = {
         name: name || "unnamed",
         color: map ? 0xffffff : materialColor(name),
         map,
@@ -168,7 +170,10 @@ function materialFor(name: string, packageData: ModelPackage | null,
         transparent: usesBlending,
         alphaTest: usesMask ? (usesBlending ? 0.01 : 0.5) : 0,
         depthWrite: !usesBlending,
-    });
+    };
+    return lit
+        ? new THREE.MeshLambertMaterial(options)
+        : new THREE.MeshBasicMaterial(options);
 }
 
 function buildModel(decoded: DecodedModel, packageData: ModelPackage | null): {
@@ -194,16 +199,18 @@ function buildModel(decoded: DecodedModel, packageData: ModelPackage | null): {
     }
 
     const textureNames: string[] = [];
-    const materials = new Map<string, THREE.MeshLambertMaterial>();
+    const materials = new Map<string, ModelMaterial>();
     for (const source of decoded.meshes) {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.BufferAttribute(source.positions, 3));
         geometry.setAttribute("uv", new THREE.BufferAttribute(source.uvs, 2));
         geometry.setIndex(new THREE.BufferAttribute(source.indices, 1));
-        geometry.computeVertexNormals();
-        const material = materials.get(source.material)
-            ?? materialFor(source.material, packageData, textureNames);
-        materials.set(source.material, material);
+        const lit = source.normals.length === source.positions.length;
+        if (lit) geometry.setAttribute("normal", new THREE.BufferAttribute(source.normals, 3));
+        const materialKey = `${lit ? "lit" : "unlit"}\0${source.material}`;
+        const material = materials.get(materialKey)
+            ?? materialFor(source.material, packageData, textureNames, lit);
+        materials.set(materialKey, material);
         if (source.jointBones.length === 0) {
             const mesh = new THREE.Mesh(geometry, material);
             mesh.name = source.name;
@@ -372,11 +379,10 @@ export class ModelBrowser {
         this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
         this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = 1.15;
+        this.renderer.toneMapping = THREE.NoToneMapping;
+        this.renderer.toneMappingExposure = 1;
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x080b0f);
-        this.scene.fog = new THREE.FogExp2(0x080b0f, 0.0007);
         this.camera = new THREE.PerspectiveCamera(42, 1, 0.001, 100_000);
         this.camera.position.set(2.5, 1.8, 3.5);
         this.controls = new OrbitControls(this.camera, canvas);
@@ -384,13 +390,17 @@ export class ModelBrowser {
         this.controls.dampingFactor = 0.07;
         this.controls.zoomToCursor = true;
         this.controls.screenSpacePanning = true;
-        this.scene.add(new THREE.HemisphereLight(0xd8ecff, 0x18202c, 2.1));
-        const key = new THREE.DirectionalLight(0xffffff, 2.8);
-        key.position.set(4, 7, 5);
-        this.scene.add(key);
-        const rim = new THREE.DirectionalLight(0x52bfff, 1.1);
-        rim.position.set(-5, 2, -4);
-        this.scene.add(rim);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        ambient.name = "AE3_AMBIENT";
+        this.scene.add(ambient);
+        const sun1 = new THREE.DirectionalLight(0xffffff, 0.7);
+        sun1.name = "AE3_SUN1";
+        sun1.position.set(-1, 1, -1);
+        this.scene.add(sun1);
+        const sun2 = new THREE.DirectionalLight(0xffffff, 0.7);
+        sun2.name = "AE3_SUN2";
+        sun2.position.set(1, 1, 1);
+        this.scene.add(sun2);
         const grid = new THREE.GridHelper(20, 20, 0x294455, 0x15232d);
         grid.name = "MODEL_GRID";
         this.scene.add(grid);
@@ -845,6 +855,8 @@ export class ModelBrowser {
             ["SOURCE SIZE", formatBytes(asset.byteLength)],
         ];
         if (loaded?.model) {
+            const litPieces = loaded.model.meshes.filter(mesh =>
+                mesh.normals.length === mesh.positions.length).length;
             rows.push(
                 ["MESH PIECES", loaded.model.meshes.length.toLocaleString()],
                 ["VERTICES", loaded.model.vertexCount.toLocaleString()],
@@ -852,6 +864,9 @@ export class ModelBrowser {
                 ["BONES", loaded.model.bones.length.toLocaleString()],
                 ["MATERIALS", loaded.model.materials.filter(Boolean).join(", ") || "untextured"],
                 ["TEXTURES", loaded.textureNames.join(", ") || "none resolved in package"],
+                ["SHADING", litPieces > 0
+                    ? `GAME FALLBACK LIGHTS · ${litPieces.toLocaleString()} / ${loaded.model.meshes.length.toLocaleString()} PIECES WITH AUTHORED NORMALS`
+                    : "UNLIT · NO AUTHORED NORMALS"],
                 ["ANIMATIONS", loaded.clips.length.toLocaleString()],
             );
         }
@@ -872,7 +887,7 @@ export class ModelBrowser {
             <span class="model-inspector-kicker">${KIND_LABEL[asset.kind]}</span>
             <h2>${escapeMarkup(modelAssetStem(asset))}</h2>
             <dl>${rows.map(([key, value]) => `<div><dt>${escapeMarkup(key)}</dt><dd>${escapeMarkup(value)}</dd></div>`).join("")}</dl>
-            <p class="model-method-note">Geometry, skinning, TIM2 textures, and I3M rotations are decoded locally. Animation-to-model pairing uses exact bone-track names because the level-script association is not yet established.</p>`;
+            <p class="model-method-note">Geometry, skinning, TIM2 textures, authored normals, and I3M rotations are decoded locally. Lit pieces use the retail fallback ambient and two-sun rig; pieces without normals stay unlit. Stage light regions and fog are scene state and are not embedded in an isolated I3D model. Animation pairing uses exact bone-track names.</p>`;
     }
 
     private updateActions(): void {
