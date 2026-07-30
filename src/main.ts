@@ -35,6 +35,7 @@ import {
     type ImageRoleFilter,
 } from "./images.ts";
 import { decodeTim2 } from "./vendor/extract/index.ts";
+import type { ModelBrowser } from "./model-browser.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
@@ -125,7 +126,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 }
 
 /* streams tab */
-let tab: "bgm" | "streams" | "se" | "fmv" | "images" = "bgm";
+let tab: "bgm" | "streams" | "se" | "fmv" | "images" | "models" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
@@ -177,6 +178,18 @@ const DEFAULT_SIDE_WIDTH = 252;
 const MIN_SIDE_WIDTH = 220;
 const SIDE_WIDTH_KEY = "ae3.sideWidth";
 let sideWidth = DEFAULT_SIDE_WIDTH;
+let modelBrowser: ModelBrowser | null = null;
+let modelBrowserLoading: Promise<ModelBrowser> | null = null;
+
+function ensureModelBrowser(): Promise<ModelBrowser> {
+    if (modelBrowser) return Promise.resolve(modelBrowser);
+    modelBrowserLoading ??= import("./model-browser.ts").then(({ ModelBrowser }) => {
+        modelBrowser = new ModelBrowser(status);
+        if (session) modelBrowser.setStore(session.models);
+        return modelBrowser;
+    });
+    return modelBrowserLoading;
+}
 
 
 /* embedded sequenced effects */
@@ -467,6 +480,7 @@ const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u
 const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
+const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · drag orbit · wheel zoom";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -1207,7 +1221,7 @@ async function exportAllImages(): Promise<void> {
     }
 }
 
-function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images"): void {
+function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "models"): void {
     if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
@@ -1215,26 +1229,29 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images"): void {
     $("tab-se").classList.toggle("on", t === "se");
     $("tab-fmv").classList.toggle("on", t === "fmv");
     $("tab-images").classList.toggle("on", t === "images");
+    $("tab-models").classList.toggle("on", t === "models");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
     $("seview").hidden = t !== "se";
     $("fmvview").hidden = t !== "fmv";
     $("imageview").hidden = t !== "images";
+    $("modelview").hidden = t !== "models";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
-    $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images";
+    $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images" || t === "models";
     $("stream-main").hidden = t !== "streams";
     $("se-main").hidden = t !== "se";
     $("fmv-main").hidden = t !== "fmv";
     $("image-main").hidden = t !== "images";
+    $("model-main").hidden = t !== "models";
     $("keys").textContent = t === "bgm"
         ? keysBgmText
         : t === "streams"
             ? KEYS_STREAMS
             : t === "se"
                 ? KEYS_SE
-                : t === "fmv" ? KEYS_FMV : KEYS_IMAGES;
+                : t === "fmv" ? KEYS_FMV : t === "images" ? KEYS_IMAGES : KEYS_MODELS;
     status("");
     viewerRevision++;
     movieController.setActive(t === "fmv" || viewerChannel === "cinema");
@@ -1242,6 +1259,8 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images"): void {
     if (t === "se") void ensureSeCatalog();
     if (t === "fmv") renderFmvStatic(movieController.snapshot());
     if (t === "images") void ensureImageCatalog();
+    if (t === "models") void ensureModelBrowser().then(browser => browser.open());
+    else modelBrowser?.close();
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
@@ -2489,6 +2508,10 @@ function onKey(e: KeyboardEvent): void {
         if (e.key === "Escape") target.blur();
         return;
     }
+    if (tab === "models") {
+        if (modelBrowser?.handleKey(e)) e.preventDefault();
+        return;
+    }
     if (tab === "images") {
         let handled = true;
         const current = imageRows.findIndex(entry => entry.id === imageSelected?.id);
@@ -3096,6 +3119,7 @@ export function viewerChooseDisc(): void {
 async function enterPlayer(s: DiscSession): Promise<void> {
     session = s;
     await movieController.connect(s);
+    modelBrowser?.setStore(s.models);
     $("picker").hidden = true;
     $("app").hidden = false;
     $("disc-id").textContent =
@@ -3284,6 +3308,7 @@ async function main(): Promise<void> {
     $("tab-se").onclick = () => switchTab("se");
     $("tab-fmv").onclick = () => switchTab("fmv");
     $("tab-images").onclick = () => switchTab("images");
+    $("tab-models").onclick = () => switchTab("models");
     $("imagelist").addEventListener("click", event => {
         const target = event.target as Element;
         const button = target.closest<HTMLButtonElement>("[data-image-id]");

@@ -5,8 +5,9 @@ your own game disc image and it extracts everything it needs in the browser.
 Nothing is uploaded, and the repository ships no game data.
 
 The app plays the game's sequenced music, streamed audio, embedded sound
-effects, and all 22 full-motion videos, and browses every TIM2 image and sprite
-sheet. Sequenced audio runs through a WebAssembly build of the
+effects, and all 22 full-motion videos; browses every TIM2 image and sprite
+sheet; and previews the complete I3D model, skeletal-animation, and collision
+archive. Sequenced audio runs through a WebAssembly build of the
 [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer.
 
 ## Music and audio
@@ -69,6 +70,24 @@ source containers stay in the disc's OPFS cache for later ISO-free browsing
 without creating one browser file per texture.
 Declared TIM2 dimensions are preserved exactly: transparent margins authored
 into a texture or sprite sheet are displayed and exported rather than cropped.
+
+## Models, animation, and collision
+
+The 3D tab catalogs 7,345 models, 8,404 animation files, and 2,254 collision
+meshes from the US retail disc. The SDK executes the model's PS2 VIF packets,
+reconstructs geometry, materials, bone hierarchies, skin weights, inverse bind
+matrices, and I3M quaternion tracks, and resolves TIM2 materials within the
+model's own package. Three.js renders the result with orbit controls, framing,
+wireframe, grid, skeleton, playback, and timeline controls.
+
+Selecting a model lists every compatible animation in its package. Selecting an
+animation finds a compatible skeleton by exact track and bone names, including
+models in other packages, and labels that inferred association in the
+inspector. Camera and other non-skeletal I3M channels remain extractable but are
+not treated as bone rotations. Collision files render as translucent wireframe
+triangle meshes. Every item exports in its byte-exact source format; rendered
+models, collision, and paired animation also export as binary glTF (`.glb`) with
+textures, skinning, and animation embedded.
 
 ## FMV playback and export
 

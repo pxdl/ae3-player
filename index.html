@@ -27,6 +27,7 @@
         <button id="tab-se" class="tab" title="Embedded sequenced sound effects through the shared SPU2 synth">SE</button>
         <button id="tab-fmv" class="tab" title="Original FMV movies, source metadata, playback, captions, and exports">FMV</button>
         <button id="tab-images" class="tab" title="TIM2 textures and sprite sheets from every game package">IMAGES</button>
+        <button id="tab-models" class="tab" title="I3D models, skeletal animation, textures, and collision">3D</button>
       </div>
       <ul id="songlist"></ul>
       <div id="streamview" hidden>
@@ -62,6 +63,19 @@
         </div>
         <div id="image-result-count" aria-live="polite"></div>
         <ul id="imagelist" aria-label="Images and sprite sheets"></ul>
+      </div>
+      <div id="modelview" hidden>
+        <label class="search-label" for="model-search">FILTER 3D ARCHIVE</label>
+        <input id="model-search" type="search" placeholder="model, animation, package"
+          spellcheck="false" autocomplete="off" />
+        <select id="model-kind" aria-label="3D asset category">
+          <option value="all">ALL 3D ASSETS</option>
+          <option value="model">MODELS</option>
+          <option value="animation">ANIMATIONS</option>
+          <option value="collision">COLLISION</option>
+        </select>
+        <div id="model-result-count" aria-live="polite"></div>
+        <ul id="modellist" aria-label="Models, animations, and collision meshes"></ul>
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
@@ -355,6 +369,59 @@
           </div>
         </div>
       </section>
+      <section id="model-main" hidden>
+        <header id="model-head">
+          <div>
+            <span class="model-kicker">SG2 / I3D ASSET STAGE</span>
+            <h2>MODELS &amp; ANIMATION</h2>
+          </div>
+          <div id="model-actions">
+            <button id="model-export-source" type="button" disabled>EXPORT SOURCE</button>
+            <button id="model-export-glb" type="button" disabled>EXPORT .GLB</button>
+          </div>
+        </header>
+        <div id="model-workspace" hidden>
+          <section id="model-viewport" aria-label="Realtime 3D model preview">
+            <canvas id="model-canvas"></canvas>
+            <div id="model-toolbar" aria-label="3D view controls">
+              <button id="model-reset-view" type="button">FRAME</button>
+              <button id="model-wireframe" type="button">WIREFRAME</button>
+              <button id="model-grid" class="on" type="button">GRID</button>
+              <button id="model-skeleton" type="button">SKELETON</button>
+            </div>
+            <div id="model-animation-bar">
+              <button id="model-anim-play" type="button" disabled>PLAY</button>
+              <select id="model-animation" aria-label="Animation preview" disabled>
+                <option value="-1">BIND POSE</option>
+              </select>
+              <input id="model-anim-time" type="range" min="0" max="1" step="0.001"
+                value="0" aria-label="Animation time" disabled />
+              <output id="model-anim-readout">0.00 / 0.00 s</output>
+            </div>
+            <p id="model-empty">Select a model, animation, or collision mesh.</p>
+            <p id="model-loading" hidden>DECODING I3D…</p>
+          </section>
+          <aside id="model-inspector">
+            <div class="model-empty">Select a 3D asset to inspect its source metadata.</div>
+          </aside>
+        </div>
+        <div id="model-setup">
+          <div id="model-setup-card">
+            <span class="model-kicker">7,345 MODELS / RETAIL DISC</span>
+            <h2>BUILD THE 3D ARCHIVE</h2>
+            <p>Scan every I3D model, skeletal animation, and collision mesh in
+              <code>DATA.BIN</code>. Models are rendered locally with their TIM2 textures,
+              skinning, and compatible package animations. Nothing leaves this browser.</p>
+            <button id="model-extract" type="button">SCAN 3D ARCHIVE</button>
+            <label id="model-iso-pick" hidden>
+              <input id="model-iso" type="file" accept=".iso,application/x-iso9660-image" />
+              <span>reconnect the same disc to load uncached 3D packages</span>
+            </label>
+            <p id="model-setup-status"></p>
+            <progress id="model-progress" max="1" value="0" hidden></progress>
+          </div>
+        </div>
+      </section>
       <footer id="foot">
         <div id="foot-stats">
           <span id="stats-line"></span>
@@ -510,7 +577,8 @@
     <div id="picker-card">
       <h1>AE3 Asset Lab</h1>
       <p>Point this page at your own <em>Ape Escape 3</em> disc image
-        (<code>.iso</code>). Explore music, streams, sound effects, movies, and images
+        (<code>.iso</code>). Explore music, streams, sound effects, movies, images,
+        models, collision, and skeletal animation
         extracted <strong>in your browser</strong>. Nothing is uploaded, and
         this site ships no game data.</p>
       <label id="drop">

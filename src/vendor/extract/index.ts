@@ -22,6 +22,13 @@ export { inspectTim2, decodeTim2,
 export { locateImageContainers, scanImageTextures, readImageTexture,
          type ImageTexture, type ImageScanOptions, type ImageRole,
          type ImageRoleEvidence } from "./images.ts";
+export {
+    locateModelContainers, scanModelAssets, readModelAsset, readModelPackage,
+    inspectI3dModel, decodeI3dModel, decodeI3dAnimation, decodeI3dCollision,
+    type ModelAssetKind, type ModelAsset, type ModelScanOptions,
+    type ModelInspection, type DecodedBone, type DecodedMesh, type DecodedModel,
+    type DecodedAnimationTrack, type DecodedAnimation, type DecodedCollision,
+} from "./models.ts";
 export { parseExdb, bgmDescRecords, bgmSongTable, natcmp,
          type Exdb, type ExdbField, type BgmDescRecord, type BgmSong } from "./exdb.ts";
 export { openDisc, locateBgmAssets, loadBgmDesc, readPckMember, sniff,

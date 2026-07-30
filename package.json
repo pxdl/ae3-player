@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Client-side Ape Escape 3 music, sound, and FMV player with local extraction, conversion, and offline caching.",
+  "description": "Client-side Ape Escape 3 asset lab for audio, FMV, images, I3D models, skeletal animation, and collision.",
   "scripts": {
     "postinstall": "node scripts/patch-mediabunny-mpeg2.mjs",
     "dev": "vite",
@@ -15,10 +15,12 @@
     "sync-sdk": "sh scripts/sync-sdk.sh"
   },
   "devDependencies": {
+    "@types/three": "^0.185.1",
     "typescript": "^5.7.0",
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "mediabunny": "^1.50.9"
+    "mediabunny": "^1.50.9",
+    "three": "^0.185.1"
   }
 }
