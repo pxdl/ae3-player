@@ -17,6 +17,11 @@ export { Vfi, type VfiEntry, VFI_MAGIC, VFI_SECTOR } from "./vfi.ts";
 export { inflateSz } from "./sz.ts";
 export { unpackPck, memberBytes, typeOf, attrsOf, safeMember, pckFileNames,
          type PckMember } from "./pck.ts";
+export { inspectTim2, decodeTim2,
+         type Tim2PictureInfo, type Tim2Image } from "./tim2.ts";
+export { locateImageContainers, scanImageTextures, readImageTexture,
+         type ImageTexture, type ImageScanOptions, type ImageRole,
+         type ImageRoleEvidence } from "./images.ts";
 export { parseExdb, bgmDescRecords, bgmSongTable, natcmp,
          type Exdb, type ExdbField, type BgmDescRecord, type BgmSong } from "./exdb.ts";
 export { openDisc, locateBgmAssets, loadBgmDesc, readPckMember, sniff,

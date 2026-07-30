@@ -30,12 +30,14 @@ export interface SeExportOpts {
 const base = import.meta.env.BASE_URL;
 
 /** Deliver `bytes` to the user as a file download. */
-export function download(bytes: Uint8Array | ArrayBuffer, file: string,
+export function download(bytes: Uint8Array | ArrayBuffer | Blob, file: string,
                          type: string): void {
     /* BlobPart wants ArrayBuffer-backed views; ours always are (OPFS reads,
      * worker transfers) -- TS just can't see it through Uint8Array's default
-     * ArrayBufferLike parameter */
-    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+     * ArrayBufferLike parameter. Large archive exporters pass a Blob directly
+     * to avoid copying the complete archive into another contiguous buffer. */
+    const blob = bytes instanceof Blob ? bytes : new Blob([bytes as BlobPart], { type });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = file;

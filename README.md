@@ -5,8 +5,9 @@ your own game disc image and it extracts everything it needs in the browser.
 Nothing is uploaded, and the repository ships no game data.
 
 The app plays the game's sequenced music, streamed audio, embedded sound
-effects, and all 22 full-motion videos. Sequenced audio runs through a
-WebAssembly build of the [ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer.
+effects, and all 22 full-motion videos, and browses every TIM2 image and sprite
+sheet. Sequenced audio runs through a WebAssembly build of the
+[ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer.
 
 ## Music and audio
 
@@ -40,6 +41,30 @@ Infinite stream jumps can either loop or run once. Sample loops stay identified
 even when their envelopes are finite, and velocity-zero stop requests are shown
 as controls rather than silent effects. WAV export can render one pass or stop
 at 10, 30, or 60 seconds. Raw `.hd` and `.bd` bank export is also available.
+
+## Images and sprite sheets
+
+The Images tab scans direct TIM2 files and every TIM2 member of the disc's
+compressed PCK packages. The searchable catalog preserves the package path,
+member attributes, picture count, dimensions, pixel format, and original byte
+size. A lazy thumbnail grid is the default; a dense flat list and a
+source-hierarchy tree provide alternate views. Grid and list results append
+automatically near the end of the scroll, while tree folders populate only
+when opened.
+Category filters separate UI/sprites referenced by UIS layouts from 3D
+textures referenced by I3D models. Package context fills clear single-purpose
+cases; ambiguous assets stay under Other, and the inspector shows the evidence
+used for each classification.
+
+Previews decode locally from IDTEX4, IDTEX8, RGBA16, RGB24, or RGBA32 into a
+checkerboard canvas. The decoder linearizes GS CSM1 palettes and expands the
+PS2 0..128 alpha range to browser RGBA. A selected picture exports as PNG or as
+its byte-exact source `.tm2`; Export All PNG preserves the package hierarchy in
+one ZIP and avoids a second archive-sized memory copy. Multi-picture TIM2 files
+produce one catalog row and PNG per picture. Completed scans and source
+textures stay in the disc's OPFS cache for later ISO-free browsing.
+Declared TIM2 dimensions are preserved exactly: transparent margins authored
+into a texture or sprite sheet are displayed and exported rather than cropped.
 
 ## FMV playback and export
 

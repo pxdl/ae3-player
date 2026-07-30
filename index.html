@@ -26,6 +26,7 @@
         <button id="tab-streams" class="tab" title="Streamed audio -- phone calls, cutscene voice, minigame music">STREAMS</button>
         <button id="tab-se" class="tab" title="Embedded sequenced sound effects through the shared SPU2 synth">SE</button>
         <button id="tab-fmv" class="tab" title="Original FMV movies, source metadata, playback, captions, and exports">FMV</button>
+        <button id="tab-images" class="tab" title="TIM2 textures and sprite sheets from every game package">IMAGES</button>
       </div>
       <ul id="songlist"></ul>
       <div id="streamview" hidden>
@@ -41,6 +42,26 @@
         <input id="fmv-search" type="search" placeholder="label, filename, or path"
           spellcheck="false" autocomplete="off" />
         <ul id="fmvlist" aria-label="Movies"></ul>
+      </div>
+      <div id="imageview" hidden>
+        <label class="search-label" for="image-search">FILTER IMAGES</label>
+        <input id="image-search" type="search" placeholder="name, package, or attributes"
+          spellcheck="false" autocomplete="off" />
+        <div id="image-browser-controls">
+          <select id="image-role" aria-label="Image category">
+            <option value="all">ALL ASSETS</option>
+            <option value="sprite">UI / SPRITES</option>
+            <option value="texture">3D TEXTURES</option>
+            <option value="other">OTHER</option>
+          </select>
+          <div id="image-view-switch" role="group" aria-label="Image display">
+            <button type="button" data-image-view="grid" aria-pressed="true">GRID</button>
+            <button type="button" data-image-view="list" aria-pressed="false">LIST</button>
+            <button type="button" data-image-view="tree" aria-pressed="false">TREE</button>
+          </div>
+        </div>
+        <div id="image-result-count" aria-live="polite"></div>
+        <ul id="imagelist" aria-label="Images and sprite sheets"></ul>
       </div>
       <div id="side-foot">
         <span id="disc-id"></span>
@@ -294,6 +315,43 @@
           </div>
         </section>
       </section>
+      <section id="image-main" hidden>
+        <header id="image-head">
+          <div>
+            <span class="image-kicker">DISC ART / TIM2</span>
+            <h2>IMAGES &amp; SPRITE SHEETS</h2>
+          </div>
+          <div id="image-actions">
+            <button id="image-export-png" type="button" disabled>EXPORT PNG</button>
+            <button id="image-export-tm2" type="button" disabled>EXPORT .TM2</button>
+            <button id="image-export-all" type="button" disabled>EXPORT ALL PNG</button>
+          </div>
+        </header>
+        <div id="image-workspace">
+          <section id="image-preview" aria-label="Selected image preview">
+            <canvas id="image-canvas"></canvas>
+            <p id="image-empty">Select an image or sprite sheet.</p>
+          </section>
+          <aside id="image-inspector">
+            <div class="image-empty">Select an image to inspect its source metadata.</div>
+          </aside>
+        </div>
+        <div id="image-setup" hidden>
+          <div id="image-setup-card">
+            <h2>IMAGE &amp; SPRITE ARCHIVE</h2>
+            <p>Scan every TIM2 texture stored directly in <code>DATA.BIN</code> and
+              inside its compressed PCK packages. Source textures stay in private
+              browser storage; previews and PNG exports are decoded locally.</p>
+            <button id="image-extract">scan image archive</button>
+            <label id="image-iso-pick" hidden>
+              <input id="image-iso" type="file" accept=".iso,application/x-iso9660-image" />
+              <span>reconnect the same disc once to scan its image packages</span>
+            </label>
+            <p id="image-setup-status"></p>
+            <progress id="image-progress" max="1" value="0" hidden></progress>
+          </div>
+        </div>
+      </section>
       <footer id="foot">
         <div id="foot-stats">
           <span id="stats-line"></span>
@@ -449,7 +507,7 @@
     <div id="picker-card">
       <h1>AE3 Asset Lab</h1>
       <p>Point this page at your own <em>Ape Escape 3</em> disc image
-        (<code>.iso</code>). Explore music, streams, sound effects, and movies
+        (<code>.iso</code>). Explore music, streams, sound effects, movies, and images
         extracted <strong>in your browser</strong>. Nothing is uploaded, and
         this site ships no game data.</p>
       <label id="drop">

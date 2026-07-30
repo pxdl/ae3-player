@@ -81,3 +81,72 @@ export function storeZip(entries: [name: string, data: Uint8Array][]): Uint8Arra
     v.setUint16(p, 0, true); p += 2;                    /* comment len */
     return out;
 }
+
+/** Build a store-only ZIP as Blob parts, avoiding a second archive-sized copy.
+ *  Intended for large exports whose already-compressed payloads dominate RAM. */
+export function storeZipBlob(entries: [name: string, data: Uint8Array][]): Blob {
+    if (entries.length > 0xffff)
+        throw new Error(`ZIP has ${entries.length} files; ZIP32 supports at most 65535`);
+    const enc = new TextEncoder();
+    const parts: BlobPart[] = [];
+    const files: Array<{
+        name: Uint8Array;
+        size: number;
+        crc: number;
+        offset: number;
+    }> = [];
+    let offset = 0;
+    for (const [path, data] of entries) {
+        if (data.length > 0xffffffff)
+            throw new Error(`${path}: file is too large for ZIP32`);
+        const name = enc.encode(path);
+        const header = new Uint8Array(30 + name.length);
+        const view = new DataView(header.buffer);
+        view.setUint32(0, 0x04034b50, true);
+        view.setUint16(4, 20, true);
+        view.setUint16(6, 0x0800, true);                // UTF-8 names
+        view.setUint16(12, 0x21, true);                // 1980-01-01
+        const crc = crc32(data);
+        view.setUint32(14, crc, true);
+        view.setUint32(18, data.length, true);
+        view.setUint32(22, data.length, true);
+        view.setUint16(26, name.length, true);
+        header.set(name, 30);
+        files.push({ name, size: data.length, crc, offset });
+        parts.push(header, data as BlobPart);
+        offset += header.length + data.length;
+        if (offset > 0xffffffff)
+            throw new Error("ZIP payload exceeds the 4 GiB ZIP32 limit");
+    }
+
+    const centralStart = offset;
+    for (const file of files) {
+        const entry = new Uint8Array(46 + file.name.length);
+        const view = new DataView(entry.buffer);
+        view.setUint32(0, 0x02014b50, true);
+        view.setUint16(4, 20, true);
+        view.setUint16(6, 20, true);
+        view.setUint16(8, 0x0800, true);
+        view.setUint16(14, 0x21, true);
+        view.setUint32(16, file.crc, true);
+        view.setUint32(20, file.size, true);
+        view.setUint32(24, file.size, true);
+        view.setUint16(28, file.name.length, true);
+        view.setUint32(42, file.offset, true);
+        entry.set(file.name, 46);
+        parts.push(entry);
+        offset += entry.length;
+    }
+    const centralSize = offset - centralStart;
+    if (centralSize > 0xffffffff)
+        throw new Error("ZIP directory exceeds the ZIP32 limit");
+    const end = new Uint8Array(22);
+    const view = new DataView(end.buffer);
+    view.setUint32(0, 0x06054b50, true);
+    view.setUint16(8, files.length, true);
+    view.setUint16(10, files.length, true);
+    view.setUint32(12, centralSize, true);
+    view.setUint32(16, centralStart, true);
+    parts.push(end);
+    return new Blob(parts, { type: "application/zip" });
+}

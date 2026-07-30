@@ -6,9 +6,9 @@
 #   @ae3/synth    -> public/synth/         (binding .mjs + .wasm, served verbatim:
 #                    the AudioWorklet loads them unbundled -- see public/synth/README)
 #
-# Source checkout: $AE3_SDK, or the private repo's submodule next to this clone.
+# Source checkout: $AE3_SDK, or the standalone ae3-sdk clone beside this repo.
 set -eu
-SDK="${AE3_SDK:-$(dirname "$0")/../../ape-escape-3-recreation/ae3-sdk}"
+SDK="${AE3_SDK:-$(dirname "$0")/../../ae3-sdk}"
 DST="$(dirname "$0")/.."
 [ -f "$SDK/wasm/dist/ae3synth.wasm" ] || {
     echo "no SDK at $SDK (set AE3_SDK, and 'make' in wasm/ if dist is missing)" >&2

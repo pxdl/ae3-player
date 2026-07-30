@@ -9,7 +9,7 @@ import { WorkletPlayer, RATE, type EngineConfig, type Snapshot } from "./player.
 import { buildTimeline, displayPos, bpmOf, midiDurationSamples, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
 import { Exporter, download, type ExportOpts, type SeExportOpts } from "./export.ts";
-import { storeZip } from "./zip.ts";
+import { storeZip, storeZipBlob } from "./zip.ts";
 import { groupStreams, StreamDecoder, StreamPlayer,
          type StreamCatalog, type StreamEntry } from "./streams.ts";
 import { StreamViz } from "./sviz.ts";
@@ -24,6 +24,17 @@ import {
     movieSourceComplete,
 } from "./movie-presentation.ts";
 import type { MovieEntry, MovieExportKind } from "./movies.ts";
+import {
+    filterImageEntries,
+    imageEntries,
+    imageExportPath,
+    imagePng,
+    imageTreePath,
+    type ImageCatalog,
+    type ImageEntry,
+    type ImageRoleFilter,
+} from "./images.ts";
+import { decodeTim2 } from "./vendor/extract/index.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
@@ -114,7 +125,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 }
 
 /* streams tab */
-let tab: "bgm" | "streams" | "se" | "fmv" = "bgm";
+let tab: "bgm" | "streams" | "se" | "fmv" | "images" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
@@ -142,6 +153,26 @@ let fmvGlyph = "";
 let fmvVisibleNames: string[] = [];
 let fmvRenderedSearch = "";
 let fmvRenderedEntryName: string | null = null;
+let imageCatalog: ImageCatalog | null = null;
+let imageAllRows: ImageEntry[] = [];
+let imageEntryById = new Map<string, ImageEntry>();
+let imageRows: ImageEntry[] = [];
+let imageSelected: ImageEntry | null = null;
+type ImageViewMode = "grid" | "list" | "tree";
+let imageViewMode: ImageViewMode = "grid";
+let imageVisibleLimit = 120;
+let imageLoadGeneration = 0;
+let imageRenderGeneration = 0;
+let imageListObserver: IntersectionObserver | null = null;
+let imageThumbnailObserver: IntersectionObserver | null = null;
+let imageThumbnailQueue: Array<{
+    canvas: HTMLCanvasElement;
+    entry: ImageEntry;
+    generation: number;
+}> = [];
+let imageThumbnailActive = 0;
+let imageExtracting = false;
+let imageExporting = false;
 
 /* embedded sequenced effects */
 type SeRow =
@@ -430,6 +461,7 @@ const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u
     + "\u00B7 R reverb \u00B7 E wav \u00B7 X bank \u00B7 click bar/score to seek \u00B7 H help";
 const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
+const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -664,35 +696,541 @@ function exitFmvFullscreen(): boolean {
     return true;
 }
 
-function switchTab(t: "bgm" | "streams" | "se" | "fmv"): void {
+/* ---- image and sprite gallery ------------------------------------------ */
+const IMAGE_TYPE_LABELS: Record<number, string> = {
+    1: "RGBA16", 2: "RGB24", 3: "RGBA32", 4: "IDTEX4", 5: "IDTEX8",
+};
+
+function updateImageActions(): void {
+    const disabled = imageSelected === null || imageExporting;
+    $<HTMLButtonElement>("image-export-png").disabled = disabled;
+    $<HTMLButtonElement>("image-export-tm2").disabled = disabled;
+    $<HTMLButtonElement>("image-export-all").disabled =
+        !imageCatalog?.textures.some(texture => texture.pictures.length > 0)
+        || imageExporting;
+}
+
+const IMAGE_ROLE_LABELS: Record<ImageRoleFilter, string> = {
+    all: "All assets",
+    sprite: "UI / sprites",
+    texture: "3D textures",
+    other: "Other",
+};
+const IMAGE_EVIDENCE_LABELS: Record<string, string> = {
+    "ui-reference": "Referenced by a UIS layout",
+    "model-reference": "Referenced by an I3D model",
+    "ui-package": "Packaged with UIS layouts",
+    "model-package": "Packaged with I3D models",
+    direct: "Direct TIM2 file",
+    unclassified: "No UIS or I3D reference",
+};
+const IMAGE_COLLATOR = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+});
+const IMAGE_THUMBNAIL_CACHE_LIMIT = 256;
+const imageThumbnailCache = new Map<string, ImageData>();
+
+interface ImageTreeNode {
+    name: string;
+    count: number;
+    children: Map<string, ImageTreeNode>;
+    entries: ImageEntry[];
+}
+
+function imageTitle(entry: ImageEntry): string {
+    return entry.texture.fileName.replace(/\.tm2$/i, "")
+        + (entry.texture.pictures.length > 1 ? ` · ${entry.pictureIndex + 1}` : "");
+}
+
+function createImageItem(entry: ImageEntry,
+                         mode: ImageViewMode): HTMLLIElement {
+    const item = document.createElement("li");
+    item.className = `image-row image-${mode}-row`;
+    item.classList.toggle("selected", entry.id === imageSelected?.id);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.imageId = entry.id;
+    button.title = `${entry.texture.sourcePath} · ${entry.width}×${entry.height}`;
+
+    const copy = document.createElement("span");
+    copy.className = "image-row-copy";
+    const title = document.createElement("strong");
+    title.textContent = imageTitle(entry);
+    const detail = document.createElement("small");
+    if (mode === "grid") {
+        detail.textContent =
+            `${IMAGE_ROLE_LABELS[entry.texture.role]} · ${entry.width}×${entry.height}`;
+    } else if (mode === "tree") {
+        detail.textContent = `${entry.width}×${entry.height}`;
+    } else {
+        detail.textContent = entry.texture.sourcePath;
+    }
+    copy.append(title, detail);
+
+    if (mode === "grid") {
+        const canvas = document.createElement("canvas");
+        canvas.className = "image-thumbnail";
+        canvas.dataset.imageThumbnail = entry.id;
+        canvas.width = 1;
+        canvas.height = 1;
+        canvas.setAttribute("aria-hidden", "true");
+        button.append(canvas, copy);
+    } else {
+        const meta = document.createElement("span");
+        meta.className = "image-row-meta";
+        const role = document.createElement("span");
+        role.className = `image-role image-role-${entry.texture.role}`;
+        role.textContent = IMAGE_ROLE_LABELS[entry.texture.role];
+        const size = document.createElement("span");
+        size.className = "image-size";
+        size.textContent = `${entry.width}×${entry.height}`;
+        meta.append(role, size);
+        button.append(copy, meta);
+    }
+    item.append(button);
+    return item;
+}
+
+function cacheImageThumbnail(id: string, image: ImageData): void {
+    if (imageThumbnailCache.has(id)) imageThumbnailCache.delete(id);
+    imageThumbnailCache.set(id, image);
+    if (imageThumbnailCache.size <= IMAGE_THUMBNAIL_CACHE_LIMIT) return;
+    const oldest = imageThumbnailCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) imageThumbnailCache.delete(oldest);
+}
+
+async function renderImageThumbnail(canvas: HTMLCanvasElement,
+                                    entry: ImageEntry,
+                                    generation: number): Promise<void> {
+    const cached = imageThumbnailCache.get(entry.id);
+    if (cached) {
+        imageThumbnailCache.delete(entry.id);
+        imageThumbnailCache.set(entry.id, cached);
+        canvas.width = cached.width;
+        canvas.height = cached.height;
+        canvas.getContext("2d")?.putImageData(cached, 0, 0);
+        canvas.classList.add("ready");
+        return;
+    }
+    const source = await session?.images.read(entry.texture);
+    if (!source) throw new Error(`${entry.texture.fileName}: source texture is unavailable`);
+    const decoded = decodeTim2(source, entry.pictureIndex);
+    if (generation !== imageRenderGeneration || !canvas.isConnected) return;
+
+    const scale = Math.min(112 / decoded.width, 84 / decoded.height, 1);
+    const width = Math.max(1, Math.round(decoded.width * scale));
+    const height = Math.max(1, Math.round(decoded.height * scale));
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = decoded.width;
+    sourceCanvas.height = decoded.height;
+    const sourceContext = sourceCanvas.getContext("2d");
+    const context = canvas.getContext("2d");
+    if (!sourceContext || !context) throw new Error("2D canvas is unavailable");
+    sourceContext.putImageData(new ImageData(
+        new Uint8ClampedArray(decoded.rgba),
+        decoded.width,
+        decoded.height,
+    ), 0, 0);
+    canvas.width = width;
+    canvas.height = height;
+    context.imageSmoothingEnabled = false;
+    context.drawImage(sourceCanvas, 0, 0, width, height);
+    const thumbnail = context.getImageData(0, 0, width, height);
+    cacheImageThumbnail(entry.id, thumbnail);
+    canvas.classList.add("ready");
+}
+
+function pumpImageThumbnailQueue(): void {
+    while (imageThumbnailActive < 4 && imageThumbnailQueue.length > 0) {
+        const job = imageThumbnailQueue.shift()!;
+        if (job.generation !== imageRenderGeneration || !job.canvas.isConnected) continue;
+        imageThumbnailActive++;
+        void renderImageThumbnail(job.canvas, job.entry, job.generation)
+            .catch(error => {
+                job.canvas.classList.add("failed");
+                job.canvas.title = friendlyError(error);
+                console.warn("image thumbnail failed", error);
+            })
+            .finally(() => {
+                imageThumbnailActive--;
+                pumpImageThumbnailQueue();
+            });
+    }
+}
+
+function observeImageThumbnails(list: HTMLElement, generation: number): void {
+    imageThumbnailObserver?.disconnect();
+    imageThumbnailObserver = new IntersectionObserver(records => {
+        for (const record of records) {
+            if (!record.isIntersecting) continue;
+            const canvas = record.target as HTMLCanvasElement;
+            imageThumbnailObserver?.unobserve(canvas);
+            const entry = imageEntryById.get(canvas.dataset.imageThumbnail ?? "");
+            if (entry) imageThumbnailQueue.push({ canvas, entry, generation });
+        }
+        pumpImageThumbnailQueue();
+    }, { root: list, rootMargin: "240px 0px" });
+    for (const canvas of list.querySelectorAll<HTMLCanvasElement>("[data-image-thumbnail]"))
+        imageThumbnailObserver.observe(canvas);
+}
+
+function buildImageTree(entries: ImageEntry[]): ImageTreeNode {
+    const root: ImageTreeNode = {
+        name: "",
+        count: 0,
+        children: new Map(),
+        entries: [],
+    };
+    for (const entry of entries) {
+        const segments = imageTreePath(entry).split("/").filter(Boolean);
+        let node = root;
+        node.count++;
+        for (const segment of segments.slice(0, -1)) {
+            let child = node.children.get(segment);
+            if (!child) {
+                child = { name: segment, count: 0, children: new Map(), entries: [] };
+                node.children.set(segment, child);
+            }
+            child.count++;
+            node = child;
+        }
+        node.entries.push(entry);
+    }
+    return root;
+}
+
+function populateImageTree(parent: HTMLElement, node: ImageTreeNode): void {
+    const children = [...node.children.values()]
+        .sort((left, right) => IMAGE_COLLATOR.compare(left.name, right.name));
+    for (const child of children) {
+        const item = document.createElement("li");
+        item.className = "image-tree-folder";
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const name = document.createElement("span");
+        name.textContent = child.name;
+        const count = document.createElement("small");
+        count.textContent = child.count.toLocaleString();
+        summary.append(name, count);
+        const nested = document.createElement("ul");
+        nested.className = "image-tree-children";
+        details.append(summary, nested);
+        details.addEventListener("toggle", () => {
+            if (!details.open || details.dataset.loaded) return;
+            details.dataset.loaded = "true";
+            populateImageTree(nested, child);
+        });
+        item.append(details);
+        parent.append(item);
+    }
+    for (const entry of [...node.entries]
+        .sort((left, right) => IMAGE_COLLATOR.compare(imageTitle(left), imageTitle(right))))
+        parent.append(createImageItem(entry, "tree"));
+}
+
+function observeImageListEnd(list: HTMLElement, generation: number): void {
+    imageListObserver?.disconnect();
+    const sentinel = list.querySelector("[data-image-sentinel]");
+    if (!sentinel) return;
+    imageListObserver = new IntersectionObserver(records => {
+        if (generation !== imageRenderGeneration
+            || !records.some(record => record.isIntersecting)) return;
+        imageVisibleLimit += imageViewMode === "grid" ? 120 : 300;
+        renderImageList();
+    }, { root: list, rootMargin: "320px 0px" });
+    imageListObserver.observe(sentinel);
+}
+
+function renderImageList(): void {
+    const list = $("imagelist");
+    imageRenderGeneration++;
+    const generation = imageRenderGeneration;
+    imageListObserver?.disconnect();
+    imageThumbnailObserver?.disconnect();
+    imageThumbnailQueue = [];
+    if (!imageCatalog) {
+        imageAllRows = [];
+        imageRows = [];
+        imageEntryById.clear();
+        list.replaceChildren();
+        $("image-result-count").textContent = "";
+        updateImageActions();
+        return;
+    }
+
+    const query = $<HTMLInputElement>("image-search").value;
+    const role = $<HTMLSelectElement>("image-role").value as ImageRoleFilter;
+    imageRows = filterImageEntries(imageAllRows, query, role);
+    list.className = `image-${imageViewMode}`;
+    const previousScroll = list.scrollTop;
+    list.replaceChildren();
+
+    if (!imageRows.length) {
+        const item = document.createElement("li");
+        item.className = "fmv-list-message";
+        item.textContent = query || role !== "all"
+            ? "No images match these filters."
+            : "No TIM2 images found.";
+        list.append(item);
+    } else if (imageViewMode === "tree") {
+        populateImageTree(list, buildImageTree(imageRows));
+    } else {
+        const visible = imageRows.slice(0, imageVisibleLimit);
+        list.append(...visible.map(entry => createImageItem(entry, imageViewMode)));
+        if (visible.length < imageRows.length) {
+            const sentinel = document.createElement("li");
+            sentinel.className = "image-list-sentinel";
+            sentinel.dataset.imageSentinel = "true";
+            sentinel.textContent =
+                `${(imageRows.length - visible.length).toLocaleString()} more`;
+            list.append(sentinel);
+        }
+        observeImageListEnd(list, generation);
+        if (imageViewMode === "grid") observeImageThumbnails(list, generation);
+    }
+    list.scrollTop = previousScroll;
+    const shown = imageViewMode === "tree"
+        ? imageRows.length
+        : Math.min(imageRows.length, imageVisibleLimit);
+    $("image-result-count").textContent = imageViewMode === "tree"
+        ? `${imageRows.length.toLocaleString()} assets · source hierarchy`
+        : `${shown.toLocaleString()} of ${imageRows.length.toLocaleString()} assets`;
+    updateImageActions();
+}
+
+function markImageSelection(id: string): void {
+    for (const item of $("imagelist").querySelectorAll(".image-row.selected"))
+        item.classList.remove("selected");
+    const button = $("imagelist").querySelector<HTMLButtonElement>(
+        `[data-image-id="${CSS.escape(id)}"]`,
+    );
+    button?.closest(".image-row")?.classList.add("selected");
+}
+
+function renderImageInspector(entry: ImageEntry): void {
+    const inspector = $("image-inspector");
+    const dl = document.createElement("dl");
+    const fields: Array<[string, string]> = [
+        ["Name", entry.texture.fileName],
+        ["Picture", `${entry.pictureIndex + 1} of ${entry.texture.pictures.length}`],
+        ["Dimensions", `${entry.width} × ${entry.height}`],
+        ["Pixel format", IMAGE_TYPE_LABELS[entry.imageType] ?? `type ${entry.imageType}`],
+        ["Usage", IMAGE_ROLE_LABELS[entry.texture.role]],
+        ["Classification",
+         IMAGE_EVIDENCE_LABELS[entry.texture.roleEvidence] ?? entry.texture.roleEvidence],
+        ["Source bytes", entry.texture.byteLength.toLocaleString()],
+        ["Package", entry.texture.sourcePath],
+        ["Member", entry.texture.memberName ?? "direct VFI file"],
+        ["Attributes", entry.texture.attrs || "—"],
+    ];
+    for (const [term, value] of fields) {
+        const row = document.createElement("div");
+        const dt = document.createElement("dt");
+        const dd = document.createElement("dd");
+        dt.textContent = term;
+        dd.textContent = value;
+        row.append(dt, dd);
+        dl.append(row);
+    }
+    inspector.replaceChildren(dl);
+}
+
+async function selectImage(entry: ImageEntry): Promise<void> {
+    if (!session) return;
+    imageSelected = entry;
+    markImageSelection(entry.id);
+    const generation = ++imageLoadGeneration;
+    status(`DECODING ${entry.texture.fileName}...`);
+    try {
+        const data = await session.images.read(entry.texture);
+        if (!data) throw new Error("source texture is not cached; reconnect the disc");
+        const image = decodeTim2(data, entry.pictureIndex, entry.texture.fileName);
+        if (generation !== imageLoadGeneration || imageSelected?.id !== entry.id) return;
+        const canvas = $<HTMLCanvasElement>("image-canvas");
+        canvas.classList.toggle("small-image",
+            image.width <= 256 && image.height <= 256);
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("2D canvas is unavailable");
+        context.putImageData(
+            new ImageData(new Uint8ClampedArray(image.rgba), image.width, image.height),
+            0,
+            0,
+        );
+        $("image-empty").hidden = true;
+        renderImageInspector(entry);
+        status(`${entry.texture.fileName} · ${image.width}×${image.height} · `
+            + `${IMAGE_TYPE_LABELS[image.imageType] ?? `type ${image.imageType}`}`);
+    } catch (error) {
+        if (generation !== imageLoadGeneration) return;
+        status(`IMAGE FAILED: ${friendlyError(error)}`, true);
+    }
+}
+
+function updateImageRoleOptions(): void {
+    if (!imageCatalog) return;
+    const counts: Record<ImageRoleFilter, number> = {
+        all: 0,
+        sprite: 0,
+        texture: 0,
+        other: 0,
+    };
+    for (const texture of imageCatalog.textures) {
+        const pictures = texture.pictures.length;
+        counts.all += pictures;
+        counts[texture.role] += pictures;
+    }
+    for (const option of $<HTMLSelectElement>("image-role").options) {
+        const role = option.value as ImageRoleFilter;
+        option.textContent =
+            `${IMAGE_ROLE_LABELS[role].toUpperCase()} · ${counts[role].toLocaleString()}`;
+    }
+}
+
+function installImageCatalog(catalog: ImageCatalog): void {
+    imageCatalog = catalog;
+    imageAllRows = imageEntries(catalog);
+    imageEntryById = new Map();
+    for (const entry of imageAllRows) imageEntryById.set(entry.id, entry);
+    updateImageRoleOptions();
+}
+
+async function ensureImageCatalog(): Promise<void> {
+    if (!session || imageCatalog) return;
+    const cached = await session.images.cached();
+    if (cached) {
+        installImageCatalog(cached);
+        $("image-setup").hidden = true;
+        renderImageList();
+        status(`${imageAllRows.length} images and sprite sheets`);
+        return;
+    }
+    $("image-setup").hidden = false;
+    const hasIso = session.images.hasIso();
+    $("image-extract").hidden = !hasIso;
+    $("image-iso-pick").hidden = hasIso;
+    if (hasIso) await extractImages();
+}
+
+async function extractImages(): Promise<void> {
+    if (!session || imageExtracting) return;
+    const setupStatus = $("image-setup-status");
+    const progress = $<HTMLProgressElement>("image-progress");
+    const button = $<HTMLButtonElement>("image-extract");
+    setupStatus.classList.remove("err");
+    progress.hidden = false;
+    progress.value = 0;
+    button.disabled = true;
+    imageExtracting = true;
+    try {
+        const catalog = await session.images.extract((done, total, path) => {
+            progress.value = total > 0 ? done / total : 0;
+            setupStatus.textContent = path === "done"
+                ? "catalog complete"
+                : `scanning ${path} (${done}/${total})`;
+        });
+        installImageCatalog(catalog);
+        renderImageList();
+        status(`${imageAllRows.length} images and sprite sheets · select one to preview`);
+    } catch (error) {
+        setupStatus.textContent = friendlyError(error);
+        setupStatus.classList.add("err");
+        progress.hidden = true;
+    } finally {
+        button.disabled = false;
+        imageExtracting = false;
+    }
+}
+
+async function exportSelectedImage(kind: "png" | "tm2"): Promise<void> {
+    if (!session || !imageSelected || imageExporting) return;
+    const entry = imageSelected;
+    imageExporting = true;
+    updateImageActions();
+    try {
+        const source = await session.images.read(entry.texture);
+        if (!source) throw new Error("source texture is not cached; reconnect the disc");
+        const path = imageExportPath(entry, kind);
+        const data = kind === "png"
+            ? await imagePng(source, entry.pictureIndex) : source;
+        download(data, path.slice(path.lastIndexOf("/") + 1),
+                 kind === "png" ? "image/png" : "application/octet-stream");
+        status(`EXPORTED ${path}`);
+    } catch (error) {
+        status(`EXPORT FAILED: ${friendlyError(error)}`, true);
+    } finally {
+        imageExporting = false;
+        updateImageActions();
+    }
+}
+
+async function exportAllImages(): Promise<void> {
+    if (!session || !imageCatalog || imageExporting) return;
+    const entries = imageAllRows;
+    imageExporting = true;
+    updateImageActions();
+    try {
+        const files: [string, Uint8Array][] = [];
+        let textureId = "";
+        let source: Uint8Array | null = null;
+        for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index]!;
+            if (entry.texture.id !== textureId) {
+                textureId = entry.texture.id;
+                source = await session.images.read(entry.texture);
+            }
+            if (!source) throw new Error(`${entry.texture.fileName} is not cached`);
+            status(`ENCODING PNG ${index + 1}/${entries.length} · ${entry.texture.fileName}`);
+            files.push([imageExportPath(entry, "png"),
+                        await imagePng(source, entry.pictureIndex)]);
+        }
+        download(storeZipBlob(files), "ape-escape-3-images.zip", "application/zip");
+        status(`EXPORTED ape-escape-3-images.zip · ${files.length} PNG files`);
+    } catch (error) {
+        status(`EXPORT FAILED: ${friendlyError(error)}`, true);
+    } finally {
+        imageExporting = false;
+        updateImageActions();
+    }
+}
+
+function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images"): void {
     if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
     $("tab-streams").classList.toggle("on", t === "streams");
     $("tab-se").classList.toggle("on", t === "se");
     $("tab-fmv").classList.toggle("on", t === "fmv");
+    $("tab-images").classList.toggle("on", t === "images");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
     $("seview").hidden = t !== "se";
     $("fmvview").hidden = t !== "fmv";
+    $("imageview").hidden = t !== "images";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
-    $("foot-stats").hidden = t === "streams" || t === "fmv";
+    $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images";
     $("stream-main").hidden = t !== "streams";
     $("se-main").hidden = t !== "se";
     $("fmv-main").hidden = t !== "fmv";
+    $("image-main").hidden = t !== "images";
     $("keys").textContent = t === "bgm"
         ? keysBgmText
         : t === "streams"
             ? KEYS_STREAMS
-            : t === "se" ? KEYS_SE : KEYS_FMV;
+            : t === "se"
+                ? KEYS_SE
+                : t === "fmv" ? KEYS_FMV : KEYS_IMAGES;
     status("");
     viewerRevision++;
     movieController.setActive(t === "fmv" || viewerChannel === "cinema");
     if (t === "streams") void ensureStreams();
     if (t === "se") void ensureSeCatalog();
     if (t === "fmv") renderFmvStatic(movieController.snapshot());
+    if (t === "images") void ensureImageCatalog();
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
@@ -1935,6 +2473,51 @@ function onKey(e: KeyboardEvent): void {
         if (e.key === "Escape") target.blur();
         return;
     }
+    if (tab === "images") {
+        let handled = true;
+        const current = imageRows.findIndex(entry => entry.id === imageSelected?.id);
+        switch (e.key) {
+        case "ArrowUp":
+        case "ArrowDown": {
+            if (!imageRows.length) break;
+            const delta = e.key === "ArrowUp" ? -1 : 1;
+            const origin = current < 0 ? (delta > 0 ? -1 : 0) : current;
+            const index = (origin + delta + imageRows.length) % imageRows.length;
+            if (imageViewMode !== "tree" && index >= imageVisibleLimit) {
+                const batch = imageViewMode === "grid" ? 120 : 300;
+                imageVisibleLimit = Math.ceil((index + 1) / batch) * batch;
+                renderImageList();
+            }
+            const entry = imageRows[index]!;
+            void selectImage(entry);
+            requestAnimationFrame(() =>
+                $("imagelist").querySelector(`[data-image-id="${CSS.escape(entry.id)}"]`)
+                    ?.scrollIntoView({ block: "nearest" }));
+            break;
+        }
+        case "Enter":
+            if (imageSelected) void selectImage(imageSelected);
+            else if (imageRows[0]) void selectImage(imageRows[0]);
+            else handled = false;
+            break;
+        case "e":
+        case "E":
+            void exportSelectedImage("png");
+            break;
+        case "x":
+        case "X":
+            void exportSelectedImage("tm2");
+            break;
+        case "a":
+        case "A":
+            void exportAllImages();
+            break;
+        default:
+            handled = false;
+        }
+        if (handled) e.preventDefault();
+        return;
+    }
     if (tab === "fmv") {
         let handled = true;
         switch (e.key) {
@@ -2607,6 +3190,14 @@ async function main(): Promise<void> {
             return { seSel, seOpenBank, seLoading, seBusy, sePlaying,
                      rows: seRows.length, shape: seShape && [...seShape] };
         },
+        get imageState() {
+            return { catalog: imageCatalog, selected: imageSelected,
+                     rows: imageRows.length, visible: imageVisibleLimit,
+                     view: imageViewMode,
+                     role: $<HTMLSelectElement>("image-role").value,
+                     thumbnails: imageThumbnailCache.size,
+                     extracting: imageExtracting, exporting: imageExporting };
+        },
     };
     wirePicker();
     $("playbtn").onclick = togglePlay;
@@ -2621,6 +3212,59 @@ async function main(): Promise<void> {
     $("tab-streams").onclick = () => switchTab("streams");
     $("tab-se").onclick = () => switchTab("se");
     $("tab-fmv").onclick = () => switchTab("fmv");
+    $("tab-images").onclick = () => switchTab("images");
+    $("imagelist").addEventListener("click", event => {
+        const target = event.target as Element;
+        const button = target.closest<HTMLButtonElement>("[data-image-id]");
+        const entry = imageEntryById.get(button?.dataset.imageId ?? "");
+        if (entry) void selectImage(entry);
+    });
+    $<HTMLInputElement>("image-search").oninput = () => {
+        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
+        $("imagelist").scrollTop = 0;
+        renderImageList();
+    };
+    $<HTMLSelectElement>("image-role").onchange = () => {
+        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
+        $("imagelist").scrollTop = 0;
+        renderImageList();
+    };
+    $("image-view-switch").addEventListener("click", event => {
+        const button = (event.target as Element)
+            .closest<HTMLButtonElement>("[data-image-view]");
+        if (!button) return;
+        imageViewMode = button.dataset.imageView as ImageViewMode;
+        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
+        for (const option of $("image-view-switch")
+            .querySelectorAll<HTMLButtonElement>("[data-image-view]"))
+            option.setAttribute("aria-pressed",
+                                String(option.dataset.imageView === imageViewMode));
+        $("imagelist").scrollTop = 0;
+        renderImageList();
+    });
+    $("image-extract").onclick = () => void extractImages();
+    $<HTMLInputElement>("image-iso").onchange = async () => {
+        const input = $<HTMLInputElement>("image-iso");
+        const file = input.files?.[0];
+        if (!file || !session) return;
+        const setupStatus = $("image-setup-status");
+        setupStatus.classList.remove("err");
+        setupStatus.textContent = "reading disc...";
+        try {
+            await session.images.attachIso(file);
+            $("image-iso-pick").hidden = true;
+            $("image-extract").hidden = false;
+            await extractImages();
+        } catch (error) {
+            setupStatus.textContent = friendlyError(error);
+            setupStatus.classList.add("err");
+        } finally {
+            input.value = "";
+        }
+    };
+    $("image-export-png").onclick = () => void exportSelectedImage("png");
+    $("image-export-tm2").onclick = () => void exportSelectedImage("tm2");
+    $("image-export-all").onclick = () => void exportAllImages();
     $("fmvlist").addEventListener("click", event => {
         const button = (event.target as Element).closest<HTMLButtonElement>("[data-fmv-name]");
         if (button?.dataset.fmvName)
