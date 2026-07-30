@@ -144,26 +144,30 @@ function textureFor(packageData: ModelPackage | null, name: string): THREE.DataT
 function materialFor(name: string, packageData: ModelPackage | null,
                      textureNames: string[]): THREE.MeshLambertMaterial {
     const map = textureFor(packageData, name);
-    let hasZeroAlpha = false;
-    let hasPartialAlpha = false;
+    let zeroAlpha = 0;
+    let partialAlpha = 0;
+    let pixelCount = 0;
     if (map?.image?.data instanceof Uint8Array) {
         const rgba = map.image.data;
+        pixelCount = rgba.length / 4;
         for (let index = 3; index < rgba.length; index += 4) {
             const alpha = rgba[index]!;
-            if (alpha === 0) hasZeroAlpha = true;
-            else if (alpha < 250) hasPartialAlpha = true;
-            if (hasZeroAlpha && hasPartialAlpha) break;
+            if (alpha === 0) zeroAlpha++;
+            else if (alpha < 250) partialAlpha++;
         }
     }
+    const visiblePixels = pixelCount - zeroAlpha;
+    const usesMask = zeroAlpha > 0 && visiblePixels > 0;
+    const usesBlending = partialAlpha / Math.max(pixelCount, 1) >= 0.05;
     if (map) textureNames.push(name);
     return new THREE.MeshLambertMaterial({
         name: name || "unnamed",
         color: map ? 0xffffff : materialColor(name),
         map,
-        side: THREE.DoubleSide,
-        transparent: hasPartialAlpha,
-        alphaTest: hasPartialAlpha ? 0.01 : hasZeroAlpha ? 0.5 : 0,
-        depthWrite: !hasPartialAlpha,
+        side: THREE.FrontSide,
+        transparent: usesBlending,
+        alphaTest: usesMask ? (usesBlending ? 0.01 : 0.5) : 0,
+        depthWrite: !usesBlending,
     });
 }
 
@@ -263,6 +267,7 @@ export class ModelBrowser {
     private skeleton: THREE.SkeletonHelper | null = null;
     private resizeObserver: ResizeObserver | null = null;
     private lastFrame = performance.now();
+    private sceneRadius = 0;
     private playing = true;
     private readonly status: Status;
 
@@ -401,6 +406,7 @@ export class ModelBrowser {
                 if (this.playing) this.mixer?.update(delta);
                 this.controls?.update();
                 this.updateAnimationUi();
+                this.updateCameraRange();
                 this.renderer?.render(this.scene!, this.camera!);
             }
         };
@@ -715,6 +721,7 @@ export class ModelBrowser {
             disposeObject(this.loaded.root);
         }
         this.loaded = null;
+        this.sceneRadius = 0;
         this.populateAnimations(null);
     }
 
@@ -772,6 +779,19 @@ export class ModelBrowser {
         element<HTMLElement>("model-anim-readout").textContent = `${current.toFixed(2)} / ${duration.toFixed(2)} s`;
     }
 
+    private updateCameraRange(): void {
+        if (!this.camera || !this.controls || this.sceneRadius <= 0) return;
+        const distance = this.camera.position.distanceTo(this.controls.target);
+        const near = Math.max(this.sceneRadius / 1000,
+                              (distance - this.sceneRadius) * 0.5);
+        const far = Math.max(near * 10, distance + this.sceneRadius * 2);
+        if (Math.abs(this.camera.near - near) < near * 0.01
+            && Math.abs(this.camera.far - far) < far * 0.01) return;
+        this.camera.near = near;
+        this.camera.far = far;
+        this.camera.updateProjectionMatrix();
+    }
+
     private frameLoaded(): void {
         if (!this.loaded || !this.camera || !this.controls) return;
         const box = new THREE.Box3().setFromObject(this.loaded.root);
@@ -780,11 +800,10 @@ export class ModelBrowser {
         const radius = Math.max(sphere.radius, 0.01);
         const distance = radius / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.25;
         const direction = new THREE.Vector3(1, 0.6, 1).normalize();
-        this.camera.near = Math.max(radius / 10_000, 0.0001);
-        this.camera.far = Math.max(distance * 100, 100);
+        this.sceneRadius = radius;
         this.camera.position.copy(sphere.center).addScaledVector(direction, distance);
-        this.camera.updateProjectionMatrix();
         this.controls.target.copy(sphere.center);
+        this.updateCameraRange();
         this.controls.minDistance = radius * 0.02;
         this.controls.maxDistance = radius * 100;
         this.controls.update();
