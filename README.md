@@ -52,10 +52,12 @@ source-hierarchy tree provide alternate views. The desktop asset browser is
 horizontally resizable, and the grid adds or removes columns with its width.
 Grid and list results append automatically near the end of the scroll, while
 tree folders populate only when opened.
-Category filters separate UI/sprites referenced by UIS layouts from 3D
-textures referenced by I3D models. Package context fills clear single-purpose
-cases; ambiguous assets stay under Other, and the inspector shows the evidence
-used for each classification.
+Category filters first use exact UIS/I3D references in the same package, then
+unambiguous package context. Still-unresolved assets are checked for references
+from other packages. A `ui_` name prefix is used only as the final sprite
+fallback when no format reference exists, and the inspector identifies that
+lower-confidence evidence explicitly. Remaining ambiguous assets stay under
+Other.
 
 Previews decode locally from IDTEX4, IDTEX8, RGBA16, RGB24, or RGBA32 into a
 checkerboard canvas. The decoder linearizes GS CSM1 palettes and expands the

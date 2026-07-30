@@ -724,9 +724,12 @@ const IMAGE_ROLE_LABELS: Record<ImageRoleFilter, string> = {
 const IMAGE_EVIDENCE_LABELS: Record<string, string> = {
     "ui-reference": "Referenced by a UIS layout",
     "model-reference": "Referenced by an I3D model",
+    "ui-global-reference": "Referenced by a UIS layout in another package",
+    "model-global-reference": "Referenced by an I3D model in another package",
     "ui-package": "Packaged with UIS layouts",
     "model-package": "Packaged with I3D models",
     direct: "Direct TIM2 file",
+    "ui-name-prefix": "Inferred from ui_ name; no format reference found",
     unclassified: "No UIS or I3D reference",
 };
 const IMAGE_COLLATOR = new Intl.Collator(undefined, {
@@ -1114,7 +1117,7 @@ async function ensureImageCatalog(): Promise<void> {
     }
     $("image-setup").hidden = false;
     const hasIso = session.images.hasIso();
-    $("image-extract").hidden = !hasIso;
+    $("image-extract").hidden = true;
     $("image-iso-pick").hidden = hasIso;
     if (hasIso) await extractImages();
 }
@@ -1128,6 +1131,7 @@ async function extractImages(): Promise<void> {
     progress.hidden = false;
     progress.value = 0;
     button.disabled = true;
+    button.hidden = true;
     imageExtracting = true;
     try {
         const catalog = await session.images.extract((done, total, path) => {
@@ -1144,6 +1148,7 @@ async function extractImages(): Promise<void> {
         setupStatus.textContent = friendlyError(error);
         setupStatus.classList.add("err");
         progress.hidden = true;
+        button.hidden = false;
     } finally {
         button.disabled = false;
         imageExtracting = false;
@@ -1253,7 +1258,7 @@ async function ensureStreams(): Promise<void> {
     }
     $("s-setup").hidden = false;
     const iso = session.streams.hasIso();
-    $("s-extract").hidden = !iso;
+    $("s-extract").hidden = true;
     $("s-iso-pick").hidden = iso;
     if (iso) await extractStreams();
 }
@@ -1262,10 +1267,12 @@ async function extractStreams(): Promise<void> {
     if (!session || sExtracting) return;
     const pstat = $("s-setup-status");
     const bar = $<HTMLProgressElement>("s-progress");
+    const button = $<HTMLButtonElement>("s-extract");
     pstat.classList.remove("err");
     bar.hidden = false;
     bar.value = 0;
-    $<HTMLButtonElement>("s-extract").disabled = true;
+    button.disabled = true;
+    button.hidden = true;
     sExtracting = true;
     try {
         sCatalog = await session.streams.extract((done, total, name) => {
@@ -1280,8 +1287,9 @@ async function extractStreams(): Promise<void> {
         pstat.textContent = friendlyError(e);
         pstat.classList.add("err");
         bar.hidden = true;
+        button.hidden = false;
     } finally {
-        $<HTMLButtonElement>("s-extract").disabled = false;
+        button.disabled = false;
         sExtracting = false;
     }
 }
@@ -1526,7 +1534,7 @@ async function sExport(): Promise<void> {
 function seSetup(show: boolean, needsIso = false): void {
     $("se-setup").hidden = !show;
     $("se-stage").hidden = show;
-    $("se-extract").hidden = needsIso;
+    $("se-extract").hidden = true;
     $("se-iso-pick").hidden = !needsIso;
 }
 
@@ -1720,6 +1728,7 @@ async function extractSeBanks(): Promise<void> {
     const st = $("se-setup-status");
     const progress = $<HTMLProgressElement>("se-progress");
     btn.disabled = true;
+    btn.hidden = true;
     progress.hidden = false;
     st.classList.remove("err");
     seExtracting = true;
@@ -1736,6 +1745,7 @@ async function extractSeBanks(): Promise<void> {
     } catch (e) {
         st.textContent = friendlyError(e);
         st.classList.add("err");
+        btn.hidden = false;
     } finally {
         btn.disabled = false;
         seExtracting = false;
@@ -3314,7 +3324,6 @@ async function main(): Promise<void> {
         try {
             await session.images.attachIso(file);
             $("image-iso-pick").hidden = true;
-            $("image-extract").hidden = false;
             await extractImages();
         } catch (error) {
             setupStatus.textContent = friendlyError(error);
@@ -3392,7 +3401,6 @@ async function main(): Promise<void> {
         try {
             await session.streams.attachIso(f);
             $("s-iso-pick").hidden = true;
-            $("s-extract").hidden = false;
             await extractStreams();
         } catch (err) {
             pstat.textContent = friendlyError(err);
@@ -3443,7 +3451,6 @@ async function main(): Promise<void> {
         try {
             await session.se.attachIso(file);
             $("se-iso-pick").hidden = true;
-            $("se-extract").hidden = false;
             await extractSeBanks();
         } catch (e) {
             setupStatus.textContent = friendlyError(e);

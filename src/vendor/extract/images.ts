@@ -11,8 +11,9 @@ import { type Vfi, type VfiEntry } from "./vfi.ts";
 
 export type ImageRole = "sprite" | "texture" | "other";
 export type ImageRoleEvidence =
-    "ui-reference" | "model-reference" | "ui-package" | "model-package"
-    | "direct" | "unclassified";
+    "ui-reference" | "model-reference" | "ui-global-reference"
+    | "model-global-reference" | "ui-package" | "model-package"
+    | "ui-name-prefix" | "direct" | "unclassified";
 
 export interface ImageTexture {
     id: string;
@@ -49,8 +50,9 @@ function memberStem(name: string): string {
     return name.slice(slash + 1).replace(/\.tm2$/i, "").toLowerCase();
 }
 
-function referencedTextureNames(data: Uint8Array,
-                                textureNames: ReadonlySet<string>): Set<string> {
+const REFERENCE_STEM = /^[a-z0-9_.-]{1,64}$/;
+
+function referencedNames(data: Uint8Array): Set<string> {
     const references = new Set<string>();
     let start = -1;
     for (let index = 0; index <= data.length; index++) {
@@ -61,20 +63,21 @@ function referencedTextureNames(data: Uint8Array,
         }
         if (start >= 0) {
             const stem = memberStem(ASCII.decode(data.subarray(start, index)));
-            if (textureNames.has(stem)) references.add(stem);
+            if (REFERENCE_STEM.test(stem)) references.add(stem);
             start = -1;
         }
     }
     return references;
 }
 
+interface MemberClassifications {
+    roles: Map<number, { role: ImageRole; evidence: ImageRoleEvidence }>;
+    uiReferences: Set<string>;
+    modelReferences: Set<string>;
+}
+
 function classifyMembers(pck: Uint8Array, members: PckMember[],
-                         textures: PckMember[]): Map<number, {
-                             role: ImageRole;
-                             evidence: ImageRoleEvidence;
-                         }> {
-    if (textures.length === 0) return new Map();
-    const names = new Set(textures.map(member => memberStem(member.name)));
+                         textures: PckMember[]): MemberClassifications {
     const uiReferences = new Set<string>();
     const modelReferences = new Set<string>();
     let hasUi = false;
@@ -85,12 +88,11 @@ function classifyMembers(pck: Uint8Array, members: PckMember[],
         if (type === "uis") hasUi = true;
         else hasModel = true;
         const target = type === "uis" ? uiReferences : modelReferences;
-        if (target.size === names.size) continue;
-        for (const name of referencedTextureNames(memberBytes(pck, member), names))
+        for (const name of referencedNames(memberBytes(pck, member)))
             target.add(name);
     }
 
-    return new Map(textures.map(member => {
+    const roles = new Map(textures.map(member => {
         const name = memberStem(member.name);
         const uiReference = uiReferences.has(name);
         const modelReference = modelReferences.has(name);
@@ -109,8 +111,9 @@ function classifyMembers(pck: Uint8Array, members: PckMember[],
             role = "texture";
             evidence = "model-package";
         }
-        return [member.index, { role, evidence }];
+        return [member.index, { role, evidence }] as const;
     }));
+    return { roles, uiReferences, modelReferences };
 }
 
 /** VFI payloads that can contain source TIM2 textures. */
@@ -123,6 +126,8 @@ interface ScannedImageContainer {
     entry: VfiEntry;
     stored: Uint8Array;
     images: Array<{ texture: ImageTexture; bytes: Uint8Array }>;
+    uiReferences: Set<string>;
+    modelReferences: Set<string>;
 }
 
 const IMAGE_SCAN_CONCURRENCY = 8;
@@ -144,6 +149,8 @@ async function scanImageContainer(vfi: Vfi,
                 },
                 bytes: stored,
             }],
+            uiReferences: new Set(),
+            modelReferences: new Set(),
         };
     }
 
@@ -155,49 +162,92 @@ async function scanImageContainer(vfi: Vfi,
         const bytes = memberBytes(pck, member);
         return typeOf(member.attrs) === "tm2" || isTim2(bytes);
     });
-    const roles = classifyMembers(pck, members, imageMembers);
+    const classification = classifyMembers(pck, members, imageMembers);
     const images = imageMembers.map(member => {
         const bytes = memberBytes(pck, member);
         const label = `${entry.path}#${member.index}:${member.name}`;
-        const classification = roles.get(member.index)!;
+        const role = classification.roles.get(member.index)!;
         return {
             texture: {
                 id: textureId(entry, member.index), sourcePath: entry.path,
                 memberIndex: member.index, memberName: member.name,
                 fileName: names[member.index]!, attrs: member.attrs,
                 byteLength: bytes.length,
-                role: classification.role,
-                roleEvidence: classification.evidence,
+                role: role.role,
+                roleEvidence: role.evidence,
                 pictures: inspectTim2(bytes, label),
             },
             bytes,
         };
     });
-    return { entry, stored, images };
+    return {
+        entry, stored, images,
+        uiReferences: classification.uiReferences,
+        modelReferences: classification.modelReferences,
+    };
+}
+
+function refineUnclassified(textures: ImageTexture[],
+                            uiReferences: ReadonlySet<string>,
+                            modelReferences: ReadonlySet<string>): void {
+    for (const texture of textures) {
+        if (texture.roleEvidence !== "unclassified") continue;
+        const name = memberStem(texture.memberName ?? texture.fileName);
+        const uiReference = uiReferences.has(name);
+        const modelReference = modelReferences.has(name);
+        if (uiReference && !modelReference) {
+            texture.role = "sprite";
+            texture.roleEvidence = "ui-global-reference";
+        } else if (modelReference && !uiReference) {
+            texture.role = "texture";
+            texture.roleEvidence = "model-global-reference";
+        } else if (!uiReference && !modelReference && name.startsWith("ui_")) {
+            texture.role = "sprite";
+            texture.roleEvidence = "ui-name-prefix";
+        }
+    }
 }
 
 /**
  * Inspect every direct TIM2 and every TIM2 member of every PCK in DATA.BIN.
  * The callback receives each original source texture once, including
- * multi-picture textures. No decoded pixels are retained by the scanner.
+ * multi-picture textures, after cross-container role evidence is resolved.
+ * No decoded pixels are retained by the scanner.
  */
 export async function scanImageTextures(vfi: Vfi,
                                         options: ImageScanOptions = {}): Promise<ImageTexture[]> {
     const containers = locateImageContainers(vfi);
     const textures: ImageTexture[] = [];
+    const uiReferences = new Set<string>();
+    const modelReferences = new Set<string>();
+    const deferred: Array<{ texture: ImageTexture; bytes: Uint8Array }> = [];
     for (let start = 0; start < containers.length; start += IMAGE_SCAN_CONCURRENCY) {
         const batch = containers.slice(start, start + IMAGE_SCAN_CONCURRENCY);
         for (let offset = 0; offset < batch.length; offset++)
             options.progress?.(start + offset, containers.length, batch[offset]!.path);
         const scanned = await Promise.all(batch.map(entry => scanImageContainer(vfi, entry)));
-        for (const container of scanned)
-            for (const image of container.images) textures.push(image.texture);
+        for (const container of scanned) {
+            for (const name of container.uiReferences) uiReferences.add(name);
+            for (const name of container.modelReferences) modelReferences.add(name);
+            for (const image of container.images) {
+                textures.push(image.texture);
+                if (options.texture && image.texture.roleEvidence === "unclassified")
+                    deferred.push({ texture: image.texture, bytes: image.bytes.slice() });
+            }
+        }
         await Promise.all(scanned.map(async container => {
             if (container.images.length === 0) return;
             await options.container?.(container.entry, container.stored);
             for (const image of container.images)
-                await options.texture?.(image.texture, image.bytes);
+                if (image.texture.roleEvidence !== "unclassified")
+                    await options.texture?.(image.texture, image.bytes);
         }));
+    }
+    refineUnclassified(textures, uiReferences, modelReferences);
+    if (options.texture) {
+        for (let start = 0; start < deferred.length; start += IMAGE_SCAN_CONCURRENCY)
+            await Promise.all(deferred.slice(start, start + IMAGE_SCAN_CONCURRENCY)
+                .map(image => options.texture!(image.texture, image.bytes)));
     }
     options.progress?.(containers.length, containers.length, "done");
     return textures;

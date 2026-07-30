@@ -11,7 +11,7 @@ import {
 import { storeZipBlob } from "../src/zip.ts";
 
 const catalog: ImageCatalog = {
-    v: 2,
+    v: 3,
     textures: [
         {
             id: "00000010-direct",

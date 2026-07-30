@@ -18,7 +18,7 @@ const CONTAINER_CACHE_LIMIT = 4;
 
 
 export interface ImageCatalog {
-    v: 2;
+    v: 3;
     storage?: "textures" | "containers";
     textures: ImageTexture[];
 }
@@ -120,7 +120,7 @@ export class ImageStore {
         if (!raw) return null;
         try {
             const catalog = JSON.parse(new TextDecoder().decode(raw)) as ImageCatalog;
-            if (catalog.v !== 2 || !Array.isArray(catalog.textures)
+            if (catalog.v !== 3 || !Array.isArray(catalog.textures)
                 || (catalog.storage !== undefined
                     && catalog.storage !== "textures"
                     && catalog.storage !== "containers")
@@ -161,7 +161,7 @@ export class ImageStore {
                 }
             },
         });
-        const catalog: ImageCatalog = { v: 2, storage: "containers", textures };
+        const catalog: ImageCatalog = { v: 3, storage: "containers", textures };
         if (cache)
             await cache.write(META,
                 new TextEncoder().encode(JSON.stringify(catalog)));
