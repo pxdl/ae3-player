@@ -30,9 +30,11 @@ import {
     imageExportPath,
     imagePng,
     imageTreePath,
+    sortImageEntries,
     type ImageCatalog,
     type ImageEntry,
     type ImageRoleFilter,
+    type ImageSortDirection,
 } from "./images.ts";
 import { decodeTim2 } from "./vendor/extract/index.ts";
 import type { ModelBrowser } from "./model-browser.ts";
@@ -161,6 +163,7 @@ let imageRows: ImageEntry[] = [];
 let imageSelected: ImageEntry | null = null;
 type ImageViewMode = "grid" | "list" | "tree";
 let imageViewMode: ImageViewMode = "grid";
+let imageSortDirection: ImageSortDirection = "asc";
 let imageVisibleLimit = 120;
 let imageLoadGeneration = 0;
 let imageRenderGeneration = 0;
@@ -753,6 +756,17 @@ const IMAGE_COLLATOR = new Intl.Collator(undefined, {
 const IMAGE_THUMBNAIL_CACHE_LIMIT = 256;
 const imageThumbnailCache = new Map<string, ImageData>();
 
+function updateImageSortButton(): void {
+    const button = $<HTMLButtonElement>("image-sort");
+    const ascending = imageSortDirection === "asc";
+    button.textContent = ascending ? "A–Z" : "Z–A";
+    button.setAttribute("aria-label",
+        `Images sorted by name ${ascending ? "A to Z" : "Z to A"}; `
+        + `activate for ${ascending ? "Z to A" : "A to Z"}`);
+    button.title =
+        `Sorted by name ${ascending ? "A to Z" : "Z to A"}; click to reverse`;
+}
+
 interface ImageTreeNode {
     name: string;
     count: number;
@@ -923,8 +937,9 @@ function buildImageTree(entries: ImageEntry[]): ImageTreeNode {
 }
 
 function populateImageTree(parent: HTMLElement, node: ImageTreeNode): void {
+    const order = imageSortDirection === "asc" ? 1 : -1;
     const children = [...node.children.values()]
-        .sort((left, right) => IMAGE_COLLATOR.compare(left.name, right.name));
+        .sort((left, right) => order * IMAGE_COLLATOR.compare(left.name, right.name));
     for (const child of children) {
         const item = document.createElement("li");
         item.className = "image-tree-folder";
@@ -946,8 +961,7 @@ function populateImageTree(parent: HTMLElement, node: ImageTreeNode): void {
         item.append(details);
         parent.append(item);
     }
-    for (const entry of [...node.entries]
-        .sort((left, right) => IMAGE_COLLATOR.compare(imageTitle(left), imageTitle(right))))
+    for (const entry of sortImageEntries(node.entries, imageSortDirection))
         parent.append(createImageItem(entry, "tree"));
 }
 
@@ -983,7 +997,10 @@ function renderImageList(): void {
 
     const query = $<HTMLInputElement>("image-search").value;
     const role = $<HTMLSelectElement>("image-role").value as ImageRoleFilter;
-    imageRows = filterImageEntries(imageAllRows, query, role);
+    imageRows = sortImageEntries(
+        filterImageEntries(imageAllRows, query, role),
+        imageSortDirection,
+    );
     list.className = `image-${imageViewMode}`;
     const previousScroll = list.scrollTop;
     list.replaceChildren();
@@ -3289,6 +3306,7 @@ async function main(): Promise<void> {
                      rows: imageRows.length, visible: imageVisibleLimit,
                      view: imageViewMode,
                      role: $<HTMLSelectElement>("image-role").value,
+                     sort: imageSortDirection,
                      thumbnails: imageThumbnailCache.size,
                      extracting: imageExtracting, exporting: imageExporting };
         },
@@ -3325,6 +3343,14 @@ async function main(): Promise<void> {
         $("imagelist").scrollTop = 0;
         renderImageList();
     };
+    $("image-sort").onclick = () => {
+        imageSortDirection = imageSortDirection === "asc" ? "desc" : "asc";
+        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
+        $("imagelist").scrollTop = 0;
+        updateImageSortButton();
+        renderImageList();
+    };
+    updateImageSortButton();
     $("image-view-switch").addEventListener("click", event => {
         const button = (event.target as Element)
             .closest<HTMLButtonElement>("[data-image-view]");

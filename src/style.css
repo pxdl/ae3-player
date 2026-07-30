@@ -1450,14 +1450,15 @@ button.ex-row:disabled {
 }
 #image-search:focus { border-color: var(--accent); }
 #image-browser-controls {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin: 0 14px 7px;
 }
 #image-role {
     min-width: 0;
     min-height: 32px;
+    flex: 1 1 88px;
     padding: 5px 7px;
     border: 1px solid var(--panel-hi);
     border-radius: 3px;
@@ -1466,8 +1467,24 @@ button.ex-row:disabled {
     font: inherit;
     font-size: 9px;
 }
+#image-sort {
+    flex: 0 0 auto;
+    min-width: 48px;
+    min-height: 32px;
+    padding: 5px 8px;
+    border-color: var(--panel-hi);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+    font-size: 8px;
+    letter-spacing: 0.04em;
+}
+#image-sort:hover, #image-sort:focus-visible {
+    border-color: var(--accent);
+}
+
 #image-view-switch {
     display: grid;
+    flex: 1 0 120px;
     grid-template-columns: repeat(3, 1fr);
     border: 1px solid var(--panel-hi);
     border-radius: 3px;

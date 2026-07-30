@@ -5,6 +5,7 @@ import {
     filterImageEntries,
     imageEntries,
     imageExportPath,
+    sortImageEntries,
     imageTreePath,
     type ImageCatalog,
 } from "../src/images.ts";
@@ -74,6 +75,30 @@ test("image filters use semantic roles and source metadata", () => {
     assert.deepEqual(filterImageEntries(entries, "ZERO", "all").map(entry => entry.id),
                      ["00000020-3:0", "00000020-3:1"]);
     assert.deepEqual(filterImageEntries(entries, "logo", "sprite"), []);
+});
+
+test("image sorting is stable across category subsets and picture rows", () => {
+    const entries = imageEntries(catalog);
+    assert.deepEqual(sortImageEntries(entries, "asc").map(entry => entry.id), [
+        "00000020-3:0",
+        "00000020-3:1",
+        "00000010-direct:0",
+    ]);
+    assert.deepEqual(sortImageEntries(entries, "desc").map(entry => entry.id), [
+        "00000010-direct:0",
+        "00000020-3:0",
+        "00000020-3:1",
+    ]);
+    const sprites = filterImageEntries(entries, "", "sprite");
+    assert.deepEqual(sortImageEntries(sprites, "desc").map(entry => entry.id), [
+        "00000020-3:0",
+        "00000020-3:1",
+    ]);
+    assert.deepEqual(entries.map(entry => entry.id), [
+        "00000010-direct:0",
+        "00000020-3:0",
+        "00000020-3:1",
+    ]);
 });
 
 test("image tree paths retain source packages", () => {

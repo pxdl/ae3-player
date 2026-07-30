@@ -34,6 +34,31 @@ export interface ImageEntry {
 
 export type ImageProgress = (done: number, total: number, path: string) => void;
 export type ImageRoleFilter = "all" | ImageRole;
+export type ImageSortDirection = "asc" | "desc";
+
+const IMAGE_NAME_COLLATOR = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+});
+
+export function sortImageEntries(entries: readonly ImageEntry[],
+                                 direction: ImageSortDirection): ImageEntry[] {
+    const order = direction === "asc" ? 1 : -1;
+    return [...entries].sort((left, right) => {
+        const name = IMAGE_NAME_COLLATOR.compare(
+            left.texture.fileName,
+            right.texture.fileName,
+        );
+        if (name !== 0) return name * order;
+        const source = IMAGE_NAME_COLLATOR.compare(
+            left.texture.sourcePath,
+            right.texture.sourcePath,
+        );
+        if (source !== 0) return source * order;
+        return left.pictureIndex - right.pictureIndex;
+    });
+}
+
 
 
 export function imageEntries(catalog: ImageCatalog): ImageEntry[] {
