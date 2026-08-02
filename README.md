@@ -77,8 +77,9 @@ The 3D tab catalogs 7,345 models, 8,404 animation files, and 2,254 collision
 meshes from the US retail disc. The SDK executes the model's PS2 VIF packets,
 reconstructs geometry, materials, bone hierarchies, skin weights, inverse bind
 matrices, and I3M quaternion tracks, and resolves TIM2 materials within the
-model's own package. Three.js renders the result with orbit controls, framing,
-wireframe, grid, skeleton, playback, and timeline controls.
+model's own package. Three.js renders the result with orbit controls, model
+rotation toggled by R, framing, wireframe, grid, skeleton, playback, and
+timeline controls.
 
 Selecting a model lists every compatible animation in its package. Selecting an
 animation finds a compatible skeleton by exact track and bone names, including

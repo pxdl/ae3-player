@@ -483,7 +483,8 @@ const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u
 const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
-const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · drag orbit · wheel zoom";
+const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
+    + "R model rotation toggle · drag model to rotate · drag to orbit camera · wheel zoom";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
