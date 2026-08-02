@@ -265,6 +265,7 @@ export class ModelBrowser {
     private loadToken = 0;
     private busy = false;
     private loaded: LoadedScene | null = null;
+    private modelPivot: THREE.Group | null = null;
     private renderer: THREE.WebGLRenderer | null = null;
     private camera: THREE.PerspectiveCamera | null = null;
     private scene: THREE.Scene | null = null;
@@ -276,6 +277,10 @@ export class ModelBrowser {
     private lastFrame = performance.now();
     private sceneRadius = 0;
     private playing = true;
+    private rotateModel = false;
+    private modelPointerId: number | null = null;
+    private lastPointerX = 0;
+    private lastPointerY = 0;
     private readonly status: Status;
 
     constructor(status: Status) {
@@ -307,6 +312,7 @@ export class ModelBrowser {
     }
 
     close(): void {
+        this.stopModelDrag();
         if (this.action) this.action.paused = true;
     }
 
@@ -328,6 +334,11 @@ export class ModelBrowser {
             const delta = event.key === "ArrowDown" ? 1 : -1;
             const next = Math.min(this.filtered.length - 1, Math.max(0, current + delta));
             void this.select(this.filtered[next]!);
+            return true;
+        }
+        if ((event.key === "r" || event.key === "R")
+            && !event.metaKey && !event.ctrlKey && !event.altKey && this.loaded) {
+            this.toggleModelRotation();
             return true;
         }
         return false;
@@ -370,6 +381,8 @@ export class ModelBrowser {
             this.mixer.setTime(time);
             this.updateAnimationUi();
         });
+        const rotateBtn = document.getElementById("model-rotate") as HTMLButtonElement | null;
+        if (rotateBtn) rotateBtn.addEventListener("click", () => this.toggleModelRotation());
     }
 
     private ensureRenderer(): void {
@@ -390,6 +403,11 @@ export class ModelBrowser {
         this.controls.dampingFactor = 0.07;
         this.controls.zoomToCursor = true;
         this.controls.screenSpacePanning = true;
+        canvas.style.touchAction = "none";
+        canvas.addEventListener("pointerdown", this.onModelRotatePointerDown);
+        canvas.addEventListener("pointermove", this.onModelRotatePointerMove);
+        canvas.addEventListener("pointerup", this.onModelRotatePointerUp);
+        canvas.addEventListener("pointercancel", this.onModelRotatePointerUp);
         const ambient = new THREE.AmbientLight(0xffffff, 0.6);
         ambient.name = "AE3_AMBIENT";
         this.scene.add(ambient);
@@ -702,7 +720,9 @@ export class ModelBrowser {
     private present(asset: ModelAsset, loaded: LoadedScene): void {
         this.clearScene();
         this.loaded = loaded;
-        this.scene!.add(loaded.root);
+        this.modelPivot = new THREE.Group();
+        this.modelPivot.add(loaded.root);
+        this.scene!.add(this.modelPivot);
         if (loaded.model && loaded.model.bones.length > 0) {
             this.skeleton = new THREE.SkeletonHelper(loaded.root);
             this.skeleton.visible = element<HTMLButtonElement>("model-skeleton").classList.contains("on");
@@ -726,12 +746,12 @@ export class ModelBrowser {
         this.mixer = null;
         if (this.skeleton && this.scene) this.scene.remove(this.skeleton);
         this.skeleton = null;
-        if (this.loaded && this.scene) {
-            this.scene.remove(this.loaded.root);
-            disposeObject(this.loaded.root);
-        }
+        if (this.modelPivot && this.scene) this.scene.remove(this.modelPivot);
+        this.modelPivot = null;
+        if (this.loaded) disposeObject(this.loaded.root);
         this.loaded = null;
         this.sceneRadius = 0;
+        this.stopModelDrag();
         this.populateAnimations(null);
     }
 
@@ -844,6 +864,68 @@ export class ModelBrowser {
         button.classList.toggle("on");
         if (this.skeleton) this.skeleton.visible = button.classList.contains("on");
     }
+
+    private toggleModelRotation(): void {
+        this.rotateModel = !this.rotateModel;
+        const canvas = element<HTMLCanvasElement>("model-canvas");
+        const btn = document.getElementById("model-rotate") as HTMLButtonElement | null;
+        if (this.rotateModel) {
+            canvas.style.cursor = "grab";
+            if (this.controls) this.controls.enableRotate = false;
+            if (btn) {
+                btn.classList.add("on");
+                btn.textContent = "ROTATE ON";
+            }
+            this.status("MODEL ROTATION: ON — drag to rotate, right-click to pan, scroll to zoom");
+        } else {
+            if (this.controls) this.controls.enableRotate = true;
+            if (btn) {
+                btn.classList.remove("on");
+                btn.textContent = "ROTATE";
+            }
+            this.stopModelDrag();
+            this.status("MODEL ROTATION: OFF — camera orbit enabled");
+        }
+    }
+
+    private stopModelDrag(): void {
+        const canvas = element<HTMLCanvasElement>("model-canvas");
+        if (this.modelPointerId !== null && canvas.hasPointerCapture(this.modelPointerId)) {
+            canvas.releasePointerCapture(this.modelPointerId);
+        }
+        this.modelPointerId = null;
+        canvas.style.cursor = this.rotateModel ? "grab" : "";
+    }
+
+    private readonly onModelRotatePointerDown = (event: PointerEvent): void => {
+        if (!this.rotateModel || !event.isPrimary || event.button !== 0
+            || this.modelPointerId !== null || !this.loaded || !this.modelPivot) return;
+        const canvas = event.currentTarget as HTMLCanvasElement;
+        this.modelPointerId = event.pointerId;
+        this.lastPointerX = event.clientX;
+        this.lastPointerY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = "grabbing";
+    };
+
+    private readonly onModelRotatePointerMove = (event: PointerEvent): void => {
+        if (this.modelPointerId !== event.pointerId || !event.isPrimary) return;
+        if (!this.rotateModel || !this.loaded || !this.modelPivot) {
+            this.onModelRotatePointerUp(event);
+            return;
+        }
+        const deltaX = event.clientX - this.lastPointerX;
+        const deltaY = event.clientY - this.lastPointerY;
+        this.lastPointerX = event.clientX;
+        this.lastPointerY = event.clientY;
+        this.modelPivot.rotation.y += deltaX * 0.01;
+        this.modelPivot.rotation.x += deltaY * 0.01;
+    };
+
+    private readonly onModelRotatePointerUp = (event: PointerEvent): void => {
+        if (event.pointerId !== this.modelPointerId) return;
+        this.stopModelDrag();
+    };
 
     private renderInspector(asset: ModelAsset, loaded: LoadedScene | null,
                             error: string | null): void {
