@@ -276,6 +276,11 @@ export class ModelBrowser {
     private lastFrame = performance.now();
     private sceneRadius = 0;
     private playing = true;
+    private rotateModel = false;
+    private isDraggingModel = false;
+    private lastMouseX = 0;
+    private lastMouseY = 0;
+    private modelRotation = new THREE.Euler(0, 0, 0, "YXZ");
     private readonly status: Status;
 
     constructor(status: Status) {
@@ -330,6 +335,10 @@ export class ModelBrowser {
             void this.select(this.filtered[next]!);
             return true;
         }
+        if ((event.key === "r" || event.key === "R") && this.loaded) {
+            this.toggleModelRotation();
+            return true;
+        }
         return false;
     }
 
@@ -370,6 +379,8 @@ export class ModelBrowser {
             this.mixer.setTime(time);
             this.updateAnimationUi();
         });
+        const rotateBtn = document.getElementById("model-rotate") as HTMLButtonElement | null;
+        if (rotateBtn) rotateBtn.addEventListener("click", () => this.toggleModelRotation());
     }
 
     private ensureRenderer(): void {
@@ -390,6 +401,9 @@ export class ModelBrowser {
         this.controls.dampingFactor = 0.07;
         this.controls.zoomToCursor = true;
         this.controls.screenSpacePanning = true;
+        canvas.addEventListener("mousedown", this.onModelRotateMouseDown);
+        window.addEventListener("mousemove", this.onModelRotateMouseMove);
+        window.addEventListener("mouseup", this.onModelRotateMouseUp);
         const ambient = new THREE.AmbientLight(0xffffff, 0.6);
         ambient.name = "AE3_AMBIENT";
         this.scene.add(ambient);
@@ -703,6 +717,7 @@ export class ModelBrowser {
         this.clearScene();
         this.loaded = loaded;
         this.scene!.add(loaded.root);
+        loaded.root.rotation.set(this.modelRotation.x, this.modelRotation.y, this.modelRotation.z);
         if (loaded.model && loaded.model.bones.length > 0) {
             this.skeleton = new THREE.SkeletonHelper(loaded.root);
             this.skeleton.visible = element<HTMLButtonElement>("model-skeleton").classList.contains("on");
@@ -732,6 +747,8 @@ export class ModelBrowser {
         }
         this.loaded = null;
         this.sceneRadius = 0;
+        this.modelRotation.set(0, 0, 0);
+        this.isDraggingModel = false;
         this.populateAnimations(null);
     }
 
@@ -844,6 +861,57 @@ export class ModelBrowser {
         button.classList.toggle("on");
         if (this.skeleton) this.skeleton.visible = button.classList.contains("on");
     }
+
+    private toggleModelRotation(): void {
+        this.rotateModel = !this.rotateModel;
+        const canvas = element<HTMLCanvasElement>("model-canvas");
+        const btn = document.getElementById("model-rotate") as HTMLButtonElement | null;
+        if (this.rotateModel) {
+            canvas.style.cursor = "grab";
+            if (this.controls) this.controls.enableRotate = false;
+            if (btn) {
+                btn.classList.add("on");
+                btn.textContent = "ROTATE ON";
+            }
+            this.status("MODEL ROTATION: ON — drag to rotate, right-click to pan, scroll to zoom");
+        } else {
+            canvas.style.cursor = "";
+            if (this.controls) this.controls.enableRotate = true;
+            if (btn) {
+                btn.classList.remove("on");
+                btn.textContent = "ROTATE";
+            }
+            this.isDraggingModel = false;
+            this.status("MODEL ROTATION: OFF — camera orbit enabled");
+        }
+    }
+
+    private readonly onModelRotateMouseDown = (event: MouseEvent): void => {
+        if (!this.rotateModel || event.button !== 0) return;
+        this.isDraggingModel = true;
+        this.lastMouseX = event.clientX;
+        this.lastMouseY = event.clientY;
+        element<HTMLCanvasElement>("model-canvas").style.cursor = "grabbing";
+    };
+
+    private readonly onModelRotateMouseMove = (event: MouseEvent): void => {
+        if (!this.isDraggingModel || !this.loaded) return;
+        const deltaX = event.clientX - this.lastMouseX;
+        const deltaY = event.clientY - this.lastMouseY;
+        this.lastMouseX = event.clientX;
+        this.lastMouseY = event.clientY;
+        this.modelRotation.y += deltaX * 0.01;
+        this.modelRotation.x += deltaY * 0.01;
+        this.loaded.root.rotation.set(this.modelRotation.x, this.modelRotation.y, this.modelRotation.z);
+    };
+
+    private readonly onModelRotateMouseUp = (): void => {
+        if (!this.isDraggingModel) return;
+        this.isDraggingModel = false;
+        if (this.rotateModel) {
+            element<HTMLCanvasElement>("model-canvas").style.cursor = "grab";
+        }
+    };
 
     private renderInspector(asset: ModelAsset, loaded: LoadedScene | null,
                             error: string | null): void {
