@@ -884,6 +884,7 @@ export class ModelBrowser {
         if (this.skeleton) this.skeleton.visible = button.classList.contains("on");
     }
 
+
     private renderInspector(asset: ModelAsset, loaded: LoadedScene | null,
                             error: string | null): void {
         const rows: Array<[string, string]> = [
