@@ -384,13 +384,21 @@
           </div>
         </header>
         <div id="model-workspace" hidden>
-          <section id="model-viewport" aria-label="Realtime 3D model preview">
+          <section id="model-viewport" aria-label="Realtime 3D model preview. Drag the background to orbit. Drag the center rotation handle for free rotation, or a colored ring to rotate on one axis.">
             <canvas id="model-canvas"></canvas>
             <div id="model-toolbar" aria-label="3D view controls">
               <button id="model-reset-view" type="button">FRAME</button>
               <button id="model-wireframe" type="button">WIREFRAME</button>
               <button id="model-grid" class="on" type="button">GRID</button>
               <button id="model-skeleton" type="button">SKELETON</button>
+            </div>
+            <div id="model-rotation-help" hidden
+              aria-label="Rotation controls: drag the center for free rotation; drag the X, Y, or Z ring for constrained rotation.">
+              <span class="model-rotation-label">ROTATE</span>
+              <span data-axis="XYZE"><b></b>FREE</span>
+              <span data-axis="X"><b>X</b></span>
+              <span data-axis="Y"><b>Y</b></span>
+              <span data-axis="Z"><b>Z</b></span>
             </div>
             <div id="model-animation-bar">
               <button id="model-anim-play" type="button" disabled>PLAY</button>
