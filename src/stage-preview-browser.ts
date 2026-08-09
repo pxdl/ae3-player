@@ -79,6 +79,8 @@ export class StagePreviewBrowser {
     #selectionGeneration = 0;
     #exporting = false;
     #open = false;
+    #titleVisible = true;
+    #titleAvailable = false;
 
     constructor(hooks: StagePreviewBrowserHooks) {
         this.#hooks = hooks;
@@ -100,9 +102,14 @@ export class StagePreviewBrowser {
         $("stage-preview-export-ipc").onclick = () => void this.#export("ipc");
         $("stage-preview-export-tm2").onclick = () => void this.#export("tm2");
         $("stage-preview-export-archive").onclick = () => void this.#export("archive");
+        $<HTMLButtonElement>("stage-preview-title-toggle").onclick = () => {
+            this.#titleVisible = !this.#titleVisible;
+            this.#syncTitleVisibility();
+        };
         $<HTMLInputElement>("stage-preview-iso").onchange = () =>
             void this.#reconnectIso();
         this.#updateActions();
+        this.#syncTitleVisibility();
     }
 
     setStore(store: StagePreviewStore): void {
@@ -113,6 +120,9 @@ export class StagePreviewBrowser {
         this.#selected = null;
         this.#decoded = null;
         this.#catalogPending = null;
+        this.#titleAvailable = false;
+        $("stage-preview-composite").hidden = true;
+        this.#syncTitleVisibility();
         this.#renderList();
         this.#updateActions();
         if (this.#open) void this.#ensureCatalog();
@@ -140,6 +150,7 @@ export class StagePreviewBrowser {
             selected: this.#selected?.key ?? null,
             frame: this.#frame,
             decoded: this.#decoded !== null,
+            titleVisible: this.#titleVisible,
             exporting: this.#exporting,
         };
     }
@@ -277,10 +288,14 @@ export class StagePreviewBrowser {
         this.#renderFrameButtons();
         this.#renderInspector(stage, frame);
         this.#updateActions();
+        const composite = $("stage-preview-composite");
         const previewCanvas = $<HTMLCanvasElement>("stage-preview-canvas");
         const titleCanvas = $<HTMLCanvasElement>("stage-preview-title");
+        composite.hidden = true;
         previewCanvas.hidden = true;
         titleCanvas.hidden = true;
+        this.#titleAvailable = false;
+        this.#syncTitleVisibility();
         this.#setPreviewState(`Decoding ${frame.member.name}.ipc…`);
 
         try {
@@ -294,6 +309,9 @@ export class StagePreviewBrowser {
             const image = await this.#decoder.decode(ipc, frame.member.name);
             if (generation !== this.#selectionGeneration) return;
             drawImage(previewCanvas, image);
+            this.#titleAvailable = true;
+            this.#syncTitleVisibility();
+            composite.hidden = false;
             this.#decoded = { key: stage.key, frame: frameIndex, image };
             this.#setPreviewState("");
             this.#updateActions();
@@ -302,6 +320,9 @@ export class StagePreviewBrowser {
             if (generation !== this.#selectionGeneration
                 || cause instanceof StagePreviewDecodeCancelledError)
                 return;
+            composite.hidden = true;
+            this.#titleAvailable = false;
+            this.#syncTitleVisibility();
             const message = this.#hooks.friendlyError(cause);
             this.#setPreviewState(message, true);
             this.#hooks.status(message, true);
@@ -351,6 +372,21 @@ export class StagePreviewBrowser {
                 ["Qword padding", byteDetail(frame.ipc.paddingSize)],
             ]),
         ].join("");
+    }
+
+    #syncTitleVisibility(): void {
+        const layer = $("stage-preview-title-layer");
+        const button = $<HTMLButtonElement>("stage-preview-title-toggle");
+        const hidden = !this.#titleAvailable || !this.#titleVisible;
+        layer.hidden = !this.#titleAvailable;
+        layer.classList.toggle("title-hidden", !this.#titleVisible);
+        layer.setAttribute("aria-hidden", String(hidden));
+        button.disabled = !this.#titleAvailable;
+        button.classList.toggle("on", this.#titleVisible);
+        button.setAttribute("aria-pressed", String(this.#titleVisible));
+        const action = this.#titleVisible ? "Hide" : "Show";
+        button.setAttribute("aria-label", `${action} title art`);
+        button.title = `${action} title art`;
     }
 
     #setPreviewState(message: string, error = false): void {

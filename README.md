@@ -83,6 +83,8 @@ title image per raw stage key.
 
 A dedicated worker bridges one IPC still to FFmpeg's IPU decoder, restores the
 game's column-major macroblock placement, and returns one 256x256 RGBA frame.
+The authored 256x128 `_t` title is centered over that still and can be hidden
+without changing any export.
 There is no movie timeline, inferred timing, or friendly-name mapping. The
 inspector reports the raw archive, slot, IPC, and TIM2 metadata. Exports preserve
 the selected `.ipc`, title `.tm2`, or complete `stages.bin` byte for byte; PNG

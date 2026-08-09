@@ -396,13 +396,25 @@
         </header>
         <div id="stage-preview-workspace" hidden>
           <section id="stage-preview-display" aria-label="Selected stage preview">
-            <div id="stage-preview-title-card">
-              <span>TITLE ART / _t</span>
-              <canvas id="stage-preview-title" aria-label="Selected stage title art" hidden></canvas>
-            </div>
             <div id="stage-preview-picture">
-              <canvas id="stage-preview-canvas" width="256" height="256"
-                aria-label="Selected 256 by 256 stage preview" hidden></canvas>
+              <div id="stage-preview-composite" hidden>
+                <canvas id="stage-preview-canvas" width="256" height="256"
+                  aria-label="Selected 256 by 256 stage preview" hidden></canvas>
+                <div id="stage-preview-title-layer" aria-hidden="false" hidden>
+                  <canvas id="stage-preview-title"
+                    aria-label="Selected stage title art" hidden></canvas>
+                </div>
+              </div>
+              <button id="stage-preview-title-toggle" type="button" class="on"
+                aria-pressed="true" aria-controls="stage-preview-title-layer"
+                aria-label="Hide title art" title="Hide title art" disabled>
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"></path>
+                  <circle cx="12" cy="12" r="2.5"></circle>
+                  <path class="stage-preview-title-slash" d="m5 4 14 16"></path>
+                </svg>
+                <span aria-hidden="true">TITLE</span>
+              </button>
               <p id="stage-preview-state" aria-live="polite">Select a stage.</p>
             </div>
             <div id="stage-preview-frames" role="group" aria-label="IPC still frame">
