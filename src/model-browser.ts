@@ -278,6 +278,7 @@ export class ModelBrowser {
     private resizeObserver: ResizeObserver | null = null;
     private lastFrame = performance.now();
     private sceneRadius = 0;
+    private rotationEnabled = false;
     private playing = true;
     private readonly status: Status;
 
@@ -355,6 +356,8 @@ export class ModelBrowser {
         element<HTMLButtonElement>("model-export-source").addEventListener("click", () => this.exportSource());
         element<HTMLButtonElement>("model-export-glb").addEventListener("click", () => void this.exportGlb());
         element<HTMLButtonElement>("model-reset-view").addEventListener("click", () => this.frameLoaded());
+        element<HTMLButtonElement>("model-rotation-toggle").addEventListener("click", event =>
+            this.toggleRotation(event.currentTarget as HTMLButtonElement));
         element<HTMLButtonElement>("model-wireframe").addEventListener("click", event =>
             this.toggleWireframe(event.currentTarget as HTMLButtonElement));
         element<HTMLButtonElement>("model-grid").addEventListener("click", event =>
@@ -731,13 +734,23 @@ export class ModelBrowser {
         this.viewRoot.add(viewOffset);
         this.scene!.add(this.viewRoot);
         const hasGeometry = loaded.root.children.length > 0;
-        if (hasGeometry) this.rotationControls?.attach(this.viewRoot);
-        element<HTMLElement>("model-rotation-help").hidden = !hasGeometry;
-        if (loaded.model && loaded.model.bones.length > 0) {
+        element<HTMLButtonElement>("model-reset-view").disabled = !hasGeometry;
+        element<HTMLButtonElement>("model-wireframe").disabled = !hasGeometry;
+        const rotationButton = element<HTMLButtonElement>("model-rotation-toggle");
+        rotationButton.disabled = !hasGeometry;
+        if (hasGeometry && this.rotationEnabled) this.rotationControls?.attach(this.viewRoot);
+        element<HTMLElement>("model-rotation-help").hidden =
+            !hasGeometry || !this.rotationEnabled;
+        const hasSkeleton = Boolean(loaded.model?.bones.length);
+        element<HTMLButtonElement>("model-skeleton").disabled = !hasSkeleton;
+        if (hasSkeleton) {
             this.skeleton = new THREE.SkeletonHelper(loaded.root);
             this.skeleton.visible = element<HTMLButtonElement>("model-skeleton").classList.contains("on");
             this.scene!.add(this.skeleton);
         }
+        this.applyWireframe(
+            element<HTMLButtonElement>("model-wireframe").classList.contains("on"),
+        );
         this.mixer = new THREE.AnimationMixer(loaded.root);
         this.populateAnimations(loaded);
         this.frameLoaded();
@@ -758,6 +771,10 @@ export class ModelBrowser {
         if (this.controls) this.controls.enabled = true;
         element<HTMLElement>("model-viewport").classList.remove("rotating-model");
         element<HTMLElement>("model-rotation-help").hidden = true;
+        element<HTMLButtonElement>("model-reset-view").disabled = true;
+        element<HTMLButtonElement>("model-wireframe").disabled = true;
+        element<HTMLButtonElement>("model-rotation-toggle").disabled = true;
+        element<HTMLButtonElement>("model-skeleton").disabled = true;
         this.updateRotationHint(null);
         if (this.skeleton && this.scene) this.scene.remove(this.skeleton);
         this.skeleton = null;
@@ -841,6 +858,27 @@ export class ModelBrowser {
         else delete hint.dataset.activeAxis;
     }
 
+    private toggleRotation(button: HTMLButtonElement): void {
+        if (!this.viewRoot) return;
+        this.rotationEnabled = !this.rotationEnabled;
+        button.classList.toggle("on", this.rotationEnabled);
+        button.setAttribute("aria-pressed", String(this.rotationEnabled));
+        button.setAttribute("aria-label",
+                            this.rotationEnabled ? "Stop rotating model" : "Rotate model");
+        button.title = this.rotationEnabled
+            ? "Turn off model rotation"
+            : "Rotate model freely or around one axis";
+        if (this.rotationEnabled) {
+            this.rotationControls?.attach(this.viewRoot);
+        } else {
+            this.rotationControls?.detach();
+            if (this.controls) this.controls.enabled = true;
+            element<HTMLElement>("model-viewport").classList.remove("rotating-model");
+            this.updateRotationHint(null);
+        }
+        element<HTMLElement>("model-rotation-help").hidden = !this.rotationEnabled;
+    }
+
     private frameLoaded(): void {
         if (!this.loaded || !this.camera || !this.controls) return;
         const box = new THREE.Box3().setFromObject(this.viewRoot ?? this.loaded.root);
@@ -864,8 +902,15 @@ export class ModelBrowser {
     }
 
     private toggleWireframe(button: HTMLButtonElement): void {
-        button.classList.toggle("on");
-        const enabled = button.classList.contains("on");
+        const enabled = button.classList.toggle("on");
+        button.setAttribute("aria-pressed", String(enabled));
+        const label = enabled ? "Hide wireframe" : "Show wireframe";
+        button.setAttribute("aria-label", label);
+        button.title = label;
+        this.applyWireframe(enabled);
+    }
+
+    private applyWireframe(enabled: boolean): void {
         this.loaded?.root.traverse(object => {
             if (!(object instanceof THREE.Mesh)) return;
             const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -874,14 +919,22 @@ export class ModelBrowser {
     }
 
     private toggleGrid(button: HTMLButtonElement): void {
-        button.classList.toggle("on");
+        const enabled = button.classList.toggle("on");
+        button.setAttribute("aria-pressed", String(enabled));
+        const label = enabled ? "Hide floor grid" : "Show floor grid";
+        button.setAttribute("aria-label", label);
+        button.title = label;
         const grid = this.scene?.getObjectByName("MODEL_GRID");
-        if (grid) grid.visible = button.classList.contains("on");
+        if (grid) grid.visible = enabled;
     }
 
     private toggleSkeleton(button: HTMLButtonElement): void {
-        button.classList.toggle("on");
-        if (this.skeleton) this.skeleton.visible = button.classList.contains("on");
+        const enabled = button.classList.toggle("on");
+        button.setAttribute("aria-pressed", String(enabled));
+        const label = enabled ? "Hide skeleton" : "Show skeleton";
+        button.setAttribute("aria-label", label);
+        button.title = label;
+        if (this.skeleton) this.skeleton.visible = enabled;
     }
 
 
