@@ -2339,26 +2339,68 @@ button.ex-row:disabled {
     flex-wrap: wrap;
     gap: 5px;
     padding: 5px;
-    border-radius: 7px;
+    border-radius: 8px;
     background: oklch(0.17 0.018 240 / 0.86);
     box-shadow:
         0 10px 28px oklch(0 0 0 / 0.35),
         inset 0 0 0 1px oklch(1 0 0 / 0.1);
     backdrop-filter: blur(14px);
 }
-#model-toolbar button {
-    min-height: 34px;
-    padding: 6px 8px;
+#model-toolbar button,
+#model-transform-toolbar button {
+    display: inline-flex;
+    min-height: 40px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 9px;
     border-color: transparent;
     color: var(--dim);
     font-size: 8px;
-    transition-property: color, background-color, border-color;
+    transition-property: color, background-color, border-color, opacity;
     transition-duration: 120ms;
 }
-#model-toolbar button:hover, #model-toolbar button.on {
+.model-tool-icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    fill: none;
+    stroke: currentcolor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+}
+.model-tool-label { pointer-events: none; }
+#model-toolbar button:not(:disabled):hover,
+#model-toolbar button.on,
+#model-transform-toolbar button:not(:disabled):hover,
+#model-transform-toolbar button.on {
     color: var(--model-accent);
     border-color: color-mix(in srgb, var(--model-accent) 40%, transparent);
     background: color-mix(in srgb, var(--model-accent) 10%, transparent);
+}
+#model-toolbar button:focus-visible,
+#model-transform-toolbar button:focus-visible {
+    outline: 2px solid var(--model-accent);
+    outline-offset: 2px;
+}
+#model-transform-toolbar {
+    position: absolute;
+    z-index: 2;
+    top: 12px;
+    right: 12px;
+    padding: 5px;
+    border-radius: 8px;
+    background: oklch(0.17 0.018 240 / 0.86);
+    box-shadow:
+        0 10px 28px oklch(0 0 0 / 0.35),
+        inset 0 0 0 1px oklch(1 0 0 / 0.1);
+    backdrop-filter: blur(14px);
+}
+#model-toolbar button:disabled,
+#model-transform-toolbar button:disabled {
+    opacity: 0.38;
+    cursor: default;
 }
 #model-rotation-help {
     position: absolute;
@@ -2581,6 +2623,12 @@ button.ex-row:disabled {
     }
     #model-anim-time { grid-column: 1 / -1; }
     #model-anim-readout { display: none; }
-    #model-toolbar { right: 12px; }
+    #model-toolbar { right: 64px; }
+    #model-toolbar button, #model-transform-toolbar button {
+        width: 40px;
+        padding-inline: 0;
+    }
+    #model-toolbar .model-tool-label,
+    #model-transform-toolbar .model-tool-label { display: none; }
     #model-rotation-help { bottom: 104px; }
 }

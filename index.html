@@ -449,13 +449,51 @@
           </div>
         </header>
         <div id="model-workspace" hidden>
-          <section id="model-viewport" aria-label="Realtime 3D model preview. Drag the background to orbit. Drag the center rotation handle for free rotation, or a colored ring to rotate on one axis.">
+          <section id="model-viewport" aria-label="Realtime 3D model preview. Drag the background to orbit. Use the Rotate tool to turn the model freely or around one axis.">
             <canvas id="model-canvas"></canvas>
-            <div id="model-toolbar" aria-label="3D view controls">
-              <button id="model-reset-view" type="button">FRAME</button>
-              <button id="model-wireframe" type="button">WIREFRAME</button>
-              <button id="model-grid" class="on" type="button">GRID</button>
-              <button id="model-skeleton" type="button">SKELETON</button>
+            <div id="model-toolbar" aria-label="3D view options">
+              <button id="model-reset-view" type="button" aria-label="Frame model"
+                title="Frame model" disabled>
+                <svg class="model-tool-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+                  <rect x="9" y="9" width="6" height="6" rx="1" />
+                </svg>
+                <span class="model-tool-label">FRAME</span>
+              </button>
+              <button id="model-wireframe" type="button" aria-label="Show wireframe"
+                aria-pressed="false" title="Show wireframe" disabled>
+                <svg class="model-tool-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
+                  <path d="m4 7.5 8 4.5 8-4.5M12 12v9" />
+                </svg>
+                <span class="model-tool-label">WIREFRAME</span>
+              </button>
+              <button id="model-grid" class="on" type="button" aria-label="Hide floor grid"
+                aria-pressed="true" title="Hide floor grid">
+                <svg class="model-tool-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m4 7 8-4 8 4-8 4-8-4Zm0 5 8 4 8-4M4 17l8 4 8-4" />
+                </svg>
+                <span class="model-tool-label">GRID</span>
+              </button>
+              <button id="model-skeleton" type="button" aria-label="Show skeleton"
+                aria-pressed="false" title="Show skeleton" disabled>
+                <svg class="model-tool-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="2" />
+                  <path d="M12 7v6m-4-3h8m-4 3-4 7m4-7 4 7" />
+                </svg>
+                <span class="model-tool-label">SKELETON</span>
+              </button>
+            </div>
+            <div id="model-transform-toolbar" aria-label="Model transform tools">
+              <button id="model-rotation-toggle" type="button" aria-label="Rotate model"
+                aria-pressed="false" title="Rotate model freely or around one axis" disabled>
+                <svg class="model-tool-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M20 11a8 8 0 1 1-2.34-5.66L20 7.68" />
+                  <path d="M20 3v4.68h-4.68" />
+                  <circle cx="12" cy="12" r="2.5" />
+                </svg>
+                <span class="model-tool-label">ROTATE</span>
+              </button>
             </div>
             <div id="model-rotation-help" hidden
               aria-label="Rotation controls: drag the center for free rotation; drag the X, Y, or Z ring for constrained rotation.">
