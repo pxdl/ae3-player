@@ -67,6 +67,23 @@ async function pngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
     return promise;
 }
 
+function compositePngBlob(preview: HTMLCanvasElement,
+                          title: HTMLCanvasElement): Promise<Blob> {
+    const composite = document.createElement("canvas");
+    composite.width = preview.width;
+    composite.height = preview.height;
+    const context = composite.getContext("2d");
+    if (!context)
+        throw new Error("2D canvas is unavailable");
+    context.imageSmoothingEnabled = false;
+    context.drawImage(preview, 0, 0);
+    const scale = preview.width / title.width;
+    const titleHeight = title.height * scale;
+    context.drawImage(title, 0, (preview.height - titleHeight) / 2,
+                      preview.width, titleHeight);
+    return pngBlob(composite);
+}
+
 export class StagePreviewBrowser {
     readonly #hooks: StagePreviewBrowserHooks;
     #store: StagePreviewStore | null = null;
@@ -99,6 +116,9 @@ export class StagePreviewBrowser {
                 void this.#select(this.#selected, frame);
         });
         $("stage-preview-export-png").onclick = () => void this.#export("png");
+        $("stage-preview-export-title-png").onclick = () => void this.#export("titlePng");
+        $("stage-preview-export-composite-png").onclick = () =>
+            void this.#export("compositePng");
         $("stage-preview-export-ipc").onclick = () => void this.#export("ipc");
         $("stage-preview-export-tm2").onclick = () => void this.#export("tm2");
         $("stage-preview-export-archive").onclick = () => void this.#export("archive");
@@ -400,8 +420,13 @@ export class StagePreviewBrowser {
         const selected = this.#selected !== null;
         const decoded = this.#decoded?.key === this.#selected?.key
             && this.#decoded?.frame === this.#frame;
+        const decodedTitle = decoded && this.#titleAvailable;
         $<HTMLButtonElement>("stage-preview-export-png").disabled =
             this.#exporting || !decoded;
+        $<HTMLButtonElement>("stage-preview-export-title-png").disabled =
+            this.#exporting || !decodedTitle;
+        $<HTMLButtonElement>("stage-preview-export-composite-png").disabled =
+            this.#exporting || !decodedTitle;
         $<HTMLButtonElement>("stage-preview-export-ipc").disabled =
             this.#exporting || !selected;
         $<HTMLButtonElement>("stage-preview-export-tm2").disabled =
@@ -410,33 +435,56 @@ export class StagePreviewBrowser {
             this.#exporting || !this.#catalog;
     }
 
-    async #export(kind: "png" | "ipc" | "tm2" | "archive"): Promise<void> {
+    async #export(kind: "png" | "titlePng" | "compositePng"
+                         | "ipc" | "tm2" | "archive"): Promise<void> {
         const store = this.#store;
         const stage = this.#selected;
         const frame = stage?.frames[this.#frame];
         if (!store || this.#exporting) return;
         if (kind !== "archive" && (!stage || !frame)) return;
-        if (kind === "png" && (this.#decoded?.key !== stage!.key
-            || this.#decoded.frame !== this.#frame))
+        const decoded = this.#decoded?.key === stage?.key
+            && this.#decoded?.frame === this.#frame;
+        const derivedPng = kind === "png" || kind === "titlePng"
+            || kind === "compositePng";
+        if (derivedPng && !decoded) return;
+        if ((kind === "titlePng" || kind === "compositePng")
+            && !this.#titleAvailable)
             return;
+
         this.#exporting = true;
         this.#updateActions();
         try {
+            let filename: string;
             if (kind === "archive") {
+                filename = "stages.bin";
                 const archive = await store.readArchive();
                 if (!archive) throw new Error("stage-preview archive is unavailable");
-                download(archive, "stages.bin", "application/octet-stream");
+                download(archive, filename, "application/octet-stream");
             } else if (kind === "ipc") {
-                download(await store.readFrame(frame!), `${frame!.member.name}.ipc`,
+                filename = `${frame!.member.name}.ipc`;
+                download(await store.readFrame(frame!), filename,
                     "application/octet-stream");
             } else if (kind === "tm2") {
-                download(await store.readTitle(stage!.title), `${stage!.title.member.name}.tm2`,
+                filename = `${stage!.title.member.name}.tm2`;
+                download(await store.readTitle(stage!.title), filename,
                     "application/octet-stream");
             } else {
-                const blob = await pngBlob($<HTMLCanvasElement>("stage-preview-canvas"));
-                download(blob, `${frame!.member.name}.png`, "image/png");
+                const previewCanvas = $<HTMLCanvasElement>("stage-preview-canvas");
+                const titleCanvas = $<HTMLCanvasElement>("stage-preview-title");
+                let blob: Blob;
+                if (kind === "titlePng") {
+                    filename = `${stage!.title.member.name}.png`;
+                    blob = await pngBlob(titleCanvas);
+                } else if (kind === "compositePng") {
+                    filename = `${frame!.member.name}_composite.png`;
+                    blob = await compositePngBlob(previewCanvas, titleCanvas);
+                } else {
+                    filename = `${frame!.member.name}.png`;
+                    blob = await pngBlob(previewCanvas);
+                }
+                download(blob, filename, "image/png");
             }
-            this.#hooks.status(`Exported ${kind === "archive" ? "stages.bin" : kind.toUpperCase()}`);
+            this.#hooks.status(`Exported ${filename}`);
         } catch (cause) {
             const message = this.#hooks.friendlyError(cause);
             this.#hooks.status(message, true);

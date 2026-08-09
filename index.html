@@ -388,10 +388,18 @@
             <h2>STAGE PREVIEWS</h2>
           </div>
           <div id="stage-preview-actions">
-            <button id="stage-preview-export-png" type="button" disabled>EXPORT PNG</button>
-            <button id="stage-preview-export-ipc" type="button" disabled>EXPORT .IPC</button>
-            <button id="stage-preview-export-tm2" type="button" disabled>EXPORT .TM2</button>
-            <button id="stage-preview-export-archive" type="button" disabled>EXPORT STAGES.BIN</button>
+            <button id="stage-preview-export-png" type="button"
+              title="Export the selected still without title art" disabled>PREVIEW PNG</button>
+            <button id="stage-preview-export-title-png" type="button"
+              title="Export decoded title art with transparency" disabled>TITLE PNG</button>
+            <button id="stage-preview-export-composite-png" type="button"
+              title="Export the centered title art over the selected still" disabled>COMPOSITE PNG</button>
+            <button id="stage-preview-export-ipc" type="button"
+              title="Export the original selected still" disabled>PREVIEW .IPC</button>
+            <button id="stage-preview-export-tm2" type="button"
+              title="Export the original title art" disabled>TITLE .TM2</button>
+            <button id="stage-preview-export-archive" type="button"
+              title="Export the complete original stage archive" disabled>STAGES.BIN</button>
           </div>
         </header>
         <div id="stage-preview-workspace" hidden>

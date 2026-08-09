@@ -492,7 +492,7 @@ const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u
 const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
-const KEYS_STAGE_PREVIEWS = "↑↓ stage · ←→ frame · E PNG · X IPC · T TIM2 · A stages.bin";
+const KEYS_STAGE_PREVIEWS = "↑↓ stage · ←→ frame · E preview PNG · X IPC · T TM2 · A stages.bin";
 const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
     + "drag background to orbit · enable ROTATE, then drag center freely or an X/Y/Z ring";
 
