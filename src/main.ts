@@ -484,7 +484,7 @@ const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s ·
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
 const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
-    + "R model rotation toggle · drag model to rotate · drag to orbit camera · wheel zoom";
+    + "drag background to orbit · drag center for free rotation · drag X/Y/Z ring to constrain";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
