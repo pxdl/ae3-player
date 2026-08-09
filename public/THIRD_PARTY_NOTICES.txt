@@ -2,10 +2,10 @@ ae3-player third-party notices
 ================================
 
 The ae3-player source code is licensed under the MIT License except where an
-individual file says otherwise. Cinema playback and Fast MP4 export contain
-separately licensed software. The MPEG-2 decoder and direct export modules are
-downloaded and cached independently on first use; neither is part of the
-initial PWA precache.
+individual file says otherwise. Cinema playback, stage-preview still decoding,
+and Fast MP4 export contain separately licensed software. The MPEG-2/IPU decoder
+and direct export modules are downloaded and cached independently on first use;
+neither is part of the initial PWA precache.
 
 No Ape Escape 3 game data is included in this distribution.
 
@@ -18,7 +18,7 @@ https://github.com/Yahweasel/libav.js/tree/65ce461de1add4c96bc74fac52bd239f900ec
 Deployed corresponding-source bundle:
 ./libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz
 SHA-256:
-98d10302b871fca74247244eb44a19b4944339f38617690c02d81bec6a50586f
+a92d2b0ca1032baf12c37797a44644c3f2ce07fdca365da250e81eac39b43da8
 The bundle contains the exact libav.js commit archive, FFmpeg 8.1 and
 emfiberthreads 1.3 source archives, custom configuration, build script, and
 license texts. Upstream source archives:
@@ -30,10 +30,11 @@ also kept at:
 https://github.com/pxdl/ae3-player/tree/main/vendor/libav
 
 The three runtime files under public/libav/ form the non-threaded ae3-mpeg2
-decoder used for original MPEG-2 Cinema playback and Fast MP4 frame extraction.
-The build enables the raw mpegvideo demuxer, MPEG video parser and MPEG-2
-decoder, plus the buffer, buffersink, format, and yadif filters required for
-presentation and export. It contains no GPL codecs or game data.
+decoder used for original MPEG-2 Cinema playback, Fast MP4 frame extraction,
+and IPU stage-preview stills. The build enables the raw mpegvideo and ipu
+demuxers, their parsers, the MPEG-2 and IPU decoders, and the playback filter
+support required for presentation and export. It contains no GPL codecs or
+game data.
 emfiberthreads is 0BSD-licensed; its license is included in the
 corresponding-source bundle and reproduced in
 vendor/libav/LICENSE.emfiberthreads.txt.

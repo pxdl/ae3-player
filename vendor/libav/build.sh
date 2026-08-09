@@ -16,6 +16,7 @@ ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 WORK=${TMPDIR:-/tmp}/ae3-libav-$LIBAV_COMMIT
 SRC=$WORK/libav.js
 OUT=$ROOT/public/libav
+SOURCE_ARCHIVE=$OUT/libav-$LIBAV_VERSION-$VARIANT-sources.tar.gz
 
 case "$(emcc --version | sed -n '1p')" in
     *" $EMSCRIPTEN_VERSION "*) ;;
@@ -57,6 +58,19 @@ printf '%s  %s\n' "$EMFIBERTHREADS_SHA256" "$EMFIBERTHREADS_ARCHIVE" | shasum -a
         "dist/libav-$LIBAV_VERSION-$VARIANT.mjs" \
         "dist/libav-$LIBAV_VERSION-$VARIANT.wasm.mjs"
 )
+# GitHub source archives have no .git directory, so upstream's license-header
+# helper cannot derive the release tag for the WASM loader.
+WASM_LOADER=$SRC/dist/libav-$LIBAV_VERSION-$VARIANT.wasm.mjs
+case "$(sed -n '2p' "$WASM_LOADER")" in
+    " * libav.js ")
+        sed "2s/.*/ * libav.js v$LIBAV_VERSION/" "$WASM_LOADER" \
+            > "$WASM_LOADER.tmp"
+        mv "$WASM_LOADER.tmp" "$WASM_LOADER"
+        ;;
+    " * libav.js v$LIBAV_VERSION") ;;
+    *) echo "error: unexpected libav.js license header" >&2; exit 1 ;;
+esac
+
 
 for artifact in \
     "libav-$LIBAV_VERSION-$VARIANT.mjs" \
@@ -65,6 +79,36 @@ for artifact in \
 do
     install -m 0644 "$SRC/dist/$artifact" "$OUT/$artifact"
 done
+
+BUNDLE=$WORK/source-bundle
+mkdir -p "$BUNDLE"
+install -m 0644 "$SCRIPT_DIR/config/ae3-mpeg2.json" "$BUNDLE/ae3-mpeg2.json"
+install -m 0755 "$SCRIPT_DIR/build.sh" "$BUNDLE/build.sh"
+install -m 0644 \
+    "$SCRIPT_DIR/LICENSE.emfiberthreads.txt" \
+    "$SCRIPT_DIR/LICENSE.ffmpeg-lgpl-2.1.txt" \
+    "$SCRIPT_DIR/LICENSE.libavjs.txt" \
+    "$SCRIPT_DIR/README.txt" \
+    "$BUNDLE/"
+install -m 0644 "$LIBAV_ARCHIVE" \
+    "$BUNDLE/libav.js-$LIBAV_COMMIT.tar.gz"
+install -m 0644 "$FFMPEG_ARCHIVE" \
+    "$BUNDLE/ffmpeg-$FFMPEG_VERSION.tar.xz"
+install -m 0644 "$EMFIBERTHREADS_ARCHIVE" \
+    "$BUNDLE/emfiberthreads-$EMFIBERTHREADS_VERSION.tar.gz"
+(
+    cd "$BUNDLE"
+    COPYFILE_DISABLE=1 tar czf "$SOURCE_ARCHIVE" \
+        ae3-mpeg2.json \
+        build.sh \
+        "emfiberthreads-$EMFIBERTHREADS_VERSION.tar.gz" \
+        "ffmpeg-$FFMPEG_VERSION.tar.xz" \
+        "libav.js-$LIBAV_COMMIT.tar.gz" \
+        LICENSE.emfiberthreads.txt \
+        LICENSE.ffmpeg-lgpl-2.1.txt \
+        LICENSE.libavjs.txt \
+        README.txt
+)
 
 {
     printf '%s  %s\n' "$LIBAV_SHA256" "libav.js-$LIBAV_COMMIT.tar.gz"
@@ -75,7 +119,8 @@ done
     shasum -a 256 \
         "public/libav/libav-$LIBAV_VERSION-$VARIANT.mjs" \
         "public/libav/libav-$LIBAV_VERSION-$VARIANT.wasm.mjs" \
-        "public/libav/libav-$LIBAV_VERSION-$VARIANT.wasm.wasm"
+        "public/libav/libav-$LIBAV_VERSION-$VARIANT.wasm.wasm" \
+        "public/libav/libav-$LIBAV_VERSION-$VARIANT-sources.tar.gz"
 } > "$SCRIPT_DIR/SHA256SUMS"
 
 printf 'Built libav.js %s (%s) with FFmpeg %s and emcc %s.\n' \

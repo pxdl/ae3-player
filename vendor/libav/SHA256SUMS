@@ -2,6 +2,6 @@ f6173cabac0000434f5d737ce41f21d5aaa4baa04e0116d2f203b1fd9a2554b4  libav.js-65ce4
 b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a  ffmpeg-8.1.tar.xz
 0fe933d7742de3b3213608e0fb087a1ae0d060604d5835f7c9cdfcee0fc8cbcb  emfiberthreads-1.3.tar.gz
 7f8d4a2a25fffa6dbbed7bbf2f8153bb29dfd3e380fedfa8aa63e8f0e17ed2da  public/libav/libav-6.9.8.1-ae3-mpeg2.mjs
-c1b82bb5a4e274cbc7a59410477f539d6a5c774bcf7bf6a8c9c572ef4e456b5d  public/libav/libav-6.9.8.1-ae3-mpeg2.wasm.mjs
-61505a0d8bc85002eaa77b9f6b8f76af06102b5ffe4226827dfb9699ef4c6e6c  public/libav/libav-6.9.8.1-ae3-mpeg2.wasm.wasm
-98d10302b871fca74247244eb44a19b4944339f38617690c02d81bec6a50586f  public/libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz
+e77203c019e600266d83d962a3c86e21f15ea4c86ad896dca1176f62cd7d32dc  public/libav/libav-6.9.8.1-ae3-mpeg2.wasm.mjs
+194d45705a6930c8dee0cc9799c9a7b6f2be56253e1cb85cc52eaf62e759398f  public/libav/libav-6.9.8.1-ae3-mpeg2.wasm.wasm
+a92d2b0ca1032baf12c37797a44644c3f2ce07fdca365da250e81eac39b43da8  public/libav/libav-6.9.8.1-ae3-mpeg2-sources.tar.gz

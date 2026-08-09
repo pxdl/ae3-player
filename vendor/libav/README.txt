@@ -1,9 +1,10 @@
-AE3 MPEG-2 playback decoder
-===========================
+AE3 MPEG-2 and IPU decoder
+=========================
 
 This directory reproduces the separately loaded libav.js decoder used for local
-FMV playback. It contains no game data. Normal Vite builds consume the checked-in
-public/libav artifacts and do not require Emscripten.
+FMV playback and 256x256 stage-preview stills. It contains no game data. Normal
+Vite builds consume the checked-in public/libav artifacts and do not require
+Emscripten.
 
 Pinned inputs
 -------------
@@ -14,12 +15,14 @@ Pinned inputs
 - Emscripten 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)
 - Node 22.16.0 supplied by that emsdk release
 
-SHA256SUMS records the exact source archives and generated artifacts. The custom
-fragment list is config/ae3-mpeg2.json. It deliberately links avformat, avcodec,
-and avfilter in addition to selecting the MPEG video demuxer/parser/decoder and
-buffer, format, and YADIF filters. The smaller initial hypothesis omitted those
-library fragments and exposed no demux/decode/filter API; omitting filter-format
-also made libav.js's ff_init_filter_graph unusable.
+SHA256SUMS records the exact source archives, generated runtime artifacts, and
+corresponding-source bundle. The custom fragment list is
+config/ae3-mpeg2.json. It deliberately links avformat, avcodec, and avfilter;
+selects the raw MPEG video and IPU demuxers and parsers; enables the MPEG-2
+video and IPU decoders; and retains the playback buffer, format, and YADIF
+filter support. The smaller initial hypothesis omitted those library fragments
+and exposed no demux/decode/filter API; omitting filter-format also made
+libav.js's ff_init_filter_graph unusable.
 
 Build
 -----
@@ -30,33 +33,35 @@ Activate emsdk 4.0.23 so emcc 4.0.23 and Node 22.16.0 are first on PATH, then ru
 
 The script downloads and verifies every source archive, generates the custom
 configuration, builds only the non-threaded ES-module loader and WASM target,
-installs the three public artifacts, and refreshes SHA256SUMS. ES modules are
-required because the decoder runs in a Vite module worker; the classic loader's
-`importScripts` path cannot coexist with Vite's development worker preamble.
+installs the three public runtime artifacts, creates their corresponding-source
+bundle, and refreshes SHA256SUMS. ES modules are required because the decoder
+runs in Vite module workers; the classic loader's importScripts path cannot
+coexist with Vite's development worker preamble.
 
-Measured artifacts (2026-07-21, Apple M4 Pro)
----------------------------------------------
+Measured runtime artifacts (2026-08-09, Apple M4 Pro)
+-----------------------------------------------------
 
                                                      raw bytes   gzip -9 bytes
 libav-6.9.8.1-ae3-mpeg2.mjs                             27,671          6,727
 libav-6.9.8.1-ae3-mpeg2.wasm.mjs                       275,524         57,062
-libav-6.9.8.1-ae3-mpeg2.wasm.wasm                      817,600        322,153
+libav-6.9.8.1-ae3-mpeg2.wasm.wasm                      821,748        323,837
                                                      ---------        -------
-total                                                 1,120,795        385,942
+total                                                 1,124,943        387,626
 
-A warm local Bun 1.3.14 initialization took 6.90 ms and began with 25,165,824
-bytes of WASM memory. Complete Chrome 150 decodes of one 17.65-second
-progressive source and one 4.00-second bottom-field-first source retained that
-fixed initial WASM allocation.
+Chrome decoded one 256x256 retail stage still from both the US retail disc and
+Japanese in-store demo with this build. The dedicated still-image worker
+retains only one decoded RGBA frame and shares no playback scheduling or audio
+path.
 
 License/build audit
 -------------------
 
 The generated FFmpeg configuration has CONFIG_GPL=0, CONFIG_NONFREE=0,
-CONFIG_VERSION3=0, and CONFIG_ENCODERS=0. MPEG-2 video is the only enabled
-decoder. The only selected demuxer is mpegvideo; selected playback filters are
-buffer, buffersink, format, and yadif. FFmpeg programs are disabled and no CLI
-fragment is linked. Generated artifacts retain the upstream LGPL header.
+CONFIG_VERSION3=0, and CONFIG_ENCODERS=0. MPEG-2 video and IPU are the only
+enabled decoders. The selected demuxers are mpegvideo and ipu, with their
+corresponding parsers. Playback retains buffer source/sink support plus the
+format and yadif filters. FFmpeg programs are disabled and no CLI fragment is
+linked. Generated artifacts retain the upstream LGPL header.
 
 LICENSE.libavjs.txt preserves the upstream project notice.
 LICENSE.ffmpeg-lgpl-2.1.txt is FFmpeg's unmodified LGPL-2.1 text.
@@ -75,3 +80,17 @@ Playback proof findings
   indexMpeg2SeekPoints(). A private 2026-07-21 gate over the supported US disc's
   22 streams found one sequence header and one temporal-reference-zero I-picture
   at every GOP anchor; no game bytes or private paths are retained here.
+
+Stage-preview still proof findings
+----------------------------------
+
+- ae3-sdk commit 3586deb170ac53dd2a5dd91423534e3fbc591e96 owns the IPC
+  validation and IPC-to-IPUM bridge. Both tested discs contain 28 slots,
+  224 IPC stills, and 28 TIM2 title images; every observed IPC control word is
+  0x0062, and the bridge inserts its low byte before the macroblock stream.
+- FFmpeg's IPU decoder writes raster-order YUV420P. For a retail seaside frame,
+  that output was byte-identical to the external GPL IPUenc oracle's mode 1.
+  Repositioning 16x16 luma and 8x8 chroma macroblocks into IPUenc's column-major
+  mode-2 destination was then byte-identical to the oracle's mode 2.
+- The shipped worker performs only that post-decode macroblock placement and
+  YUV-to-RGBA conversion. No IPUenc source or GPL implementation is included.

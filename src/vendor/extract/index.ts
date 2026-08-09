@@ -1,8 +1,8 @@
 /* @ae3/extract -- client-side Ape Escape 3 asset extraction.
  *
- * Chain: ISO file -> ISO9660 -> DATA.BIN -> VFI -> (.sz deflate, .pck) ->
- * assets / FMV demux -> OPFS cache. Everything runs on the user's machine
- * against their own disc image; this package ships no game data and uploads
+ * Chain: ISO file -> ISO9660 -> DATA.BIN -> VFI -> (.sz deflate, .pck,
+ * packfile) -> assets / FMV demux -> OPFS cache. Everything runs on the user's
+ * machine against their own disc image; this package ships no game data and uploads
  * nothing.
  *
  * Entry point for apps: openDisc(new BlobSource(file)).
@@ -19,6 +19,12 @@ export { unpackPck, memberBytes, typeOf, attrsOf, safeMember, pckFileNames,
          type PckMember } from "./pck.ts";
 export { inspectTim2, decodeTim2,
          type Tim2PictureInfo, type Tim2Image } from "./tim2.ts";
+export { inspectIpc, ipcToIpum, IPC_HEADER_SIZE, type IpcInfo } from "./ipc.ts";
+export {
+    parsePackfile, packfileMemberBytes,
+    PACKFILE_HEADER_SIZE, PACKFILE_MEMBER_HEADER_SIZE,
+    type Packfile, type PackfileSlot, type PackfileMember,
+} from "./packfile.ts";
 export { locateImageContainers, scanImageTextures, readImageTexture,
          type ImageTexture, type ImageScanOptions, type ImageRole,
          type ImageRoleEvidence } from "./images.ts";

@@ -38,6 +38,7 @@ import {
 } from "./images.ts";
 import { decodeTim2 } from "./vendor/extract/index.ts";
 import type { ModelBrowser } from "./model-browser.ts";
+import { StagePreviewBrowser } from "./stage-preview-browser.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
@@ -128,7 +129,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 }
 
 /* streams tab */
-let tab: "bgm" | "streams" | "se" | "fmv" | "images" | "models" = "bgm";
+let tab: "bgm" | "streams" | "se" | "fmv" | "images" | "stage-previews" | "models" = "bgm";
 let sCatalog: StreamCatalog | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
@@ -183,6 +184,14 @@ const SIDE_WIDTH_KEY = "ae3.sideWidth";
 let sideWidth = DEFAULT_SIDE_WIDTH;
 let modelBrowser: ModelBrowser | null = null;
 let modelBrowserLoading: Promise<ModelBrowser> | null = null;
+let stagePreviewBrowser: StagePreviewBrowser | null = null;
+
+function ensureStagePreviewBrowser(): StagePreviewBrowser {
+    stagePreviewBrowser ??= new StagePreviewBrowser({ status, friendlyError });
+    if (session) stagePreviewBrowser.setStore(session.stagePreviews);
+    return stagePreviewBrowser;
+}
+
 
 function ensureModelBrowser(): Promise<ModelBrowser> {
     if (modelBrowser) return Promise.resolve(modelBrowser);
@@ -483,6 +492,7 @@ const KEYS_SE = "SPACE play \u00B7 \u2191\u2193 move \u00B7 \u2190\u2192 fold \u
 const KEYS_FMV = "SPACE play · ↑↓ movie · ENTER play · ←→ seek 5 s · C captions "
     + "· F fullscreen · E exports · ESC exit/cancel · click bar to seek";
 const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 · A all PNG";
+const KEYS_STAGE_PREVIEWS = "↑↓ stage · ←→ frame · E PNG · X IPC · T TIM2 · A stages.bin";
 const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
     + "drag background to orbit · drag center for free rotation · drag X/Y/Z ring to constrain";
 
@@ -1239,7 +1249,7 @@ async function exportAllImages(): Promise<void> {
     }
 }
 
-function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "models"): void {
+function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "stage-previews" | "models"): void {
     if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
     $("tab-bgm").classList.toggle("on", t === "bgm");
@@ -1247,21 +1257,25 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "models"): v
     $("tab-se").classList.toggle("on", t === "se");
     $("tab-fmv").classList.toggle("on", t === "fmv");
     $("tab-images").classList.toggle("on", t === "images");
+    $("tab-stage-previews").classList.toggle("on", t === "stage-previews");
     $("tab-models").classList.toggle("on", t === "models");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
     $("seview").hidden = t !== "se";
     $("fmvview").hidden = t !== "fmv";
     $("imageview").hidden = t !== "images";
+    $("stage-preview-view").hidden = t !== "stage-previews";
     $("modelview").hidden = t !== "models";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
-    $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images" || t === "models";
+    $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images"
+        || t === "stage-previews" || t === "models";
     $("stream-main").hidden = t !== "streams";
     $("se-main").hidden = t !== "se";
     $("fmv-main").hidden = t !== "fmv";
     $("image-main").hidden = t !== "images";
+    $("stage-preview-main").hidden = t !== "stage-previews";
     $("model-main").hidden = t !== "models";
     $("keys").textContent = t === "bgm"
         ? keysBgmText
@@ -1269,7 +1283,13 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "models"): v
             ? KEYS_STREAMS
             : t === "se"
                 ? KEYS_SE
-                : t === "fmv" ? KEYS_FMV : t === "images" ? KEYS_IMAGES : KEYS_MODELS;
+                : t === "fmv"
+                    ? KEYS_FMV
+                    : t === "images"
+                        ? KEYS_IMAGES
+                        : t === "stage-previews"
+                            ? KEYS_STAGE_PREVIEWS
+                            : KEYS_MODELS;
     status("");
     viewerRevision++;
     movieController.setActive(t === "fmv" || viewerChannel === "cinema");
@@ -1277,6 +1297,8 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "models"): v
     if (t === "se") void ensureSeCatalog();
     if (t === "fmv") renderFmvStatic(movieController.snapshot());
     if (t === "images") void ensureImageCatalog();
+    if (t === "stage-previews") ensureStagePreviewBrowser().open();
+    else stagePreviewBrowser?.close();
     if (t === "models") void ensureModelBrowser().then(browser => browser.open());
     else modelBrowser?.close();
 }
@@ -2526,6 +2548,10 @@ function onKey(e: KeyboardEvent): void {
         if (e.key === "Escape") target.blur();
         return;
     }
+    if (tab === "stage-previews") {
+        if (stagePreviewBrowser?.handleKey(e)) e.preventDefault();
+        return;
+    }
     if (tab === "models") {
         if (modelBrowser?.handleKey(e)) e.preventDefault();
         return;
@@ -3138,6 +3164,7 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     session = s;
     await movieController.connect(s);
     modelBrowser?.setStore(s.models);
+    stagePreviewBrowser?.setStore(s.stagePreviews);
     $("picker").hidden = true;
     $("app").hidden = false;
     $("disc-id").textContent =
@@ -3311,6 +3338,7 @@ async function main(): Promise<void> {
                      thumbnails: imageThumbnailCache.size,
                      extracting: imageExtracting, exporting: imageExporting };
         },
+        get stagePreviewState() { return stagePreviewBrowser?.snapshot() ?? null; },
     };
     wirePicker();
     wireSideResizer();
@@ -3327,6 +3355,7 @@ async function main(): Promise<void> {
     $("tab-se").onclick = () => switchTab("se");
     $("tab-fmv").onclick = () => switchTab("fmv");
     $("tab-images").onclick = () => switchTab("images");
+    $("tab-stage-previews").onclick = () => switchTab("stage-previews");
     $("tab-models").onclick = () => switchTab("models");
     $("imagelist").addEventListener("click", event => {
         const target = event.target as Element;
@@ -3567,6 +3596,7 @@ async function main(): Promise<void> {
         const target = session;
         player?.pause();
         try {
+            stagePreviewBrowser?.dispose();
             await movieController.dispose();
             await target.forget();
             location.reload();
@@ -3579,6 +3609,7 @@ async function main(): Promise<void> {
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("pagehide", () => {
+        stagePreviewBrowser?.dispose();
         void movieController.dispose().catch((error) => {
             console.error("movie controller disposal failed", error);
         });

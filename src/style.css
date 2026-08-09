@@ -97,16 +97,18 @@ body.resizing-sidebar {
 }
 /* ---- sidebar tabs (BGM / STREAMS) --------------------------------------- */
 #tabs {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     padding: 0 14px 8px;
 }
 .tab {
-    flex: 1;
+    min-width: 0;
+    min-height: 40px;
     padding: 4px 0;
-    font-size: 11px;
-    letter-spacing: 0.08em;
     color: var(--dim);
+    font-size: 10px;
+    letter-spacing: 0.06em;
 }
 .tab.on { color: var(--accent); border-color: var(--accent); }
 
@@ -1889,6 +1891,295 @@ button.ex-row:disabled {
         flex-direction: column;
         gap: 4px;
     }
+}
+
+/* ---- Warpgate stage-preview stills ------------------------------------- */
+#stage-preview-view {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+}
+#stage-preview-view[hidden], #stage-preview-main[hidden],
+#stage-preview-setup[hidden], #stage-preview-workspace[hidden] { display: none; }
+.stage-preview-sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 14px 9px;
+    color: var(--dim);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+}
+.stage-preview-sidebar-head strong {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+}
+#stage-preview-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: 8px;
+    list-style: none;
+}
+.stage-preview-row button {
+    display: grid;
+    width: 100%;
+    min-height: 48px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 0;
+    color: var(--dim);
+    text-align: left;
+}
+.stage-preview-row button:hover,
+.stage-preview-row button:focus-visible {
+    color: var(--text);
+    background: var(--panel-hi);
+    outline: none;
+}
+.stage-preview-row.selected button {
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+    box-shadow: inset 3px 0 var(--accent);
+}
+.stage-preview-row strong {
+    overflow: hidden;
+    color: inherit;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.stage-preview-row span {
+    color: var(--dim);
+    font-size: 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+#stage-preview-main {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    gap: 12px;
+    overflow: auto;
+    padding: 14px 18px 18px;
+}
+#stage-preview-head {
+    display: flex;
+    flex: none;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--panel-hi);
+}
+#stage-preview-head h2 { font-size: 15px; letter-spacing: 0.06em; }
+.stage-preview-kicker {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+}
+#stage-preview-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+#stage-preview-actions button {
+    min-height: 40px;
+    padding: 8px 11px;
+}
+#stage-preview-actions button:disabled { color: var(--dim); cursor: default; }
+#stage-preview-workspace {
+    display: grid;
+    flex: 1;
+    min-height: 500px;
+    grid-template-columns: minmax(360px, 1fr) minmax(250px, 0.34fr);
+    gap: 12px;
+}
+#stage-preview-display {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    grid-template-rows: minmax(74px, auto) minmax(300px, 1fr) auto;
+    gap: 10px;
+}
+#stage-preview-title-card {
+    display: grid;
+    min-height: 74px;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 18px;
+    padding: 10px 14px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px #fff0d;
+}
+#stage-preview-title-card > span {
+    color: var(--dim);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+}
+#stage-preview-title {
+    max-width: 100%;
+    max-height: 62px;
+    justify-self: center;
+    image-rendering: pixelated;
+    box-shadow: 0 0 0 1px oklch(1 0 0 / 0.1);
+}
+#stage-preview-picture {
+    position: relative;
+    display: grid;
+    min-height: 300px;
+    place-items: center;
+    overflow: hidden;
+    padding: 22px;
+    background-color: #202229;
+    background-image:
+        linear-gradient(45deg, #2b2e37 25%, transparent 25%),
+        linear-gradient(-45deg, #2b2e37 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2b2e37 75%),
+        linear-gradient(-45deg, transparent 75%, #2b2e37 75%);
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-size: 16px 16px;
+    box-shadow: inset 0 0 0 1px var(--panel-hi);
+}
+#stage-preview-canvas {
+    width: min(100%, 512px);
+    height: auto;
+    aspect-ratio: 1;
+    image-rendering: pixelated;
+    box-shadow: 0 0 0 1px oklch(1 0 0 / 0.1), 0 18px 42px #0008;
+}
+#stage-preview-state {
+    max-width: min(430px, 90%);
+    padding: 10px 12px;
+    color: var(--dim);
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
+    box-shadow: 0 0 0 1px #fff0d;
+    line-height: 1.5;
+    text-align: center;
+}
+#stage-preview-state.err { color: var(--bad); }
+#stage-preview-frames {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(40px, 1fr));
+    gap: 6px;
+}
+#stage-preview-frames button {
+    min-width: 0;
+    min-height: 40px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+}
+#stage-preview-frames button[aria-pressed="true"] {
+    color: var(--bg);
+    border-color: var(--accent);
+    background: var(--accent);
+}
+#stage-preview-inspector {
+    min-width: 0;
+    overflow: auto;
+    padding: 14px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px #fff0d;
+}
+#stage-preview-inspector section + section { margin-top: 18px; }
+#stage-preview-inspector h3 {
+    margin-bottom: 6px;
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+}
+#stage-preview-inspector dl div {
+    display: grid;
+    grid-template-columns: minmax(104px, 0.72fr) minmax(0, 1.28fr);
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--panel-hi);
+}
+#stage-preview-inspector dt { color: var(--dim); }
+#stage-preview-inspector dd {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.stage-preview-empty { color: var(--dim); line-height: 1.5; }
+#stage-preview-setup {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--bg);
+}
+#stage-preview-setup-card {
+    width: min(620px, 100%);
+    padding: 24px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px #fff0d, 0 24px 70px #0008;
+}
+#stage-preview-setup-card h2 {
+    margin-bottom: 12px;
+    color: var(--accent);
+}
+#stage-preview-setup-card p {
+    margin-bottom: 14px;
+    color: var(--dim);
+    line-height: 1.6;
+}
+#stage-preview-setup-status.err { color: var(--bad); }
+#stage-preview-progress {
+    width: 100%;
+    accent-color: var(--accent);
+}
+#stage-preview-iso { display: none; }
+#stage-preview-iso-pick span {
+    display: inline-flex;
+    min-height: 40px;
+    align-items: center;
+    padding: 9px 12px;
+    border: 1px solid var(--panel-hi);
+    color: var(--text);
+    cursor: pointer;
+}
+
+@media (max-width: 900px) {
+    #stage-preview-workspace {
+        min-height: 0;
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #stage-preview-inspector { max-height: 300px; }
+}
+
+@media (max-width: 600px) {
+    #stage-preview-main { padding: 10px; }
+    #stage-preview-head { align-items: start; flex-direction: column; }
+    #stage-preview-actions {
+        display: grid;
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #stage-preview-frames { grid-template-columns: repeat(4, minmax(40px, 1fr)); }
+    #stage-preview-workspace { min-height: 0; }
+    #stage-preview-display { grid-template-rows: auto minmax(300px, 1fr) auto; }
+    #stage-preview-title-card {
+        grid-template-columns: minmax(0, 1fr);
+        justify-items: start;
+        gap: 8px;
+    }
+    #stage-preview-picture { padding: 12px; }
 }
 
 /* ---- I3D models, animation, and collision ------------------------------ */

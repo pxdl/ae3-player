@@ -27,6 +27,8 @@
         <button id="tab-se" class="tab" title="Embedded sequenced sound effects through the shared SPU2 synth">SE</button>
         <button id="tab-fmv" class="tab" title="Original FMV movies, source metadata, playback, captions, and exports">FMV</button>
         <button id="tab-images" class="tab" title="TIM2 textures and sprite sheets from every game package">IMAGES</button>
+        <button id="tab-stage-previews" class="tab"
+          title="Warpgate stage-preview stills and title art from stages.bin">STAGES</button>
         <button id="tab-models" class="tab" title="I3D models, skeletal animation, textures, and collision">3D</button>
       </div>
       <ul id="songlist"></ul>
@@ -66,6 +68,13 @@
         </div>
         <div id="image-result-count" aria-live="polite"></div>
         <ul id="imagelist" aria-label="Images and sprite sheets"></ul>
+      </div>
+      <div id="stage-preview-view" hidden>
+        <div class="stage-preview-sidebar-head">
+          <span>WARPGATE CATALOG</span>
+          <strong id="stage-preview-count">—</strong>
+        </div>
+        <ul id="stage-preview-list" aria-label="Stage previews"></ul>
       </div>
       <div id="modelview" hidden>
         <label class="search-label" for="model-search">FILTER 3D ARCHIVE</label>
@@ -372,6 +381,62 @@
           </div>
         </div>
       </section>
+      <section id="stage-preview-main" hidden>
+        <header id="stage-preview-head">
+          <div>
+            <span class="stage-preview-kicker">WARPGATE / IPC STILL LAB</span>
+            <h2>STAGE PREVIEWS</h2>
+          </div>
+          <div id="stage-preview-actions">
+            <button id="stage-preview-export-png" type="button" disabled>EXPORT PNG</button>
+            <button id="stage-preview-export-ipc" type="button" disabled>EXPORT .IPC</button>
+            <button id="stage-preview-export-tm2" type="button" disabled>EXPORT .TM2</button>
+            <button id="stage-preview-export-archive" type="button" disabled>EXPORT STAGES.BIN</button>
+          </div>
+        </header>
+        <div id="stage-preview-workspace" hidden>
+          <section id="stage-preview-display" aria-label="Selected stage preview">
+            <div id="stage-preview-title-card">
+              <span>TITLE ART / _t</span>
+              <canvas id="stage-preview-title" aria-label="Selected stage title art" hidden></canvas>
+            </div>
+            <div id="stage-preview-picture">
+              <canvas id="stage-preview-canvas" width="256" height="256"
+                aria-label="Selected 256 by 256 stage preview" hidden></canvas>
+              <p id="stage-preview-state" aria-live="polite">Select a stage.</p>
+            </div>
+            <div id="stage-preview-frames" role="group" aria-label="IPC still frame">
+              <button type="button" data-stage-preview-frame="0">_00</button>
+              <button type="button" data-stage-preview-frame="1">_01</button>
+              <button type="button" data-stage-preview-frame="2">_02</button>
+              <button type="button" data-stage-preview-frame="3">_03</button>
+              <button type="button" data-stage-preview-frame="4">_04</button>
+              <button type="button" data-stage-preview-frame="5">_05</button>
+              <button type="button" data-stage-preview-frame="6">_06</button>
+              <button type="button" data-stage-preview-frame="7">_07</button>
+            </div>
+          </section>
+          <aside id="stage-preview-inspector" aria-label="Stage-preview source metadata">
+            <div class="stage-preview-empty">Select a stage to inspect its archive members.</div>
+          </aside>
+        </div>
+        <div id="stage-preview-setup">
+          <div id="stage-preview-setup-card">
+            <span class="stage-preview-kicker">LAZY / LOCAL / SOURCE-PRESERVING</span>
+            <h2>STAGE PREVIEW ARCHIVE</h2>
+            <p>Asset Lab reads <code>etc/warpgate/str/stages.bin</code> only when
+              this tool opens. The original archive is cached as one private
+              object; IPC stills and TIM2 title art are decoded locally.</p>
+            <p id="stage-preview-setup-status" aria-live="polite">Opening stage archive…</p>
+            <progress id="stage-preview-progress" max="1"></progress>
+            <label id="stage-preview-iso-pick" hidden>
+              <input id="stage-preview-iso" type="file"
+                accept=".iso,application/x-iso9660-image" />
+              <span>RECONNECT THE SAME ISO</span>
+            </label>
+          </div>
+        </div>
+      </section>
       <section id="model-main" hidden>
         <header id="model-head">
           <div>
@@ -589,7 +654,7 @@
       <h1>AE3 Asset Lab</h1>
       <p>Point this page at your own <em>Ape Escape 3</em> disc image
         (<code>.iso</code>). Explore music, streams, sound effects, movies, images,
-        models, collision, and skeletal animation
+        stage previews, models, collision, and skeletal animation
         extracted <strong>in your browser</strong>. Nothing is uploaded, and
         this site ships no game data.</p>
       <label id="drop">

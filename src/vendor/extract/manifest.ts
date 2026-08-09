@@ -80,6 +80,7 @@ export async function loadBgmDesc(vfi: Vfi, assets: BgmAssetSet): Promise<Exdb> 
 const MAGICS: Array<[string, string]> = [
     ["MThd", "midi"], ["\x7fELF", "irx"], ["SShd", "sndbank"], ["EXST", "stream"],
     ["VFI\0", "vfi"], ["TIM2", "texture"], ["PCK\0", "pck"],
+    ["ipc\0", "ipc"], ["packfile", "packfile"],
     ["I3D_BIN\0", "model"], ["I3D_I3M\0", "anim"], ["I3D_I3C\0", "collision"],
     ["I3D_", "i3d_unknown"],
 ];

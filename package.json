@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Client-side Ape Escape 3 asset lab for audio, FMV, images, I3D models, skeletal animation, and collision.",
+  "description": "Client-side Ape Escape 3 asset lab for audio, FMV, images, stage previews, I3D models, skeletal animation, and collision.",
   "scripts": {
     "postinstall": "node scripts/patch-mediabunny-mpeg2.mjs",
     "dev": "vite",

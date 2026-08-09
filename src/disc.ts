@@ -17,6 +17,7 @@ import { SeStore } from "./se.ts";
 import { MovieStore } from "./movies.ts";
 import { ImageStore } from "./images.ts";
 import { ModelStore } from "./models.ts";
+import { StagePreviewStore } from "./stage-previews.ts";
 import type { SongAssets } from "./player.ts";
 
 export const LAST_DISC_KEY = "ae3.lastDisc";
@@ -60,6 +61,7 @@ export interface DiscSession {
     movies: MovieStore;                    /* lazy per-movie FMV phase */
     images: ImageStore;                    /* lazy TIM2 image/sprite phase */
     models: ModelStore;                        /* lazy I3D model/animation/collision phase */
+    stagePreviews: StagePreviewStore;        /* lazy warpgate stage-preview phase */
     read(name: string): Promise<Uint8Array | null>;
     songAssets(song: BgmSong): Promise<SongAssets>;
     forget(): Promise<void>;
@@ -101,6 +103,7 @@ export async function resumeSession(): Promise<DiscSession | null> {
             movies: new MovieStore(cache, null, last),
             images: new ImageStore(cache, null, last),
             models: new ModelStore(cache, null, last),
+            stagePreviews: new StagePreviewStore(cache, null, last),
             read: (n) => cache.read(n),
             songAssets: (song) =>
                 assetsFor(session, song, meta.hasIrx, meta.hasLibsd),
@@ -206,6 +209,7 @@ export async function openIso(file: File, progress: Progress): Promise<DiscSessi
         movies: new MovieStore(cache, disc.vfi, disc.cacheKey),
         images: new ImageStore(cache, disc.vfi, disc.cacheKey),
         models: new ModelStore(cache, disc.vfi, disc.cacheKey),
+        stagePreviews: new StagePreviewStore(cache, disc.vfi, disc.cacheKey),
         read: async (n) => {
             if (cache) {
                 const b = await cache.read(n);

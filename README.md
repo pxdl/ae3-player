@@ -6,9 +6,10 @@ Nothing is uploaded, and the repository ships no game data.
 
 The app plays the game's sequenced music, streamed audio, embedded sound
 effects, and all 22 full-motion videos; browses every TIM2 image and sprite
-sheet; and previews the complete I3D model, skeletal-animation, and collision
-archive. Sequenced audio runs through a WebAssembly build of the
-[ae3-sdk](https://github.com/pxdl/ae3-sdk) synthesizer.
+sheet; decodes the authored stage-preview stills; and previews the complete I3D
+model, skeletal-animation, and collision archive. Sequenced audio runs through
+a WebAssembly build of the [ae3-sdk](https://github.com/pxdl/ae3-sdk)
+synthesizer.
 
 ## Music and audio
 
@@ -71,6 +72,28 @@ without creating one browser file per texture.
 Declared TIM2 dimensions are preserved exactly: transparent margins authored
 into a texture or sprite sheet are displayed and exported rather than cropped.
 
+## Stage previews
+
+The Stages tab finds the regional `etc/warpgate/str/stages.bin` archive by
+suffix instead of assuming a US path. It validates every packfile boundary,
+reserved field, member name, IPC delimiter, and TIM2 title before exposing the
+catalog. Both the US retail disc and Japanese in-store demo contain 28 authored
+slots: eight explicitly selectable `_00` through `_07` IPC stills and one `_t`
+title image per raw stage key.
+
+A dedicated worker bridges one IPC still to FFmpeg's IPU decoder, restores the
+game's column-major macroblock placement, and returns one 256x256 RGBA frame.
+There is no movie timeline, inferred timing, or friendly-name mapping. The
+inspector reports the raw archive, slot, IPC, and TIM2 metadata. Exports preserve
+the selected `.ipc`, title `.tm2`, or complete `stages.bin` byte for byte; PNG
+is the only derived export.
+
+The first visit caches one raw `stages.bin` plus its small catalog in the disc's
+existing OPFS directory. Later visits can browse and decode it without the ISO.
+If only the base disc cache exists, the tab asks for the same ISO and rejects a
+different disc without replacing the session. Discs without a regional archive
+show an unavailable state rather than breaking the rest of the Asset Lab.
+
 ## Models, animation, and collision
 
 The 3D tab catalogs 7,345 models, 8,404 animation files, and 2,254 collision
@@ -123,8 +146,9 @@ TV appears as a disabled, in-development option.
 ## Offline use and browser support
 
 The app is a PWA. After the first visit, its shell works offline and cached
-assets play without the ISO. The MPEG-2 decoder and movie export modules are not
-part of the initial precache; the app fetches and caches each one on first use.
+assets play without the ISO. The MPEG-2/IPU decoder and movie export modules are
+not part of the initial precache; the app fetches and caches each one on first
+use.
 
 Chrome and Chromium are the reference browsers. Core audio, playback, the UI,
 and Lossless MKV export do not require WebCodecs. Fast MP4 does require AVC and
@@ -156,8 +180,8 @@ stuck at `ready` or suppressing an autoplay rejection.
   binding, `ae3synth.wasm`, the app engine, and its `AudioWorkletProcessor`.
   These files are served verbatim. See `public/synth/README.md` for details.
 - `public/libav/` and `vendor/libav/` contain the reproducible minimal LGPL
-  MPEG-2 decoder, its deployed source bundle, pinned configuration, checksums,
-  and build script.
+  MPEG-2/IPU decoder, its deployed source bundle, pinned configuration,
+  checksums, and build script.
 
 Run `npm run sync-sdk` to refresh vendored SDK artifacts. Set `AE3_SDK` if the
 SDK checkout is not in the default sibling directory. The command records the
@@ -184,10 +208,11 @@ public, Pages must use the "GitHub Actions" source.
 
 ## Licensing
 
-The application source is MIT-licensed. FMV playback and Fast MP4 frame
-extraction use a custom libav.js/FFmpeg build under LGPL-2.1-or-later. Movie
-muxing includes parts of Mediabunny and the MPEG-2 Matroska codec registration
-in `scripts/patch-mediabunny-mpeg2.mjs`, under MPL-2.0.
+The application source is MIT-licensed. FMV playback, stage-preview IPU decode,
+and Fast MP4 frame extraction use a custom libav.js/FFmpeg build under
+LGPL-2.1-or-later. Movie muxing includes parts of Mediabunny and the MPEG-2
+Matroska codec registration in `scripts/patch-mediabunny-mpeg2.mjs`, under
+MPL-2.0.
 
 The notices retain the former `@ffmpeg/*` GPL source offer because one older
 service-worker cache can still serve that release. Exact versions, license
