@@ -19,6 +19,7 @@ keeps extracted assets in private browser storage, and includes no game data.
 | Images | TIM2 textures and sprite sheets from direct files and PCK packages; PNG and byte-exact source export |
 | Stage previews | IPC stills with TIM2 title art; separate, composite, and source exports |
 | 3D | I3D models, TIM2 materials, skeletal animation, and collision; interactive preview and GLB or source export |
+| Disc report | Reproducible local compatibility scan for images, effect banks, and FMV metadata; complete JSON and Markdown table output |
 
 ## Use the app
 
@@ -49,10 +50,13 @@ attached ISO for that session instead of persisting the extracted data.
 
 ### Disc build support
 
-This matrix records client-side browsing through the real application flow,
-measured with
+This matrix records client-side browsing through the real application flow.
+Generate the automated portion from the app's **Report** tab or the equivalent
+[`ae3-report` command in `ae3-sdk`](https://github.com/pxdl/ae3-sdk/tree/main/extract-web).
+The measurements below used
 [`ae3-sdk` revision `5b2207e3580ae4cc1d588641f4fe3f898350e501`](https://github.com/pxdl/ae3-sdk/commit/5b2207e3580ae4cc1d588641f4fe3f898350e501).
-`Untested` means no claim is made for that build or asset family.
+Named playback and rendering observations remain manual. `Untested` means no
+claim is made for that build or asset family.
 
 For each regional serial below, measurements cover one observed asset family
 only. A serial does not establish whole-disc support; unmeasured families remain

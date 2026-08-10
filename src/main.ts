@@ -49,6 +49,7 @@ import {
 import { decodeTim2 } from "./vendor/extract/index.ts";
 import type { ModelBrowser } from "./model-browser.ts";
 import { StagePreviewBrowser } from "./stage-preview-browser.ts";
+import { DiscReportView } from "./disc-report-view.ts";
 
 export type ViewerChannel = "music" | "streams" | "effects" | "cinema";
 
@@ -143,7 +144,7 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 
 /* streams tab */
 type AppTab = "bgm" | "streams" | "se" | "fmv" | "images"
-    | "stage-previews" | "models";
+    | "stage-previews" | "models" | "report";
 let tab: AppTab = "bgm";
 let sCatalog: StreamCatalog | null = null;
 let streamCatalogRequest: {
@@ -208,11 +209,18 @@ let sideWidth = DEFAULT_SIDE_WIDTH;
 let modelBrowser: ModelBrowser | null = null;
 let modelBrowserLoading: Promise<ModelBrowser> | null = null;
 let stagePreviewBrowser: StagePreviewBrowser | null = null;
+let discReportView: DiscReportView | null = null;
 
 function ensureStagePreviewBrowser(): StagePreviewBrowser {
     stagePreviewBrowser ??= new StagePreviewBrowser({ status, friendlyError });
     if (session) stagePreviewBrowser.setStore(session.stagePreviews);
     return stagePreviewBrowser;
+}
+
+function ensureDiscReportView(): DiscReportView {
+    discReportView ??= new DiscReportView({ status, friendlyError });
+    if (session) discReportView.setStore(session.report);
+    return discReportView;
 }
 
 
@@ -564,6 +572,7 @@ const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 ·
 const KEYS_STAGE_PREVIEWS = "↑↓ stage · ←→ frame · E preview PNG · X IPC · T TM2 · A stages.bin";
 const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
     + "drag background to orbit · enable ROTATE, then drag center freely or an X/Y/Z ring";
+const KEYS_REPORT = "Run bounded catalog checks · copy the Markdown row or complete JSON report";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -1454,6 +1463,8 @@ function persistenceWarnings(target: DiscSession, targetTab: AppTab): string {
         warnings.push(target.se.persistenceWarning);
     if (targetTab === "fmv" && target.movies.persistenceWarning)
         warnings.push(target.movies.persistenceWarning);
+    if (targetTab === "report" && target.report.persistenceWarning)
+        warnings.push(target.report.persistenceWarning);
     if (target.persistenceWarning)
         warnings.push(target.persistenceWarning);
     return warnings.join(" · ");
@@ -1488,6 +1499,7 @@ function switchTab(t: AppTab): void {
     $("tab-images").classList.toggle("on", t === "images");
     $("tab-stage-previews").classList.toggle("on", t === "stage-previews");
     $("tab-models").classList.toggle("on", t === "models");
+    $("tab-report").classList.toggle("on", t === "report");
     $("songlist").hidden = t !== "bgm";
     $("streamview").hidden = t !== "streams";
     $("seview").hidden = t !== "se";
@@ -1495,17 +1507,19 @@ function switchTab(t: AppTab): void {
     $("imageview").hidden = t !== "images";
     $("stage-preview-view").hidden = t !== "stage-previews";
     $("modelview").hidden = t !== "models";
+    $("reportview").hidden = t !== "report";
     $("head").hidden = t !== "bgm";
     $("bar").hidden = t !== "bgm";
     $("stage").hidden = t !== "bgm";
     $("foot-stats").hidden = t === "streams" || t === "fmv" || t === "images"
-        || t === "stage-previews" || t === "models";
+        || t === "stage-previews" || t === "models" || t === "report";
     $("stream-main").hidden = t !== "streams";
     $("se-main").hidden = t !== "se";
     $("fmv-main").hidden = t !== "fmv";
     $("image-main").hidden = t !== "images";
     $("stage-preview-main").hidden = t !== "stage-previews";
     $("model-main").hidden = t !== "models";
+    $("report-main").hidden = t !== "report";
     $("keys").textContent = t === "bgm"
         ? keysBgmText
         : t === "streams"
@@ -1518,7 +1532,9 @@ function switchTab(t: AppTab): void {
                         ? KEYS_IMAGES
                         : t === "stage-previews"
                             ? KEYS_STAGE_PREVIEWS
-                            : KEYS_MODELS;
+                            : t === "models"
+                                ? KEYS_MODELS
+                                : KEYS_REPORT;
     statusWithWarnings(target, t);
     viewerRevision++;
     movieController.setActive(t === "fmv" || viewerChannel === "cinema");
@@ -1542,6 +1558,8 @@ function switchTab(t: AppTab): void {
     } else {
         modelBrowser?.close();
     }
+    if (t === "report") ensureDiscReportView().open();
+    else discReportView?.close();
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
@@ -3640,6 +3658,7 @@ async function performDiscReset(): Promise<void> {
     modelBrowser?.setStore(null);
     stagePreviewBrowser?.dispose();
     stagePreviewBrowser = null;
+    discReportView?.setStore(null);
     tab = "bgm";
     viewerChannel = "music";
     viewerRevision++;
@@ -3668,6 +3687,7 @@ async function enterPlayer(s: DiscSession, ticket: DiscOpenTicket): Promise<void
     session = s;
     modelBrowser?.setStore(s.models);
     stagePreviewBrowser?.setStore(s.stagePreviews);
+    discReportView?.setStore(s.report);
     $("picker").hidden = true;
     $("app").hidden = false;
     $("disc-id").textContent =
@@ -3874,6 +3894,7 @@ async function main(): Promise<void> {
     $("tab-images").onclick = () => switchTab("images");
     $("tab-stage-previews").onclick = () => switchTab("stage-previews");
     $("tab-models").onclick = () => switchTab("models");
+    $("tab-report").onclick = () => switchTab("report");
     $("imagelist").addEventListener("click", event => {
         const target = event.target as Element;
         const button = target.closest<HTMLButtonElement>("[data-image-id]");

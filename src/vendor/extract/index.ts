@@ -45,4 +45,13 @@ export { locateFmvAssets, parseFmvHeader, parseMpeg2VideoInfo,
          type FmvAsset, type FmvHeader, type FmvVideoInfo, type FmvGroup,
          type FmvDemux, type Mpeg2SeekPoint, type Mpeg2SeekIndex,
          type SubtitleCue } from "./fmv.ts";
+export {
+    DISC_SUPPORT_REPORT_SCHEMA, isDiscSupportReport,
+    inspectDiscSupport, inspectVfiSupport, formatDiscSupportMarkdown,
+    type DiscSupportStatus, type DiscSupportFamily, type DiscSupportProgress,
+    type DiscSupportOptions, type DiscSupportIdentity, type DiscSupportIssue,
+    type SkippedDeclaredImage, type ImageSupportReport,
+    type EffectSupportReport, type InspectedFmv, type FmvSupportReport,
+    type DiscSupportReport,
+} from "./report.ts";
 export { OpfsCache } from "./opfs.ts";

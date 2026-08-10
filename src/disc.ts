@@ -19,6 +19,7 @@ import { MovieStore } from "./movies.ts";
 import { ImageStore } from "./images.ts";
 import { ModelStore } from "./models.ts";
 import { StagePreviewStore } from "./stage-previews.ts";
+import { DiscReportStore } from "./disc-report.ts";
 import type { SongAssets } from "./player.ts";
 import { technicalReason } from "./errors.ts";
 import {
@@ -177,6 +178,7 @@ export interface DiscSession {
     images: ImageStore;                    /* lazy TIM2 image/sprite phase */
     models: ModelStore;                        /* lazy I3D model/animation/collision phase */
     stagePreviews: StagePreviewStore;        /* lazy warpgate stage-preview phase */
+    report: DiscReportStore;                 /* reusable build-qualification report */
     read(name: string): Promise<Uint8Array | null>;
     songAssets(song: BgmSong): Promise<SongAssets>;
     forget(): Promise<void>;
@@ -267,6 +269,8 @@ export async function resumeSession(): Promise<DiscSession | null> {
         images: new ImageStore(cache, null, last),
         models: new ModelStore(cache, null, last),
         stagePreviews: new StagePreviewStore(cache, null, last),
+        report: new DiscReportStore(
+            cache, null, last, meta.serial, meta.volumeId),
         read: (name) =>
             readVerifiedCachedAsset(cache, name, identities, verified),
         songAssets: (song) =>
@@ -440,6 +444,8 @@ export async function openIso(file: File, progress: Progress,
         images: new ImageStore(cache, disc.vfi, disc.cacheKey),
         models: new ModelStore(cache, disc.vfi, disc.cacheKey),
         stagePreviews: new StagePreviewStore(cache, disc.vfi, disc.cacheKey),
+        report: new DiscReportStore(
+            cache, disc.vfi, disc.cacheKey, disc.serial, disc.volumeId),
         read: async (name) => {
             if (cache) {
                 try {
