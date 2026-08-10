@@ -134,84 +134,177 @@ export function movieFrameByteLength(width: number, height: number): number {
     return width * height * 3 / 2;
 }
 
+type UnknownRecord = Record<string, unknown>;
+
+const RESPONSE_IDENTITY_KEYS = ["type", "requestId", "generation"] as const;
+const READY_KEYS = new Set([
+    ...RESPONSE_IDENTITY_KEYS,
+    "width", "height", "format", "outputRate", "frameDuration",
+    "sourceFrames", "outputFrames", "firstSeekPoint",
+]);
+const FRAMES_KEYS = new Set([
+    ...RESPONSE_IDENTITY_KEYS, "frames", "eof", "stats",
+]);
+const SEEKED_KEYS = new Set([
+    ...RESPONSE_IDENTITY_KEYS, "target", "timestamp",
+]);
+const STATS_RESPONSE_KEYS = new Set([...RESPONSE_IDENTITY_KEYS, "stats"]);
+const TERMINAL_KEYS = new Set(RESPONSE_IDENTITY_KEYS);
+const ERROR_KEYS = new Set([
+    ...RESPONSE_IDENTITY_KEYS, "stage", "message",
+]);
+const FRAME_KEYS = new Set([
+    "index", "timestamp", "duration", "width", "height",
+    "format", "data", "layout",
+]);
+const PLANE_KEYS = new Set(["offset", "stride"]);
+const STATS_KEYS = new Set([
+    "packets", "decodedFrames", "outputFrames", "droppedFrames",
+    "decodeWallTime", "pendingBytes", "wasmBytes",
+]);
+const SEEK_POINT_KEYS = new Set(["offset", "frame"]);
+
 export function isMovieDecoderResponse(value: unknown): value is MovieDecoderResponse {
-    if (!hasResponseIdentity(value))
-        return false;
-    switch (value.type) {
+    const response = responseRecord(value);
+    if (!response) return false;
+    switch (response.type) {
         case "ready":
-            return hasNumber(value, "width") && hasNumber(value, "height")
-                && hasStringValue(value, "format", "I420")
-                && hasNumber(value, "outputRate") && hasNumber(value, "frameDuration")
-                && hasNumber(value, "sourceFrames") && hasNumber(value, "outputFrames")
-                && "firstSeekPoint" in value && isSeekPoint(value.firstSeekPoint);
+            return hasOnlyKeys(response, READY_KEYS)
+                && hasDimensions(response.width, response.height)
+                && response.format === "I420"
+                && isPositiveFinite(response.outputRate)
+                && isPositiveFinite(response.frameDuration)
+                && isPositiveSafeInteger(response.sourceFrames)
+                && isPositiveSafeInteger(response.outputFrames)
+                && response.outputFrames >= response.sourceFrames
+                && isSeekPoint(response.firstSeekPoint);
         case "frames":
-            return "frames" in value && Array.isArray(value.frames)
-                && value.frames.every(isDecodedMovieFrame)
-                && "eof" in value && typeof value.eof === "boolean"
-                && "stats" in value && isDecoderStats(value.stats);
+            return hasOnlyKeys(response, FRAMES_KEYS)
+                && Array.isArray(response.frames)
+                && response.frames.every(isDecodedMovieFrame)
+                && typeof response.eof === "boolean"
+                && isDecoderStats(response.stats);
         case "seeked":
-            return hasNumber(value, "target") && hasNumber(value, "timestamp");
+            return hasOnlyKeys(response, SEEKED_KEYS)
+                && isNonnegativeFinite(response.target)
+                && isNonnegativeFinite(response.timestamp);
         case "eof":
-            return "stats" in value && isDecoderStats(value.stats);
+            return hasOnlyKeys(response, STATS_RESPONSE_KEYS)
+                && isDecoderStats(response.stats);
         case "disposed":
         case "cancelled":
-            return true;
+            return hasOnlyKeys(response, TERMINAL_KEYS);
         case "error":
-            return "stage" in value && isErrorStage(value.stage)
-                && "message" in value && typeof value.message === "string";
+            return hasOnlyKeys(response, ERROR_KEYS)
+                && isErrorStage(response.stage)
+                && typeof response.message === "string"
+                && response.message.length > 0;
         default:
             return false;
     }
 }
 
-function hasResponseIdentity(value: unknown): value is {
-    type: string;
-    requestId: number;
-    generation: number;
-} {
+function record(value: unknown): UnknownRecord | null {
     return typeof value === "object" && value !== null
-        && "type" in value && typeof value.type === "string"
-        && "requestId" in value && typeof value.requestId === "number"
-        && Number.isSafeInteger(value.requestId)
-        && "generation" in value && typeof value.generation === "number"
-        && Number.isSafeInteger(value.generation);
+        ? value as UnknownRecord
+        : null;
+}
+
+function responseRecord(value: unknown): UnknownRecord | null {
+    const response = record(value);
+    return response
+        && typeof response.type === "string"
+        && isPositiveSafeInteger(response.requestId)
+        && isPositiveSafeInteger(response.generation)
+        ? response
+        : null;
+}
+
+function hasOnlyKeys(
+    value: UnknownRecord,
+    allowed: ReadonlySet<string>,
+): boolean {
+    return Object.keys(value).every(key => allowed.has(key));
+}
+
+function hasDimensions(width: unknown, height: unknown): boolean {
+    return isPositiveSafeInteger(width)
+        && isPositiveSafeInteger(height)
+        && (width & 1) === 0
+        && (height & 1) === 0
+        && Number.isSafeInteger(width * height * 3 / 2);
 }
 
 function isDecodedMovieFrame(value: unknown): value is DecodedMovieFrame {
-    return typeof value === "object" && value !== null
-        && hasNumber(value, "index") && hasNumber(value, "timestamp")
-        && hasNumber(value, "duration") && hasNumber(value, "width")
-        && hasNumber(value, "height") && hasStringValue(value, "format", "I420")
-        && "data" in value && value.data instanceof ArrayBuffer
-        && "layout" in value && Array.isArray(value.layout)
-        && value.layout.length === 3 && value.layout.every(isPlaneLayout);
+    const frame = record(value);
+    if (!frame
+            || !hasOnlyKeys(frame, FRAME_KEYS)
+            || !isNonnegativeSafeInteger(frame.index)
+            || !isNonnegativeFinite(frame.timestamp)
+            || !isPositiveFinite(frame.duration)
+            || !hasDimensions(frame.width, frame.height)
+            || frame.format !== "I420"
+            || !(frame.data instanceof ArrayBuffer)
+            || !Array.isArray(frame.layout)
+            || frame.layout.length !== 3)
+        return false;
+    const width = frame.width as number;
+    const height = frame.height as number;
+    const yBytes = width * height;
+    const chromaBytes = yBytes / 4;
+    return frame.data.byteLength === movieFrameByteLength(width, height)
+        && isPlaneLayout(frame.layout[0], 0, width)
+        && isPlaneLayout(frame.layout[1], yBytes, width / 2)
+        && isPlaneLayout(frame.layout[2], yBytes + chromaBytes, width / 2);
 }
 
-function isPlaneLayout(value: unknown): value is MoviePlaneLayout {
-    return typeof value === "object" && value !== null
-        && hasNumber(value, "offset") && hasNumber(value, "stride");
+function isPlaneLayout(
+    value: unknown,
+    offset: number,
+    stride: number,
+): value is MoviePlaneLayout {
+    const plane = record(value);
+    return plane !== null
+        && hasOnlyKeys(plane, PLANE_KEYS)
+        && plane.offset === offset
+        && plane.stride === stride;
 }
 
 function isDecoderStats(value: unknown): value is MovieDecoderStats {
-    return typeof value === "object" && value !== null
-        && hasNumber(value, "packets") && hasNumber(value, "decodedFrames")
-        && hasNumber(value, "outputFrames") && hasNumber(value, "droppedFrames")
-        && hasNumber(value, "decodeWallTime") && hasNumber(value, "pendingBytes")
-        && hasNumber(value, "wasmBytes");
+    const stats = record(value);
+    return stats !== null
+        && hasOnlyKeys(stats, STATS_KEYS)
+        && isNonnegativeSafeInteger(stats.packets)
+        && isNonnegativeSafeInteger(stats.decodedFrames)
+        && isNonnegativeSafeInteger(stats.outputFrames)
+        && isNonnegativeSafeInteger(stats.droppedFrames)
+        && isNonnegativeFinite(stats.decodeWallTime)
+        && isNonnegativeSafeInteger(stats.pendingBytes)
+        && isNonnegativeSafeInteger(stats.wasmBytes);
 }
 
 function isSeekPoint(value: unknown): value is Mpeg2SeekPoint {
-    return typeof value === "object" && value !== null
-        && hasNumber(value, "offset") && hasNumber(value, "frame");
+    const point = record(value);
+    return point !== null
+        && hasOnlyKeys(point, SEEK_POINT_KEYS)
+        && isNonnegativeSafeInteger(point.offset)
+        && isNonnegativeSafeInteger(point.frame);
 }
 
-function hasNumber(value: object, key: string): boolean {
-    return key in value && typeof value[key as keyof typeof value] === "number"
-        && Number.isFinite(value[key as keyof typeof value]);
+function isPositiveSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-function hasStringValue(value: object, key: string, expected: string): boolean {
-    return key in value && value[key as keyof typeof value] === expected;
+function isNonnegativeSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveFinite(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonnegativeFinite(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function isErrorStage(value: unknown): value is MovieDecoderErrorStage {

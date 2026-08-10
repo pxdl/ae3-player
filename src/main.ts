@@ -3,8 +3,18 @@
  * harness/bgmplay.c keys, defaults, layout). */
 
 import "./style.css";
-import { resumeSession, openIso, friendlyError, US_SERIAL,
-         type DiscSession } from "./disc.ts";
+import {
+    discSupportWarning,
+    friendlyError,
+    openIso,
+    resumeSession,
+    type DiscSession,
+} from "./disc.ts";
+import {
+    DiscOpenCoordinator,
+    SerializedDiscCleanup,
+    type DiscOpenTicket,
+} from "./disc-open.ts";
 import { WorkletPlayer, RATE, type EngineConfig, type Snapshot } from "./player.ts";
 import { buildTimeline, displayPos, bpmOf, midiDurationSamples, type Timeline } from "./timeline.ts";
 import { Viz } from "./viz.ts";
@@ -108,12 +118,15 @@ const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true
               cueOn: false, cueScale: 44.5 / 127,
               duckDemo: false, duckPhone: false };
 const exporter = new Exporter();
+const discOpens = new DiscOpenCoordinator();
+const discCleanup = new SerializedDiscCleanup();
 let audioMode: "bgm" | "se" | null = null;
 let viewerRevision = 0;
 const VIEWER_LEVEL_COUNT = 32;
 const viewerLevelHistory = new Float32Array(VIEWER_LEVEL_COUNT);
 let viewerLevelHead = 0;
 let bgmDurations = new Float64Array();
+let bgmDurationWarning: string | null = null;
 
 function ingestViewerLevels(snapshot: Snapshot): void {
     for (let offset = 0; offset + 5 <= snapshot.wcols.length; offset += 5) {
@@ -129,8 +142,14 @@ function ingestViewerLevels(snapshot: Snapshot): void {
 }
 
 /* streams tab */
-let tab: "bgm" | "streams" | "se" | "fmv" | "images" | "stage-previews" | "models" = "bgm";
+type AppTab = "bgm" | "streams" | "se" | "fmv" | "images"
+    | "stage-previews" | "models";
+let tab: AppTab = "bgm";
 let sCatalog: StreamCatalog | null = null;
+let streamCatalogRequest: {
+    target: DiscSession;
+    promise: Promise<void>;
+} | null = null;
 /* The sidebar is a fold tree: MUSIC/VOICE sections -> prefix groups ->
  * entries. Selection walks every visible row (headers included), so the
  * keyboard can jump categories; groups start folded. */
@@ -158,6 +177,10 @@ let fmvVisibleNames: string[] = [];
 let fmvRenderedSearch = "";
 let fmvRenderedEntryName: string | null = null;
 let imageCatalog: ImageCatalog | null = null;
+let imageCatalogRequest: {
+    target: DiscSession;
+    promise: Promise<void>;
+} | null = null;
 let imageAllRows: ImageEntry[] = [];
 let imageEntryById = new Map<string, ImageEntry>();
 let imageRows: ImageEntry[] = [];
@@ -196,9 +219,13 @@ function ensureStagePreviewBrowser(): StagePreviewBrowser {
 function ensureModelBrowser(): Promise<ModelBrowser> {
     if (modelBrowser) return Promise.resolve(modelBrowser);
     modelBrowserLoading ??= import("./model-browser.ts").then(({ ModelBrowser }) => {
-        modelBrowser = new ModelBrowser(status);
+        modelBrowser = new ModelBrowser((message, error) =>
+            statusWithWarnings(session, "models", message, error));
         if (session) modelBrowser.setStore(session.models);
         return modelBrowser;
+    }).catch(error => {
+        modelBrowserLoading = null;
+        throw error;
     });
     return modelBrowserLoading;
 }
@@ -209,6 +236,10 @@ type SeRow =
     | { kind: "bank"; entry: SeBankEntry }
     | { kind: "cue"; entry: SeBankEntry; bank: number; request: number };
 let seCatalog: SeCatalog | null = null;
+let seCatalogRequest: {
+    target: DiscSession;
+    promise: Promise<boolean>;
+} | null = null;
 let seRows: SeRow[] = [];
 let seSel = 0;
 let seBusy = false;
@@ -222,6 +253,7 @@ let sePlayingInfo: SeRequestInfo | null = null;
 let seGlyph = "";
 let seKnownFrames: number | null = null;
 let seKnownEstimated = false;
+let seMeasureError: string | null = null;
 let seMeasuring = false;
 let seMeasureToken = 0;
 let sePastEvents = false;
@@ -283,6 +315,8 @@ function renderList(): void {
 
 async function loadBgmDurations(target: DiscSession): Promise<void> {
     const durations = bgmDurations;
+    let failures = 0;
+    let firstFailure: unknown;
     for (let index = 0; index < target.songs.length; index++) {
         const song = target.songs[index]!;
         try {
@@ -290,10 +324,18 @@ async function loadBgmDurations(target: DiscSession): Promise<void> {
             if (!midi) throw new Error(`missing bgm/${song.mid}`);
             durations[index] = midiDurationSamples(midi);
         } catch (error) {
+            if (failures === 0) firstFailure = error;
+            failures++;
             console.warn(`Could not calculate duration for ${song.name}`, error);
         }
     }
-    if (session === target && bgmDurations === durations) renderList();
+    if (session !== target || bgmDurations !== durations) return;
+    bgmDurationWarning = failures > 0
+        ? `${failures} song duration${failures === 1 ? "" : "s"} unavailable: `
+            + friendlyError(firstFailure)
+        : null;
+    renderList();
+    if (tab === "bgm") statusWithWarnings(target, "bgm");
 }
 
 function scrollSelIntoView(): void {
@@ -326,42 +368,60 @@ function renderDials(): void {
  * later resume()) is user-initiated under stricter Auto-Play policies.
  * Chrome/Firefox are indifferent to the timing. */
 let playerReady: Promise<WorkletPlayer> | null = null;
+let playerGeneration = 0;
 
 function ensurePlayer(): Promise<WorkletPlayer> {
-    playerReady ??= WorkletPlayer.create().then((p) => {
-        player = p;
-        p.onended = () => { finished = true; };
-        p.onerror = (m) => status(m, true);
-        p.onsnapshot = (s) => {
-            if (audioMode === "se") seViz?.ingest(s);
-            else viz?.ingest(s);
-            ingestViewerLevels(s);
+    if (playerReady) return playerReady;
+    const generation = playerGeneration;
+    let pending: Promise<WorkletPlayer>;
+    pending = WorkletPlayer.create().then(async (next) => {
+        if (generation !== playerGeneration) {
+            try {
+                await next.ctx.close();
+            } catch (error) {
+                console.error("superseded audio context close failed", error);
+            }
+            throw new DOMException("audio setup superseded", "AbortError");
+        }
+        player = next;
+        next.onended = () => { finished = true; };
+        next.onerror = (message) => status(message, true);
+        next.onsnapshot = (snapshot) => {
+            if (audioMode === "se") seViz?.ingest(snapshot);
+            else viz?.ingest(snapshot);
+            ingestViewerLevels(snapshot);
         };
-        return p;
-    }, (e) => {
-        playerReady = null;              /* allow a retry on the next click */
+        return next;
+    }).catch((error) => {
+        if (playerReady === pending) playerReady = null;
+        if (generation !== playerGeneration) throw error;
         $("song-name").textContent = "audio setup failed";
-        throw new Error(`audio setup failed: `
-            + `${e instanceof Error ? e.message : e}`
-            + " -- an ad/content blocker may be blocking the synth");
+        throw new Error(
+            `audio setup failed: ${friendlyError(error)}`
+                + " -- an ad/content blocker may be blocking the synth",
+            { cause: error },
+        );
     });
-    return playerReady;
+    playerReady = pending;
+    return pending;
 }
 
 /* Only call from a user-gesture handler: the context is created and resumed
  * inside that gesture, and the load round-trip cannot complete while it is
  * suspended. */
 async function loadSong(idx: number, autoplay: boolean): Promise<void> {
-    if (!session || loading) return;
-    const song = session.songs[idx];
+    const target = session;
+    if (!target || loading) return;
+    const song = target.songs[idx];
     if (!song) return;
     let p: WorkletPlayer;
     try {
         p = await ensurePlayer();        /* sync up to the first await */
-    } catch (e) {
-        status(e instanceof Error ? e.message : String(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
         return;
     }
+    if (session !== target) return;
     p.resume();
     sPlayer.pause();                    /* one thing plays at a time */
     loading = true;
@@ -369,12 +429,14 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
     finished = false;
     status(`loading ${song.name}...`);
     try {
-        const assets = await session.songAssets(song);
+        const assets = await target.songAssets(song);
+        if (session !== target) return;
         if (authored) cfg.songvol = song.songvol;
         cfg.cueScale = song.volumeScale > 0 ? song.volumeScale : 44.5 / 127;
-        const r = await p.load(assets, engineConfig());
+        const result = await p.load(assets, engineConfig());
+        if (session !== target) return;
         audioMode = "bgm";
-        timeline = buildTimeline(r.events, r.ppqn);
+        timeline = buildTimeline(result.events, result.ppqn);
         bgmDurations[idx] = timeline.lenSamp;
         playingIdx = idx;
         p.snap = null;
@@ -383,15 +445,22 @@ async function loadSong(idx: number, autoplay: boolean): Promise<void> {
         viewerLevelHead = 0;
         $("song-name").textContent = song.name;
         $("time-len").textContent = fmtTime(timeline.lenSamp);
-        status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
+        statusWithWarnings(
+            target,
+            "bgm",
+            result.warning ? `warning: ${result.warning}` : "",
+            !!result.warning,
+        );
         if (autoplay) p.play();
         $<HTMLButtonElement>("playbtn").disabled = false;
-    } catch (e) {
-        status(friendlyError(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     } finally {
-        loading = false;
-        renderList();
-        renderDials();
+        if (session === target) {
+            loading = false;
+            renderList();
+            renderDials();
+        }
     }
 }
 
@@ -526,6 +595,7 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
     const query = $<HTMLInputElement>("fmv-search").value.trim().toLocaleLowerCase();
     fmvRenderedSearch = query;
     const entries = snapshot.catalog?.entries ?? [];
+    const issues = snapshot.catalog?.issues ?? [];
     const groups = ["opening", "story", "gameplay"] as const;
     const groupedEntries = groups.map(group => entries.filter(entry => {
         if (entry.group !== group) return false;
@@ -534,6 +604,10 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
             || entry.name.toLocaleLowerCase().includes(query)
             || entry.movie.path.toLocaleLowerCase().includes(query);
     }));
+    const visibleIssues = issues.filter(issue => !query
+        || issue.label.toLocaleLowerCase().includes(query)
+        || issue.name.toLocaleLowerCase().includes(query)
+        || issue.reason.toLocaleLowerCase().includes(query));
     const visible = groupedEntries.flat();
     fmvVisibleNames = visible.map(entry => entry.name);
     if (!snapshot.catalog) {
@@ -542,11 +616,11 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
             : "Loading movie catalog…"}</li>`;
         return;
     }
-    if (!visible.length) {
+    if (!visible.length && !visibleIssues.length) {
         list.innerHTML = `<li class="fmv-list-message">No matching movies</li>`;
         return;
     }
-    list.innerHTML = groupedEntries.map(groupEntries => {
+    const availableMarkup = groupedEntries.map(groupEntries => {
         if (!groupEntries.length) return "";
         const heading = movieGroupLabel(groupEntries[0]!);
         const rows = groupEntries.map(entry => {
@@ -565,6 +639,14 @@ function renderFmvList(snapshot: MovieControllerSnapshot): void {
         }).join("");
         return `<li class="fmv-group"><h3>${escapeMarkup(heading)}</h3></li>${rows}`;
     }).join("");
+    const issueMarkup = visibleIssues.length
+        ? `<li class="fmv-group"><h3>Unavailable on this disc</h3></li>`
+            + visibleIssues.map(issue =>
+                `<li class="fmv-list-message"><strong>${escapeMarkup(issue.label)}</strong>
+                    <code>${escapeMarkup(issue.name)}</code><br>
+                    ${escapeMarkup(issue.reason)}</li>`).join("")
+        : "";
+    list.innerHTML = availableMarkup + issueMarkup;
     list.querySelector<HTMLElement>('[aria-current="true"]')
         ?.scrollIntoView({ block: "nearest" });
 }
@@ -596,9 +678,9 @@ function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
     }
     const cacheValue = (value: number | undefined): string =>
         value === undefined ? "—" : movieBytesDetail(value);
-    const complete = snapshot.cache
-        ? movieSourceComplete(entry, snapshot.cache) ? "Yes" : "No"
-        : "—";
+    let complete = "—";
+    if (snapshot.cache)
+        complete = movieSourceComplete(entry, snapshot.cache) ? "Yes" : "No";
     const order = entry.video.fieldOrder;
     const subtitles = entry.subtitleCues
         ? `${entry.subtitleCues} cues · final cue ${fmtSec(entry.subtitleEnd ?? 0)}`
@@ -700,7 +782,8 @@ function moveFmv(delta: number, mode: "preview" | "play"): void {
     if (!fmvVisibleNames.length) return;
     const current = movieController.snapshot().entry?.name;
     const selected = fmvVisibleNames.indexOf(current ?? "");
-    const origin = selected < 0 ? (delta > 0 ? -1 : 0) : selected;
+    let origin = selected;
+    if (selected < 0) origin = delta > 0 ? -1 : 0;
     const index = (origin + delta + fmvVisibleNames.length) % fmvVisibleNames.length;
     movieController.select(fmvVisibleNames[index]!, mode);
 }
@@ -1087,16 +1170,19 @@ function renderImageInspector(entry: ImageEntry): void {
 }
 
 async function selectImage(entry: ImageEntry): Promise<void> {
-    if (!session) return;
+    const target = session;
+    if (!target) return;
     imageSelected = entry;
     markImageSelection(entry.id);
     const generation = ++imageLoadGeneration;
     status(`DECODING ${entry.texture.fileName}...`);
     try {
-        const data = await session.images.read(entry.texture);
+        const data = await target.images.read(entry.texture);
         if (!data) throw new Error("source texture is not cached; reconnect the disc");
         const image = decodeTim2(data, entry.pictureIndex, entry.texture.fileName);
-        if (generation !== imageLoadGeneration || imageSelected?.id !== entry.id) return;
+        if (session !== target || generation !== imageLoadGeneration
+                || imageSelected?.id !== entry.id)
+            return;
         const canvas = $<HTMLCanvasElement>("image-canvas");
         canvas.classList.toggle("small-image",
             image.width <= 256 && image.height <= 256);
@@ -1111,10 +1197,14 @@ async function selectImage(entry: ImageEntry): Promise<void> {
         );
         $("image-empty").hidden = true;
         renderImageInspector(entry);
-        status(`${entry.texture.fileName} · ${image.width}×${image.height} · `
-            + `${IMAGE_TYPE_LABELS[image.imageType] ?? `type ${image.imageType}`}`);
+        statusWithWarnings(
+            target,
+            "images",
+            `${entry.texture.fileName} · ${image.width}×${image.height} · `
+                + `${IMAGE_TYPE_LABELS[image.imageType] ?? `type ${image.imageType}`}`,
+        );
     } catch (error) {
-        if (generation !== imageLoadGeneration) return;
+        if (session !== target || generation !== imageLoadGeneration) return;
         status(`IMAGE FAILED: ${friendlyError(error)}`, true);
     }
 }
@@ -1147,25 +1237,43 @@ function installImageCatalog(catalog: ImageCatalog): void {
     updateImageRoleOptions();
 }
 
-async function ensureImageCatalog(): Promise<void> {
-    if (!session || imageCatalog) return;
-    const cached = await session.images.cached();
+function ensureImageCatalog(): Promise<void> {
+    const target = session;
+    if (!target || imageCatalog) return Promise.resolve();
+    if (imageCatalogRequest?.target === target)
+        return imageCatalogRequest.promise;
+    const promise = loadImageCatalog(target);
+    imageCatalogRequest = { target, promise };
+    const clear = (): void => {
+        if (imageCatalogRequest?.promise === promise)
+            imageCatalogRequest = null;
+    };
+    void promise.then(clear, clear);
+    return promise;
+}
+
+async function loadImageCatalog(target: DiscSession): Promise<void> {
+    const cached = await target.images.cached();
+    if (session !== target) return;
     if (cached) {
         installImageCatalog(cached);
         $("image-setup").hidden = true;
         renderImageList();
-        status(`${imageAllRows.length} images and sprite sheets`);
+        if (tab === "images")
+            statusWithWarnings(target, "images",
+                `${imageAllRows.length} images and sprite sheets`);
         return;
     }
     $("image-setup").hidden = false;
-    const hasIso = session.images.hasIso();
+    const hasIso = target.images.hasIso();
     $("image-extract").hidden = true;
     $("image-iso-pick").hidden = hasIso;
     if (hasIso) await extractImages();
 }
 
 async function extractImages(): Promise<void> {
-    if (!session || imageExtracting) return;
+    const target = session;
+    if (!target || imageExtracting) return;
     const setupStatus = $("image-setup-status");
     const progress = $<HTMLProgressElement>("image-progress");
     const button = $<HTMLButtonElement>("image-extract");
@@ -1176,51 +1284,65 @@ async function extractImages(): Promise<void> {
     button.hidden = true;
     imageExtracting = true;
     try {
-        const catalog = await session.images.extract((done, total, path) => {
+        const catalog = await target.images.extract((done, total, path) => {
+            if (session !== target) return;
             progress.value = total > 0 ? done / total : 0;
             setupStatus.textContent = path === "done"
                 ? "catalog complete"
                 : `scanning ${path} (${done}/${total})`;
         });
+        if (session !== target) return;
         installImageCatalog(catalog);
         $("image-setup").hidden = true;
         renderImageList();
-        status(`${imageAllRows.length} images and sprite sheets · select one to preview`);
+        if (tab === "images")
+            statusWithWarnings(target, "images",
+                `${imageAllRows.length} images and sprite sheets · select one to preview`);
     } catch (error) {
+        if (session !== target) return;
         setupStatus.textContent = friendlyError(error);
         setupStatus.classList.add("err");
         progress.hidden = true;
         button.hidden = false;
     } finally {
-        button.disabled = false;
-        imageExtracting = false;
+        if (session === target) {
+            button.disabled = false;
+            imageExtracting = false;
+        }
     }
 }
 
 async function exportSelectedImage(kind: "png" | "tm2"): Promise<void> {
-    if (!session || !imageSelected || imageExporting) return;
+    const target = session;
+    if (!target || !imageSelected || imageExporting) return;
     const entry = imageSelected;
     imageExporting = true;
     updateImageActions();
     try {
-        const source = await session.images.read(entry.texture);
+        const source = await target.images.read(entry.texture);
+        if (session !== target) return;
         if (!source) throw new Error("source texture is not cached; reconnect the disc");
         const path = imageExportPath(entry, kind);
         const data = kind === "png"
             ? await imagePng(source, entry.pictureIndex) : source;
+        if (session !== target) return;
         download(data, path.slice(path.lastIndexOf("/") + 1),
                  kind === "png" ? "image/png" : "application/octet-stream");
-        status(`EXPORTED ${path}`);
+        statusWithWarnings(target, "images", `EXPORTED ${path}`);
     } catch (error) {
-        status(`EXPORT FAILED: ${friendlyError(error)}`, true);
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     } finally {
-        imageExporting = false;
-        updateImageActions();
+        if (session === target) {
+            imageExporting = false;
+            updateImageActions();
+        }
     }
 }
 
 async function exportAllImages(): Promise<void> {
-    if (!session || !imageCatalog || imageExporting) return;
+    const target = session;
+    if (!target || !imageCatalog || imageExporting) return;
     const entries = imageAllRows;
     imageExporting = true;
     updateImageActions();
@@ -1232,26 +1354,85 @@ async function exportAllImages(): Promise<void> {
             const entry = entries[index]!;
             if (entry.texture.id !== textureId) {
                 textureId = entry.texture.id;
-                source = await session.images.read(entry.texture);
+                source = await target.images.read(entry.texture);
+                if (session !== target) return;
             }
             if (!source) throw new Error(`${entry.texture.fileName} is not cached`);
             status(`ENCODING PNG ${index + 1}/${entries.length} · ${entry.texture.fileName}`);
-            files.push([imageExportPath(entry, "png"),
-                        await imagePng(source, entry.pictureIndex)]);
+            const png = await imagePng(source, entry.pictureIndex);
+            if (session !== target) return;
+            files.push([imageExportPath(entry, "png"), png]);
         }
+        if (session !== target) return;
         download(storeZipBlob(files), "ape-escape-3-images.zip", "application/zip");
-        status(`EXPORTED ape-escape-3-images.zip · ${files.length} PNG files`);
+        statusWithWarnings(target, "images",
+            `EXPORTED ape-escape-3-images.zip · ${files.length} PNG files`);
     } catch (error) {
-        status(`EXPORT FAILED: ${friendlyError(error)}`, true);
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     } finally {
-        imageExporting = false;
-        updateImageActions();
+        if (session === target) {
+            imageExporting = false;
+            updateImageActions();
+        }
     }
 }
 
-function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "stage-previews" | "models"): void {
+function imageCatalogIssueWarning(catalog: ImageCatalog | null): string {
+    if (!catalog?.issues.length) return "";
+    const shown = catalog.issues.slice(0, 2)
+        .map(issue => `${issue.format}: ${issue.reason}`);
+    const remainder = catalog.issues.length - shown.length;
+    return `${catalog.issues.length.toLocaleString()} malformed image `
+        + `container${catalog.issues.length === 1 ? "" : "s"} skipped`
+        + ` (${shown.join("; ")}${remainder > 0 ? `; +${remainder} more` : ""})`;
+}
+
+function persistenceWarnings(target: DiscSession, targetTab: AppTab): string {
+    const warnings: string[] = [];
+    const support = discSupportWarning(target.serial).replace(/^ - /, "");
+    if (support) warnings.push(support);
+    if (targetTab === "bgm" && bgmDurationWarning)
+        warnings.push(bgmDurationWarning);
+    if (targetTab === "streams" && target.streams.persistenceWarning)
+        warnings.push(target.streams.persistenceWarning);
+    if (targetTab === "images" && target.images.persistenceWarning)
+        warnings.push(target.images.persistenceWarning);
+    if (targetTab === "images") {
+        const issueWarning = imageCatalogIssueWarning(imageCatalog);
+        if (issueWarning) warnings.push(issueWarning);
+    }
+    if (targetTab === "se" && target.se.persistenceWarning)
+        warnings.push(target.se.persistenceWarning);
+    if (targetTab === "fmv" && target.movies.persistenceWarning)
+        warnings.push(target.movies.persistenceWarning);
+    if (target.persistenceWarning)
+        warnings.push(target.persistenceWarning);
+    return warnings.join(" · ");
+}
+
+function statusWithWarnings(target: DiscSession | null, targetTab: AppTab,
+                            message = "", messageIsError = false): void {
+    if (!target || session !== target || tab !== targetTab) return;
+    const warning = persistenceWarnings(target, targetTab);
+    status([message, warning].filter(Boolean).join(" · "),
+        messageIsError || warning.length > 0);
+}
+
+function showLazyCatalogError(origin: AppTab, target: DiscSession | null,
+                              statusId: string, error: unknown): void {
+    if (session !== target) return;
+    const message = friendlyError(error);
+    const setupStatus = $(statusId);
+    setupStatus.textContent = message;
+    setupStatus.classList.add("err");
+    if (tab === origin) status(message, true);
+}
+
+function switchTab(t: AppTab): void {
     if (t !== "se") seSourceLoopViz?.clear();
     tab = t;
+    const target = session;
     $("tab-bgm").classList.toggle("on", t === "bgm");
     $("tab-streams").classList.toggle("on", t === "streams");
     $("tab-se").classList.toggle("on", t === "se");
@@ -1290,40 +1471,70 @@ function switchTab(t: "bgm" | "streams" | "se" | "fmv" | "images" | "stage-previ
                         : t === "stage-previews"
                             ? KEYS_STAGE_PREVIEWS
                             : KEYS_MODELS;
-    status("");
+    statusWithWarnings(target, t);
     viewerRevision++;
     movieController.setActive(t === "fmv" || viewerChannel === "cinema");
-    if (t === "streams") void ensureStreams();
-    if (t === "se") void ensureSeCatalog();
+    if (t === "streams")
+        void ensureStreams().catch(error =>
+            showLazyCatalogError(t, target, "s-setup-status", error));
+    if (t === "se")
+        void ensureSeCatalog().catch(error =>
+            showLazyCatalogError(t, target, "se-setup-status", error));
     if (t === "fmv") renderFmvStatic(movieController.snapshot());
-    if (t === "images") void ensureImageCatalog();
+    if (t === "images")
+        void ensureImageCatalog().catch(error =>
+            showLazyCatalogError(t, target, "image-setup-status", error));
     if (t === "stage-previews") ensureStagePreviewBrowser().open();
     else stagePreviewBrowser?.close();
-    if (t === "models") void ensureModelBrowser().then(browser => browser.open());
-    else modelBrowser?.close();
+    if (t === "models") {
+        void ensureModelBrowser().then(browser => {
+            if (session === target && tab === t) return browser.open();
+        }).catch(error =>
+            showLazyCatalogError(t, target, "model-setup-status", error));
+    } else {
+        modelBrowser?.close();
+    }
 }
 
 /* First entry to the tab: catalog from OPFS, or the setup panel. */
-async function ensureStreams(): Promise<void> {
-    if (!session || sCatalog) return;
-    const c = await session.streams.cached();
-    if (c) {
-        sCatalog = c;
+function ensureStreams(): Promise<void> {
+    const target = session;
+    if (!target || sCatalog) return Promise.resolve();
+    if (streamCatalogRequest?.target === target)
+        return streamCatalogRequest.promise;
+    const promise = loadStreamCatalog(target);
+    streamCatalogRequest = { target, promise };
+    const clear = (): void => {
+        if (streamCatalogRequest?.promise === promise)
+            streamCatalogRequest = null;
+    };
+    void promise.then(clear, clear);
+    return promise;
+}
+
+async function loadStreamCatalog(target: DiscSession): Promise<void> {
+    const catalog = await target.streams.cached();
+    if (session !== target) return;
+    if (catalog) {
+        sCatalog = catalog;
         $("s-setup").hidden = true;
         $("s-stage").hidden = false;
         renderStreamList();
-        status(`${c.entries.length} streams - SPACE or click one to play`);
+        if (tab === "streams")
+            statusWithWarnings(target, "streams",
+                `${catalog.entries.length} streams - SPACE or click one to play`);
         return;
     }
     $("s-setup").hidden = false;
-    const iso = session.streams.hasIso();
+    const hasIso = target.streams.hasIso();
     $("s-extract").hidden = true;
-    $("s-iso-pick").hidden = iso;
-    if (iso) await extractStreams();
+    $("s-iso-pick").hidden = hasIso;
+    if (hasIso) await extractStreams();
 }
 
 async function extractStreams(): Promise<void> {
-    if (!session || sExtracting) return;
+    const target = session;
+    if (!target || sExtracting) return;
     const pstat = $("s-setup-status");
     const bar = $<HTMLProgressElement>("s-progress");
     const button = $<HTMLButtonElement>("s-extract");
@@ -1334,22 +1545,30 @@ async function extractStreams(): Promise<void> {
     button.hidden = true;
     sExtracting = true;
     try {
-        sCatalog = await session.streams.extract((done, total, name) => {
+        const catalog = await target.streams.extract((done, total, name) => {
+            if (session !== target) return;
             bar.value = total > 0 ? done / total : 0;
             pstat.textContent = `extracting ${name} (${done}/${total})`;
         });
+        if (session !== target) return;
+        sCatalog = catalog;
         $("s-setup").hidden = true;
         $("s-stage").hidden = false;
         renderStreamList();
-        status(`${sCatalog.entries.length} streams - SPACE or click one to play`);
-    } catch (e) {
-        pstat.textContent = friendlyError(e);
+        if (tab === "streams")
+            statusWithWarnings(target, "streams",
+                `${catalog.entries.length} streams - SPACE or click one to play`);
+    } catch (error) {
+        if (session !== target) return;
+        pstat.textContent = friendlyError(error);
         pstat.classList.add("err");
         bar.hidden = true;
         button.hidden = false;
     } finally {
-        button.disabled = false;
-        sExtracting = false;
+        if (session === target) {
+            button.disabled = false;
+            sExtracting = false;
+        }
     }
 }
 
@@ -1467,18 +1686,21 @@ function renderStreamInfo(): void {
 }
 
 async function loadStreamEntry(e: StreamEntry, autoplay: boolean): Promise<void> {
-    if (!session || sLoading) return;
+    const target = session;
+    if (!target || sLoading) return;
     sLoading = true;
     status(`loading ${e.name}...`);
     try {
-        const bytes = await session.streams.read(e.name);
+        const bytes = await target.streams.read(e.name);
+        if (session !== target) return;
         if (!bytes)
             throw new Error(`missing stream ${e.name} -- re-extract, or `
                             + "re-open the ISO");
-        const d = await sDecoder.decode(e.name, bytes);
-        sPlayer.load(d, sTrim);
+        const decoded = await sDecoder.decode(e.name, bytes);
+        if (session !== target) return;
+        sPlayer.load(decoded, sTrim);
         sPlayingName = e.name;
-        sViz?.set(d, sTrim);
+        sViz?.set(decoded, sTrim);
         $("s-name").textContent = e.name.replace(/\.x$/, "");
         $("s-len").textContent = fmtSec(sPlayer.dur());
         renderStreamInfo();
@@ -1486,16 +1708,18 @@ async function loadStreamEntry(e: StreamEntry, autoplay: boolean): Promise<void>
         $<HTMLButtonElement>("s-playbtn").disabled = false;
         $<HTMLButtonElement>("s-exportbtn").disabled = false;
         $<HTMLButtonElement>("s-rawbtn").disabled = false;
-        status("");
+        statusWithWarnings(target, "streams");
         if (autoplay) {
             player?.pause();            /* one thing plays at a time */
             sPlayer.play();
         }
-    } catch (err) {
-        status(friendlyError(err), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     } finally {
-        sLoading = false;
-        renderStreamList();
+        if (session === target) {
+            sLoading = false;
+            renderStreamList();
+        }
     }
 }
 
@@ -1547,45 +1771,55 @@ function sToggleTrim(): void {
  * anyone who wants the file format itself (the MIDI/bank-pair precedent:
  * straight bytes, no worker, no busy state). */
 async function sExportRaw(): Promise<void> {
-    if (!session) return;
-    const d = sPlayer.decoded();
-    if (!d) return;
+    const target = session;
+    if (!target) return;
+    const decoded = sPlayer.decoded();
+    if (!decoded) return;
     try {
-        const bytes = await session.streams.read(d.name);
+        const bytes = await target.streams.read(decoded.name);
+        if (session !== target) return;
         if (!bytes)
-            throw new Error(`missing stream ${d.name} -- re-extract, or `
+            throw new Error(`missing stream ${decoded.name} -- re-extract, or `
                             + "re-open the ISO");
-        download(bytes, d.name, "application/octet-stream");
-        status(`EXPORTED ${d.name}`);
-    } catch (e) {
-        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+        download(bytes, decoded.name, "application/octet-stream");
+        status(`EXPORTED ${decoded.name}`);
+    } catch (error) {
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     }
 }
 
 async function sExport(): Promise<void> {
-    if (!session || sBusy) return;
-    const d = sPlayer.decoded();
-    if (!d) return;
+    const target = session;
+    if (!target || sBusy) return;
+    const decoded = sPlayer.decoded();
+    if (!decoded) return;
+    const trim = sTrim;
     sBusy = true;
-    const stemName = d.name.replace(/\.x$/, "");
-    const file = `${stemName}${sTrim ? "_trim" : ""}.wav`;
+    const stemName = decoded.name.replace(/\.x$/, "");
+    const file = `${stemName}${trim ? "_trim" : ""}.wav`;
     const btn = $<HTMLButtonElement>("s-exportbtn");
     btn.disabled = true;
     btn.textContent = "EXPORTING";
     status(`EXPORTING ${file}...`);
     try {
-        const bytes = await session.streams.read(d.name);
+        const bytes = await target.streams.read(decoded.name);
+        if (session !== target) return;
         if (!bytes)
-            throw new Error(`missing stream ${d.name}`);
-        const wav = await sDecoder.wav(d.name, bytes, sTrim);
+            throw new Error(`missing stream ${decoded.name}`);
+        const wav = await sDecoder.wav(decoded.name, bytes, trim);
+        if (session !== target) return;
         download(wav, file, "audio/wav");
         status(`EXPORTED ${file}`);
-    } catch (e) {
-        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    } catch (error) {
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     } finally {
-        sBusy = false;
-        btn.disabled = !sPlayer.decoded();
-        btn.textContent = "EXPORT WAV";
+        if (session === target) {
+            sBusy = false;
+            btn.disabled = !sPlayer.decoded();
+            btn.textContent = "EXPORT WAV";
+        }
     }
 }
 
@@ -1764,15 +1998,30 @@ function renderSeList(): void {
     viewerRevision++;
 }
 
-async function ensureSeCatalog(): Promise<boolean> {
-    if (!session) return false;
-    const meta = await session.se.cached();
+function ensureSeCatalog(): Promise<boolean> {
+    const target = session;
+    if (!target) return Promise.resolve(false);
+    if (seCatalogRequest?.target === target)
+        return seCatalogRequest.promise;
+    const promise = loadSeCatalog(target);
+    seCatalogRequest = { target, promise };
+    const clear = (): void => {
+        if (seCatalogRequest?.promise === promise)
+            seCatalogRequest = null;
+    };
+    void promise.then(clear, clear);
+    return promise;
+}
+
+async function loadSeCatalog(target: DiscSession): Promise<boolean> {
+    const meta = await target.se.cached();
+    if (session !== target) return false;
     if (!meta) {
-        const needsIso = !session.se.hasIso();
+        const needsIso = !target.se.hasIso();
         seSetup(true, needsIso);
         if (!needsIso) {
             await extractSeBanks();
-            return seCatalog !== null;
+            return session === target && seCatalog !== null;
         }
         return false;
     }
@@ -1782,7 +2031,8 @@ async function ensureSeCatalog(): Promise<boolean> {
     return true;
 }
 async function extractSeBanks(): Promise<void> {
-    if (!session || seExtracting) return;
+    const target = session;
+    if (!target || seExtracting) return;
     const btn = $<HTMLButtonElement>("se-extract");
     const st = $("se-setup-status");
     const progress = $<HTMLProgressElement>("se-progress");
@@ -1792,28 +2042,37 @@ async function extractSeBanks(): Promise<void> {
     st.classList.remove("err");
     seExtracting = true;
     try {
-        seCatalog = await session.se.extract((done, total, name) => {
+        const catalog = await target.se.extract((done, total, name) => {
+            if (session !== target) return;
             progress.max = total;
             progress.value = done;
             st.textContent = `extracting ${done}/${total}: ${name}`;
         });
-        st.textContent = `${seCatalog.entries.length} SE banks ready`;
+        if (session !== target) return;
+        seCatalog = catalog;
+        st.textContent = `${catalog.entries.length} SE banks ready`;
         seSetup(false);
         renderSeList();
-        status(`${seCatalog.entries.length} SE banks cached`);
-    } catch (e) {
-        st.textContent = friendlyError(e);
+        if (tab === "se")
+            statusWithWarnings(target, "se",
+                `${catalog.entries.length} SE banks cached`);
+    } catch (error) {
+        if (session !== target) return;
+        st.textContent = friendlyError(error);
         st.classList.add("err");
         btn.hidden = false;
     } finally {
-        btn.disabled = false;
-        seExtracting = false;
-        progress.hidden = true;
+        if (session === target) {
+            btn.disabled = false;
+            progress.hidden = true;
+            seExtracting = false;
+        }
     }
 }
 
 async function seActivate(i: number, play: boolean): Promise<void> {
-    if (!session || seLoading) return;
+    const target = session;
+    if (!target || seLoading) return;
     const row = seRows[i];
     if (!row) return;
     if (row.kind === "cue") {
@@ -1830,17 +2089,21 @@ async function seActivate(i: number, play: boolean): Promise<void> {
     seLoading = true;
     status(`reading ${row.entry.name} sequence table...`);
     try {
-        const files = await session.se.bank(row.entry);
+        const files = await target.se.bank(row.entry);
+        if (session !== target) return;
         const inspection = await seInspector.inspect(files);
+        if (session !== target) return;
         seShape = inspection.requests;
         seDetails = inspection.details;
         seOpenBank = row.entry.name;
-        status("");
-    } catch (e) {
-        status(friendlyError(e), true);
+        statusWithWarnings(target, "se");
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     } finally {
-        seLoading = false;
-        renderSeList();
+        if (session === target) {
+            seLoading = false;
+            renderSeList();
+        }
     }
 }
 
@@ -1856,12 +2119,11 @@ const seEngineConfig = (info = currentSeInfo()): EngineConfig => ({
     duckPhone: false,
 });
 
-async function seSynthAssets(entry: SeBankEntry) {
-    if (!session) throw new Error("no disc session");
-    const files = await session.se.bank(entry);
+async function seSynthAssets(target: DiscSession, entry: SeBankEntry) {
+    const files = await target.se.bank(entry);
     const [irx, libsd] = await Promise.all([
-        session.read("irx/sg2iopm1.irx"),
-        session.read("irx/libsd.irx"),
+        target.read("irx/sg2iopm1.irx"),
+        target.read("irx/libsd.irx"),
     ]);
     return { files, assets: { ...files, irx, libsd } };
 }
@@ -1875,12 +2137,21 @@ function cloneSeMeasureFiles(assets: SeMeasureFiles): SeMeasureFiles {
     };
 }
 
+function recordSeMeasurementFailure(error: unknown): void {
+    const reason = friendlyError(error);
+    seMeasureError = reason;
+    console.error("SE duration analysis failed", error);
+    if (tab === "se")
+        status(`SE duration analysis unavailable: ${reason}`, true);
+}
+
 function startSeMeasurement(
     row: Extract<SeRow, { kind: "cue" }>, assets: SeMeasureFiles,
+    token = ++seMeasureToken,
 ): void {
-    const token = ++seMeasureToken;
     seKnownFrames = null;
     seKnownEstimated = false;
+    seMeasureError = null;
     seMeasuring = true;
     renderSeLength();
     void seInspector.measure(
@@ -1890,9 +2161,10 @@ function startSeMeasurement(
         if (token !== seMeasureToken) return;
         seKnownFrames = measure.frames;
         seKnownEstimated = measure.estimated;
+        seMeasureError = null;
     }, (error) => {
         if (token !== seMeasureToken) return;
-        console.error("SE duration analysis failed", error);
+        recordSeMeasurementFailure(error);
     }).finally(() => {
         if (token !== seMeasureToken) return;
         seMeasuring = false;
@@ -1902,26 +2174,43 @@ function startSeMeasurement(
 }
 
 async function refreshSeMeasurement(): Promise<void> {
-    if (!session || !sePlaying) return;
+    const target = session;
+    const row = sePlaying;
+    if (!target || !row) return;
+    const token = ++seMeasureToken;
+    seKnownFrames = null;
+    seKnownEstimated = false;
+    seMeasureError = null;
+    seMeasuring = true;
+    renderSeLength();
     try {
-        const { assets } = await seSynthAssets(sePlaying.entry);
-        startSeMeasurement(sePlaying, assets);
+        const { assets } = await seSynthAssets(target, row.entry);
+        if (token !== seMeasureToken || session !== target || sePlaying !== row)
+            return;
+        startSeMeasurement(row, assets, token);
     } catch (error) {
-        console.error("SE duration analysis failed", error);
+        if (token !== seMeasureToken || session !== target || sePlaying !== row)
+            return;
+        seMeasuring = false;
+        recordSeMeasurementFailure(error);
+        renderSeLength();
+        renderSeInfo();
     }
 }
 
 async function loadSeCue(
     row: Extract<SeRow, { kind: "cue" }>, autoplay: boolean,
 ): Promise<void> {
-    if (!session || seLoading) return;
+    const target = session;
+    if (!target || seLoading) return;
     let p: WorkletPlayer;
     try {
         p = await ensurePlayer();
-    } catch (e) {
-        status(e instanceof Error ? e.message : String(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
         return;
     }
+    if (session !== target) return;
     p.resume();
     sPlayer.pause();
     seLoading = true;
@@ -1931,10 +2220,12 @@ async function loadSeCue(
     seSourceLoopViz?.clear();
     try {
         const info = currentSeInfo(row);
-        const { assets } = await seSynthAssets(row.entry);
+        const { assets } = await seSynthAssets(target, row.entry);
+        if (session !== target) return;
         startSeMeasurement(row, assets);
-        const r = await p.loadSe(
+        const result = await p.loadSe(
             assets, row.bank, row.request, seEngineConfig(info));
+        if (session !== target) return;
         sePlaying = row;
         sePlayingInfo = info;
         sePastEvents = false;
@@ -1947,22 +2238,34 @@ async function loadSeCue(
         viewerLevelHead = 0;
         seSequenceViz?.set(info);
         $("se-name").textContent = row.entry.name;
-        $("se-coord").textContent = `bank ${row.bank} \u00B7 request ${row.request}`;
+        $("se-coord").textContent = `bank ${row.bank} · request ${row.request}`;
         renderSeLength();
         $<HTMLButtonElement>("se-playbtn").disabled = false;
         $<HTMLButtonElement>("se-bankbtn").disabled = false;
         updateSeExportBtn();
-        status(r.warning ? `warning: ${r.warning}` : "", !!r.warning);
+        if (seMeasureError)
+            status(`SE duration analysis unavailable: ${seMeasureError}`, true);
+        else
+            statusWithWarnings(
+                target,
+                "se",
+                result.warning ? `warning: ${result.warning}` : "",
+                !!result.warning,
+            );
         if (autoplay) p.play();
-    } catch (e) {
-        status(friendlyError(e), true);
-        seKnownEstimated = false;
-        seMeasureToken++;
-        seMeasuring = false;
+    } catch (error) {
+        if (session === target) {
+            status(friendlyError(error), true);
+            seKnownEstimated = false;
+            seMeasureToken++;
+            seMeasuring = false;
+        }
     } finally {
-        seLoading = false;
-        renderSeList();
-        renderSeDials();
+        if (session === target) {
+            seLoading = false;
+            renderSeList();
+            renderSeDials();
+        }
     }
 }
 
@@ -2009,6 +2312,9 @@ function renderSeLength(): void {
             `${seKnownEstimated ? "≈" : ""}${fmtSeTime(seKnownFrames)} audio`;
     } else if (seMeasuring) {
         $("se-len").textContent = "measuring audio…";
+    } else if (seMeasureError) {
+        $("se-len").textContent =
+            `${fmtSeTime(seEventFrames(info))} events · audio unavailable`;
     } else {
         $("se-len").textContent = `${fmtSeTime(seEventFrames(info))} events`;
     }
@@ -2025,34 +2331,41 @@ function renderSeInfo(): void {
     if (!sePlaying) return;
     const info = currentSeInfo();
     const counts = info ? seNoteCounts(info) : null;
-    const stream = info && counts
-        ? `${counts.starts} start${counts.starts === 1 ? "" : "s"} · `
-          + `${counts.stops} stop${counts.stops === 1 ? "" : "s"} · `
-          + `${info.controls} control${info.controls === 1 ? "" : "s"} · `
-          + (info.loop
-              ? `${info.loop.count === 0 ? "infinite jump" : `jump ×${info.loop.count}`} `
-                + `${fmtSeTime(seLoopFrames(info)!.cycle)} cycle`
-              : `${fmtSeTime(seEventFrames(info))} event track`)
-        : "event metadata unavailable";
+    let stream = "event metadata unavailable";
+    if (info && counts) {
+        let track = `${fmtSeTime(seEventFrames(info))} event track`;
+        if (info.loop) {
+            const jump = info.loop.count === 0
+                ? "infinite jump"
+                : `jump ×${info.loop.count}`;
+            track = `${jump} ${fmtSeTime(seLoopFrames(info)!.cycle)} cycle`;
+        }
+        stream = `${counts.starts} start${counts.starts === 1 ? "" : "s"} · `
+            + `${counts.stops} stop${counts.stops === 1 ? "" : "s"} · `
+            + `${info.controls} control${info.controls === 1 ? "" : "s"} · ${track}`;
+    }
     const sourceEnd = info ? seSourceEndFrames(info) : 0;
-    const sources = info
-        ? (seIsStopOnly(info)
-            ? `voice-stop request: stops matching live ${seStopTargets(info)}; `
-              + "starts no audio source by itself"
-            : info.sustained
-                ? `${info.sustainedVoices} non-decaying loop/noise `
-                  + `voice${info.sustainedVoices === 1 ? "" : "s"} remain after the event track`
-                : info.loopingVoices && sourceEnd > seEventFrames(info)
-                    ? `${info.loopingVoices} loop/noise source `
-                      + `voice${info.loopingVoices === 1 ? "" : "s"} `
-                      + `${info.loopingVoices === 1 ? "remains" : "remain"} after events; `
-                      + `envelope endpoint ≈${fmtSeTime(sourceEnd)}`
-                    : info.activeVoices
-                        ? `${info.activeVoices} note${info.activeVoices === 1 ? "" : "s"} `
-                          + `${info.activeVoices === 1 ? "has" : "have"} no explicit note-off; `
-                          + "waveform/envelope lifetime ends the source"
-                        : "all started notes receive an explicit note-off")
-        : "";
+    let sources = "";
+    if (info) {
+        if (seIsStopOnly(info)) {
+            sources = `voice-stop request: stops matching live ${seStopTargets(info)}; `
+                + "starts no audio source by itself";
+        } else if (info.sustained) {
+            sources = `${info.sustainedVoices} non-decaying loop/noise `
+                + `voice${info.sustainedVoices === 1 ? "" : "s"} remain after the event track`;
+        } else if (info.loopingVoices && sourceEnd > seEventFrames(info)) {
+            sources = `${info.loopingVoices} loop/noise source `
+                + `voice${info.loopingVoices === 1 ? "" : "s"} `
+                + `${info.loopingVoices === 1 ? "remains" : "remain"} after events; `
+                + `envelope endpoint ≈${fmtSeTime(sourceEnd)}`;
+        } else if (info.activeVoices) {
+            sources = `${info.activeVoices} note${info.activeVoices === 1 ? "" : "s"} `
+                + `${info.activeVoices === 1 ? "has" : "have"} no explicit note-off; `
+                + "waveform/envelope lifetime ends the source";
+        } else {
+            sources = "all started notes receive an explicit note-off";
+        }
+    }
     const now = sePastEvents && info?.loopingVoices
         ? "\nplayback now: event track ended; loop/noise source envelope is still sounding"
         : "";
@@ -2070,14 +2383,20 @@ function renderSeDials(): void {
     const loop = $<HTMLButtonElement>("se-loop");
     const hostLoop = info?.loop?.count === 0;
     loop.disabled = !hostLoop;
-    loop.textContent = hostLoop
-        ? (seCfg.loop ? "LOOP STREAM" : "STREAM ONCE")
-        : (info?.loop
-            ? `REPEAT \u00D7${info.loop.count}`
-            : info?.sustained
-                ? "SUSTAINED SOURCE"
-                : info?.loopingVoices ? "SOURCE LOOP" : "ONE SHOT");
-    loop.classList.toggle("on", !!hostLoop && seCfg.loop);
+    let loopLabel: string;
+    if (hostLoop) {
+        loopLabel = seCfg.loop ? "LOOP STREAM" : "STREAM ONCE";
+    } else if (info?.loop) {
+        loopLabel = `REPEAT \u00D7${info.loop.count}`;
+    } else if (info?.sustained) {
+        loopLabel = "SUSTAINED SOURCE";
+    } else if (info?.loopingVoices) {
+        loopLabel = "SOURCE LOOP";
+    } else {
+        loopLabel = "ONE SHOT";
+    }
+    loop.textContent = loopLabel;
+    loop.classList.toggle("on", hostLoop && seCfg.loop);
     $("se-timing").textContent = seCfg.exact ? "EXACT" : "TICK";
     $("se-timing").classList.toggle("on", seCfg.exact);
     $("se-kernel").textContent = seCfg.gaussian ? "GAUSS" : "BRIGHT";
@@ -2110,6 +2429,7 @@ function seToggleExact(): void {
     seCfg.exact = !seCfg.exact;
     seKnownFrames = null;
     seKnownEstimated = false;
+    seMeasureError = null;
     sePastEvents = false;
     if (audioMode === "se") {
         finished = false;
@@ -2156,6 +2476,7 @@ function seToggleReverb(): void {
     seCfg.revDepth = seCfg.revDepth > 0 ? 0 : 30;
     seKnownFrames = null;
     seKnownEstimated = false;
+    seMeasureError = null;
     if (audioMode === "se") {
         player?.set("revDepth", seCfg.revDepth);
         void refreshSeMeasurement();
@@ -2186,7 +2507,8 @@ async function exportSeCue(
     looping = currentSeInfo()?.loop?.count === 0 && seCfg.loop,
     seconds = 10,
 ): Promise<void> {
-    if (!session || !sePlaying || seBusy || exporter.busy) return;
+    const target = session;
+    if (!target || !sePlaying || seBusy || exporter.busy) return;
     const row = sePlaying;
     const info = currentSeInfo();
     looping = looping && info?.loop?.count === 0;
@@ -2208,34 +2530,42 @@ async function exportSeCue(
     updateSeExportBtn();
     status(`EXPORTING se_${row.entry.name}_${row.bank}_${row.request}_${mode}.wav...`);
     try {
-        const { assets } = await seSynthAssets(row.entry);
+        const { assets } = await seSynthAssets(target, row.entry);
+        if (session !== target) return;
         const opts: SeExportOpts = {
             bank: row.bank, request: row.request, volume: seCfg.volume,
             revDepth: seCfg.revDepth, exact: seCfg.exact,
             bright: !seCfg.gaussian, seconds: cap, loop: looping,
         };
         exporter.se(`se_${row.entry.name}_${mode}`, assets, opts);
-    } catch (e) {
-        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+    } catch (error) {
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     } finally {
-        seBusy = false;
-        updateSeExportBtn();
+        if (session === target) {
+            seBusy = false;
+            updateSeExportBtn();
+        }
     }
 }
 
 async function exportSeBank(): Promise<void> {
-    if (!session || !sePlaying) return;
+    const target = session;
+    const row = sePlaying;
+    if (!target || !row) return;
     try {
-        const { hd, bd } = await session.se.bank(sePlaying.entry);
+        const { hd, bd } = await target.se.bank(row.entry);
+        if (session !== target) return;
         const zip = storeZip([
-            [sePlaying.entry.hd, hd],
-            [sePlaying.entry.bd, bd],
+            [row.entry.hd, hd],
+            [row.entry.bd, bd],
         ]);
-        const file = `${sePlaying.entry.name}_bank.zip`;
+        const file = `${row.entry.name}_bank.zip`;
         download(zip, file, "application/zip");
-        status(`EXPORTED ${file}`);
-    } catch (e) {
-        status(`EXPORT FAILED: ${e instanceof Error ? e.message : e}`, true);
+        statusWithWarnings(target, "se", `EXPORTED ${file}`);
+    } catch (error) {
+        if (session === target)
+            status(`EXPORT FAILED: ${friendlyError(error)}`, true);
     }
 }
 
@@ -2289,9 +2619,13 @@ function tick(): void {
         cc.setAttribute("aria-pressed", String(movie.captionsEnabled));
 
         const statusElement = $("fmv-status");
-        const message = movie.status || "Nothing leaves this browser.";
+        const persistence = session?.movies.persistenceWarning ?? "";
+        const message = [
+            movie.status || "Nothing leaves this browser.",
+            persistence,
+        ].filter(Boolean).join(" · ");
         if (statusElement.textContent !== message) statusElement.textContent = message;
-        statusElement.classList.toggle("err", movie.error);
+        statusElement.classList.toggle("err", movie.error || persistence.length > 0);
         const busy = movie.loading || movie.exporting;
         const jobProgress = $("fmv-job-progress");
         jobProgress.setAttribute("aria-valuenow", String(Math.round(movie.progress * 100)));
@@ -2333,6 +2667,7 @@ function tick(): void {
         if (finished && pos > 0 && pos !== seKnownFrames) {
             seKnownFrames = pos;
             seKnownEstimated = false;
+            seMeasureError = null;
             seMeasuring = false;
             renderSeLength();
         }
@@ -2436,43 +2771,50 @@ function updateExportBtn(): void {
 }
 
 async function exportWav(mode: "current" | "authored" | "loop"): Promise<void> {
-    if (!session || playingIdx < 0 || exporter.busy) return;
-    const song = session.songs[playingIdx]!;
+    const target = session;
+    if (!target || playingIdx < 0 || exporter.busy) return;
+    const song = target.songs[playingIdx]!;
     let suffix = "";
-    let o: ExportOpts;
-    if (mode === "authored") {          /* the curated listening-set render */
+    let options: ExportOpts;
+    if (mode === "authored") {
         suffix = "_authored";
-        o = { songvol: song.songvol, revDepth: 30, exact: true,
-              bright: false, loop: 0 };
-    } else {                            /* what you hear (minus the looping) */
-        o = { songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
-              bright: !cfg.gaussian, loop: 0 };
-        if (mode === "loop") { suffix = `_loop${loopN}`; o.loop = loopN; }
+        options = { songvol: song.songvol, revDepth: 30, exact: true,
+                    bright: false, loop: 0 };
+    } else {
+        options = { songvol: cfg.songvol, revDepth: cfg.revDepth, exact: cfg.exact,
+                    bright: !cfg.gaussian, loop: 0 };
+        if (mode === "loop") {
+            suffix = `_loop${loopN}`;
+            options.loop = loopN;
+        }
     }
     try {
-        const assets = await session.songAssets(song);
-        exporter.start(song.name, suffix, assets, o);
-    } catch (e) {
-        status(friendlyError(e), true);
+        const assets = await target.songAssets(song);
+        if (session !== target) return;
+        exporter.start(song.name, suffix, assets, options);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     }
-    updateExportBtn();
+    if (session === target) updateExportBtn();
 }
 
 /* MIDI export: the sequence exactly as it sits on the disc (a standard SMF;
  * the CC99 20/30 loop markers ride along as plain controller events). No
  * render involved, so no worker and no busy state. */
 async function exportMidi(): Promise<void> {
-    if (!session || playingIdx < 0) return;
-    const song = session.songs[playingIdx]!;
+    const target = session;
+    if (!target || playingIdx < 0) return;
+    const song = target.songs[playingIdx]!;
     try {
-        const mid = await session.read(`bgm/${song.mid}`);
+        const mid = await target.read(`bgm/${song.mid}`);
+        if (session !== target) return;
         if (!mid)
             throw new Error(`missing asset bgm/${song.mid}`
                             + " -- forget the disc and re-open the ISO");
         download(mid, song.mid, "audio/midi");
         status(`EXPORTED ${song.mid}`);
-    } catch (e) {
-        status(friendlyError(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     }
 }
 
@@ -2480,15 +2822,17 @@ async function exportMidi(): Promise<void> {
  * loop points + root key as smpl chunks), zipped. Decode runs in the export
  * worker through the SDK's bank-introspection API. */
 async function exportKit(): Promise<void> {
-    if (!session || playingIdx < 0 || exporter.busy) return;
-    const song = session.songs[playingIdx]!;
+    const target = session;
+    if (!target || playingIdx < 0 || exporter.busy) return;
+    const song = target.songs[playingIdx]!;
     try {
-        const assets = await session.songAssets(song);
+        const assets = await target.songAssets(song);
+        if (session !== target) return;
         exporter.kit(song.name, assets);
-    } catch (e) {
-        status(friendlyError(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     }
-    updateExportBtn();
+    if (session === target) updateExportBtn();
 }
 
 /* Bank export: the song's instrument bank exactly as it sits on the disc --
@@ -2496,22 +2840,24 @@ async function exportKit(): Promise<void> {
  * downloads: a click is one gesture, and Chrome silently blocks the second
  * same-gesture download until the user allows "multiple downloads". */
 async function exportBank(): Promise<void> {
-    if (!session || playingIdx < 0) return;
-    const song = session.songs[playingIdx]!;
+    const target = session;
+    if (!target || playingIdx < 0) return;
+    const song = target.songs[playingIdx]!;
     try {
         const files: [string, Uint8Array][] = [];
         for (const name of [song.hd, song.bd]) {
-            const b = await session.read(`bgm/${name}`);
-            if (!b)
+            const bytes = await target.read(`bgm/${name}`);
+            if (session !== target) return;
+            if (!bytes)
                 throw new Error(`missing asset bgm/${name}`
                                 + " -- forget the disc and re-open the ISO");
-            files.push([name, b]);
+            files.push([name, bytes]);
         }
         const file = `${song.name}_bank.zip`;
         download(storeZip(files), file, "application/zip");
         status(`EXPORTED ${file}`);
-    } catch (e) {
-        status(friendlyError(e), true);
+    } catch (error) {
+        if (session === target) status(friendlyError(error), true);
     }
 }
 
@@ -3137,6 +3483,14 @@ export function viewerExport(): void {
     else void exportWav("current");
 }
 
+async function attachMovieIso(file: File): Promise<void> {
+    try {
+        await movieController.attachIso(file);
+    } catch (error) {
+        movieController.reportError(friendlyError(error));
+    }
+}
+
 export function viewerChooseDisc(): void {
     if (!session) {
         $<HTMLInputElement>("file").click();
@@ -3147,7 +3501,7 @@ export function viewerChooseDisc(): void {
         input.onchange = () => {
             const file = input.files?.[0];
             input.remove();
-            if (file) void movieController.attachIso(file);
+            if (file) void attachMovieIso(file);
         };
         input.click();
     } else if (tab === "streams" && !sCatalog) {
@@ -3160,9 +3514,109 @@ export function viewerChooseDisc(): void {
 }
 
 /* ---- app states --------------------------------------------------------- */
-async function enterPlayer(s: DiscSession): Promise<void> {
+async function performDiscReset(): Promise<void> {
+    const audio = player;
+    session = null;
+    player = null;
+    playerReady = null;
+    playerGeneration++;
+    audio?.pause();
+    sPlayer.stop();
+    sDecoder.dispose();
+    seInspector.dispose();
+    exporter.dispose();
+
+    timeline = null;
+    viz = null;
+    seViz = null;
+    seSequenceViz = null;
+    seSourceLoopViz = null;
+    audioMode = null;
+    sel = 0;
+    playingIdx = -1;
+    loading = false;
+    finished = false;
+    bgmDurations = new Float64Array();
+    bgmDurationWarning = null;
+
+    sCatalog = null;
+    streamCatalogRequest = null;
+    sRows = [];
+    sFolded.clear();
+    sFoldInit = false;
+    sSel = 0;
+    sPlayingName = null;
+    sLoading = false;
+    sBusy = false;
+    sExtracting = false;
+    sViz = null;
+
+    seCatalog = null;
+    seCatalogRequest = null;
+    seRows = [];
+    seSel = 0;
+    seBusy = false;
+    seOpenBank = null;
+    seShape = null;
+    seDetails = null;
+    seLoading = false;
+    seExtracting = false;
+    sePlaying = null;
+    sePlayingInfo = null;
+    seKnownFrames = null;
+    seKnownEstimated = false;
+    seMeasureError = null;
+    seMeasuring = false;
+    seMeasureToken++;
+
+    imageCatalog = null;
+    imageCatalogRequest = null;
+    imageAllRows = [];
+    imageRows = [];
+    imageEntryById.clear();
+    imageSelected = null;
+    imageExtracting = false;
+    imageExporting = false;
+    imageLoadGeneration++;
+    imageRenderGeneration++;
+    imageListObserver?.disconnect();
+    imageThumbnailObserver?.disconnect();
+    imageThumbnailQueue = [];
+    imageThumbnailActive = 0;
+
+    fmvRenderedRevision = -1;
+    fmvAttachedRevision = -1;
+    fmvVisibleNames = [];
+    fmvRenderedEntryName = null;
+    modelBrowser?.setStore(null);
+    stagePreviewBrowser?.dispose();
+    stagePreviewBrowser = null;
+    tab = "bgm";
+    viewerChannel = "music";
+    viewerRevision++;
+
+    $("app").hidden = true;
+    $("picker").hidden = false;
+    await Promise.all([
+        movieController.dispose(),
+        audio && audio.ctx.state !== "closed"
+            ? audio.ctx.close().catch(error => {
+                console.error("audio context close failed during disc reset", error);
+            })
+            : Promise.resolve(),
+    ]);
+}
+
+function resetDiscBoundState(): Promise<void> {
+    return discCleanup.run(performDiscReset);
+}
+
+async function enterPlayer(s: DiscSession, ticket: DiscOpenTicket): Promise<void> {
+    const isCurrent = (): boolean => discOpens.isCurrent(ticket);
+    if (!isCurrent()) return;
+    await movieController.connect(s, isCurrent);
+    if (!isCurrent()) return;
     session = s;
-    await movieController.connect(s);
     modelBrowser?.setStore(s.models);
     stagePreviewBrowser?.setStore(s.stagePreviews);
     $("picker").hidden = true;
@@ -3170,6 +3624,7 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     $("disc-id").textContent =
         s.cached ? (s.serial ?? s.volumeId) : `${s.serial ?? s.volumeId} (no cache)`;
     bgmDurations = new Float64Array(s.songs.length);
+    bgmDurationWarning = null;
     bgmDurations.fill(Number.NaN);
     renderList();
     void loadBgmDurations(s);
@@ -3185,9 +3640,12 @@ async function enterPlayer(s: DiscSession): Promise<void> {
     /* no audio yet: the whole stack is built inside the first click/key
      * (ensurePlayer) so Safari associates the AudioContext with a gesture */
     $<HTMLButtonElement>("playbtn").disabled = false;
-    const region = s.serial && s.serial !== US_SERIAL
-        ? ` - untested region disc (${s.serial}), things may be off` : "";
-    status(`${session.songs.length} songs - SPACE or click one to play${region}`);
+    const region = discSupportWarning(s.serial);
+    const persistence = s.persistenceWarning ? ` - ${s.persistenceWarning}` : "";
+    status(
+        `${session.songs.length} songs - SPACE or click one to play${region}${persistence}`,
+        s.persistenceWarning !== null,
+    );
     requestAnimationFrame(tick);
 }
 
@@ -3198,20 +3656,30 @@ function wirePicker(): void {
     const bar = $<HTMLProgressElement>("picker-progress");
 
     async function open(file: File): Promise<void> {
+        const ticket = discOpens.begin();
         pstat.classList.remove("err");
         pstat.textContent = "reading disc...";
         bar.hidden = false;
         bar.value = 0;
         try {
-            const s = await openIso(file, (done, total, name) => {
+            await resetDiscBoundState();
+            if (!discOpens.isCurrent(ticket)) return;
+            const next = await openIso(file, (done, total, name) => {
+                if (!discOpens.isCurrent(ticket)) return;
                 bar.value = total > 0 ? done / total : 0;
                 pstat.textContent = `extracting ${name} (${done}/${total})`;
-            });
-            await enterPlayer(s);
-        } catch (e) {
-            pstat.textContent = friendlyError(e);
+            }, ticket.signal);
+            ticket.signal.throwIfAborted();
+            if (!discOpens.isCurrent(ticket)) return;
+            await enterPlayer(next, ticket);
+        } catch (error) {
+            if (!discOpens.isCurrent(ticket) || ticket.signal.aborted) return;
+            pstat.textContent = friendlyError(error);
             pstat.classList.add("err");
             bar.hidden = true;
+        } finally {
+            if (discOpens.isCurrent(ticket)) input.value = "";
+            discOpens.complete(ticket);
         }
     }
 
@@ -3252,7 +3720,7 @@ async function selftest(): Promise<void> {
             put(`ctx:${p.ctx.state}`);
             setTimeout(() => put(`after-click:${p.ctx.state}`), 800);
         } catch (e) {
-            put(`setup:FAIL ${e instanceof Error ? e.message : e}`);
+            put(`setup:FAIL ${friendlyError(e)}`);
         }
     };
     put("press-play-to-test-audio-unlock");
@@ -3399,14 +3867,17 @@ async function main(): Promise<void> {
         const input = $<HTMLInputElement>("image-iso");
         const file = input.files?.[0];
         if (!file || !session) return;
+        const target = session;
         const setupStatus = $("image-setup-status");
         setupStatus.classList.remove("err");
         setupStatus.textContent = "reading disc...";
         try {
-            await session.images.attachIso(file);
+            await target.images.attachIso(file);
+            if (session !== target) return;
             $("image-iso-pick").hidden = true;
             await extractImages();
         } catch (error) {
+            if (session !== target) return;
             setupStatus.textContent = friendlyError(error);
             setupStatus.classList.add("err");
         } finally {
@@ -3427,8 +3898,11 @@ async function main(): Promise<void> {
         const input = $<HTMLInputElement>("fmv-iso");
         const file = input.files?.[0];
         if (!file) return;
-        await movieController.attachIso(file);
-        input.value = "";
+        try {
+            await attachMovieIso(file);
+        } finally {
+            input.value = "";
+        }
     };
     $("fmv-prev").onclick = () => moveFmv(-1, "play");
     $("fmv-play").onclick = () => movieController.togglePlayback();
@@ -3476,15 +3950,18 @@ async function main(): Promise<void> {
     $<HTMLInputElement>("s-iso").onchange = async () => {
         const f = $<HTMLInputElement>("s-iso").files?.[0];
         if (!f || !session) return;
+        const target = session;
         const pstat = $("s-setup-status");
         pstat.classList.remove("err");
         pstat.textContent = "reading disc...";
         try {
-            await session.streams.attachIso(f);
+            await target.streams.attachIso(f);
+            if (session !== target) return;
             $("s-iso-pick").hidden = true;
             await extractStreams();
-        } catch (err) {
-            pstat.textContent = friendlyError(err);
+        } catch (error) {
+            if (session !== target) return;
+            pstat.textContent = friendlyError(error);
             pstat.classList.add("err");
         }
     };
@@ -3526,20 +4003,26 @@ async function main(): Promise<void> {
         const input = $<HTMLInputElement>("se-iso");
         const file = input.files?.[0];
         if (!file || !session) return;
+        const target = session;
         const setupStatus = $("se-setup-status");
         setupStatus.classList.remove("err");
         setupStatus.textContent = "reading disc...";
         try {
-            await session.se.attachIso(file);
+            await target.se.attachIso(file);
+            if (session !== target) return;
             $("se-iso-pick").hidden = true;
             await extractSeBanks();
-        } catch (e) {
-            setupStatus.textContent = friendlyError(e);
+        } catch (error) {
+            if (session !== target) return;
+            setupStatus.textContent = friendlyError(error);
             setupStatus.classList.add("err");
         }
     };
     renderSeDials();
     sPlayer.onended = () => { /* glyph flips via the tick loop */ };
+    sPlayer.onerror = error => {
+        status(`STREAM PLAYBACK FAILED: ${friendlyError(error)}`, true);
+    };
     $("d-vol").onclick = () => {
         if (playingIdx >= 0 && session)
             setVol(session.songs[playingIdx]!.songvol, true);
@@ -3638,8 +4121,24 @@ async function main(): Promise<void> {
     if (new URLSearchParams(location.search).has("selftest"))
         return selftest();
 
-    const resumed = await resumeSession();
-    if (resumed) await enterPlayer(resumed);
+    const resumeTicket = discOpens.begin();
+    try {
+        const resumed = await resumeSession();
+        if (resumed && discOpens.isCurrent(resumeTicket))
+            await enterPlayer(resumed, resumeTicket);
+    } finally {
+        discOpens.complete(resumeTicket);
+    }
 }
 
-void main();
+void main().catch(error => {
+    console.error("application startup failed", error);
+    const picker = document.getElementById("picker");
+    const app = document.getElementById("app");
+    if (picker) picker.hidden = false;
+    if (app) app.hidden = true;
+    const pickerStatus = document.getElementById("picker-status");
+    if (!pickerStatus) return;
+    pickerStatus.textContent = friendlyError(error);
+    pickerStatus.classList.add("err");
+});

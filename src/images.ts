@@ -2,25 +2,52 @@ import {
     BlobSource,
     decodeTim2,
     inflateSz,
+    inspectTim2,
     memberBytes,
     openDisc,
     OpfsCache,
-    readImageTexture,
     unpackPck,
     scanImageTextures,
     type ImageRole,
+    type ImageRoleEvidence,
     type ImageTexture,
     type Vfi,
 } from "./vendor/extract/index.ts";
+import { type ImageFormat } from "./vendor/extract/image-format.ts";
+import {
+    assertAttachedDiscIdentity,
+    assertCacheSourceIdentity,
+} from "./disc-identity.ts";
+import { technicalReason } from "./errors.ts";
+import {
+    contentFingerprintMatches,
+    fingerprintBytes,
+    isContentFingerprint,
+    type ContentFingerprint,
+} from "./content-identity.ts";
+import { assertZipEntryPath } from "./zip.ts";
 
 const META = "image_meta.json";
 const CONTAINER_CACHE_LIMIT = 4;
 
 
+export interface ImageSourceIdentity extends ContentFingerprint {
+    readonly entryOffset: number;
+    readonly sourcePath: string;
+}
+
+export interface ImageCatalogIssue {
+    readonly format: ImageFormat;
+    readonly reason: string;
+}
+
 export interface ImageCatalog {
-    v: 3;
-    storage?: "textures" | "containers";
-    textures: ImageTexture[];
+    readonly v: 4;
+    readonly sourceKey: string;
+    readonly storage: "containers";
+    readonly textures: readonly ImageTexture[];
+    readonly sources: readonly ImageSourceIdentity[];
+    readonly issues: readonly ImageCatalogIssue[];
 }
 
 export interface ImageEntry {
@@ -99,7 +126,10 @@ export function imageExportPath(entry: ImageEntry, extension: "png" | "tm2"): st
         : source;
     const original = entry.texture.fileName.replace(/\.tm2$/i, "");
     const suffix = entry.texture.pictures.length > 1 ? `_${entry.pictureIndex}` : "";
-    return `${directory}/${original}${suffix}.${extension}`.replace(/^\/+/, "");
+    const fileName = `${original}${suffix}.${extension}`;
+    const path = directory ? `${directory}/${fileName}` : fileName;
+    assertZipEntryPath(path);
+    return path;
 }
 
 export async function imagePng(data: Uint8Array, pictureIndex: number): Promise<Uint8Array> {
@@ -122,120 +152,368 @@ export async function imagePng(data: Uint8Array, pictureIndex: number): Promise<
     return new Uint8Array(await blob.arrayBuffer());
 }
 
+function isImageRoleEvidence(value: unknown): value is ImageRoleEvidence {
+    return value === "ui-reference"
+        || value === "model-reference"
+        || value === "ui-global-reference"
+        || value === "model-global-reference"
+        || value === "ui-package"
+        || value === "model-package"
+        || value === "ui-name-prefix"
+        || value === "direct"
+        || value === "unclassified";
+}
+
+function isSafeInteger(value: unknown, minimum = 0): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value)
+        && value >= minimum;
+}
+
+interface ImageTextureLocator {
+    readonly containerId: string;
+    readonly entryOffset: number;
+    readonly memberIndex: number | null;
+}
+
+const IMAGE_TEXTURE_ID = /^([0-9a-f]{8})-(direct|0|[1-9][0-9]*)$/i;
+
+function imageTextureLocator(id: unknown): ImageTextureLocator | null {
+    if (typeof id !== "string") return null;
+    const match = IMAGE_TEXTURE_ID.exec(id);
+    if (!match) return null;
+    const entryOffset = Number.parseInt(match[1]!, 16);
+    const memberIndex = match[2]!.toLowerCase() === "direct"
+        ? null
+        : Number(match[2]);
+    if (!Number.isSafeInteger(entryOffset)
+            || (memberIndex !== null && !Number.isSafeInteger(memberIndex)))
+        return null;
+    return {
+        containerId: entryOffset.toString(16).padStart(8, "0"),
+        entryOffset,
+        memberIndex,
+    };
+}
+
+function isImageFormat(value: unknown): value is ImageFormat {
+    return value === "TIM2" || value === "PCK" || value === "SZ";
+}
+
+function isImageCatalogIssue(value: unknown): value is ImageCatalogIssue {
+    if (value === null || typeof value !== "object") return false;
+    const issue = value as Record<string, unknown>;
+    return isImageFormat(issue.format)
+        && typeof issue.reason === "string"
+        && issue.reason.length > 0
+        && issue.reason.length <= 320
+        && technicalReason(issue.reason) === issue.reason;
+}
+
+function sourceIdentityKey(entryOffset: number, sourcePath: string): string {
+    return `${entryOffset}\0${sourcePath}`;
+}
+
+function isImageCatalog(value: unknown, expectedSourceKey: string): value is ImageCatalog {
+    if (value === null || typeof value !== "object") return false;
+    const catalog = value as Record<string, unknown>;
+    if (catalog.v !== 4
+            || catalog.sourceKey !== expectedSourceKey
+            || catalog.storage !== "containers"
+            || !Array.isArray(catalog.textures)
+            || !Array.isArray(catalog.sources)
+            || !Array.isArray(catalog.issues)
+            || catalog.issues.length > 4096
+            || catalog.issues.some(issue => !isImageCatalogIssue(issue)))
+        return false;
+
+    const sources = new Map<string, ImageSourceIdentity>();
+    for (const value of catalog.sources) {
+        if (value === null || typeof value !== "object") return false;
+        const candidate = value as Record<string, unknown>;
+        if (!isContentFingerprint(value)
+                || !isSafeInteger(candidate.entryOffset)
+                || typeof candidate.sourcePath !== "string"
+                || candidate.sourcePath.length === 0)
+            return false;
+        const source = value as ImageSourceIdentity;
+        const key = sourceIdentityKey(source.entryOffset, source.sourcePath);
+        if (sources.has(key)) return false;
+        sources.set(key, source);
+    }
+
+    const ids = new Set<string>();
+    const usedSources = new Set<string>();
+    for (const value of catalog.textures) {
+        if (value === null || typeof value !== "object") return false;
+        const texture = value as Record<string, unknown>;
+        const locator = imageTextureLocator(texture.id);
+        if (!locator
+                || ids.has(texture.id as string)
+                || locator.memberIndex !== texture.memberIndex
+                || typeof texture.sourcePath !== "string"
+                || texture.sourcePath.length === 0
+                || !sources.has(sourceIdentityKey(
+                    locator.entryOffset,
+                    texture.sourcePath,
+                ))
+                || typeof texture.fileName !== "string"
+                || texture.fileName.length === 0
+                || typeof texture.attrs !== "string"
+                || !isSafeInteger(texture.byteLength, 1)
+                || (texture.role !== "sprite"
+                    && texture.role !== "texture"
+                    && texture.role !== "other")
+                || !isImageRoleEvidence(texture.roleEvidence)
+                || !Array.isArray(texture.pictures)
+                || texture.pictures.length === 0)
+            return false;
+        const memberPair =
+            (texture.memberIndex === null && texture.memberName === null)
+            || (isSafeInteger(texture.memberIndex)
+                && typeof texture.memberName === "string"
+                && texture.memberName.length > 0);
+        if (!memberPair || texture.pictures.some((value, index) => {
+            if (value === null || typeof value !== "object") return true;
+            const picture = value as Record<string, unknown>;
+            return picture.index !== index
+                || !isSafeInteger(picture.width, 1)
+                || !isSafeInteger(picture.height, 1)
+                || !isSafeInteger(picture.imageType)
+                || !isSafeInteger(picture.clutType)
+                || !isSafeInteger(picture.colorCount)
+                || !isSafeInteger(picture.mipmapCount, 1);
+        }))
+            return false;
+        ids.add(texture.id as string);
+        usedSources.add(sourceIdentityKey(locator.entryOffset, texture.sourcePath));
+    }
+    return usedSources.size === sources.size;
+}
+
 export class ImageStore {
     private cache: OpfsCache | null;
     private vfi: Vfi | null;
-    private readonly cacheKey: string | null;
+    private readonly cacheKey: string;
     private catalog: ImageCatalog | null = null;
     private containerCache = new Map<string, Promise<Uint8Array | null>>();
+    private cacheWarning: string | null = null;
 
     constructor(cache: OpfsCache | null, vfi: Vfi | null,
-                cacheKey: string | null) {
+                cacheKey: string) {
+        assertCacheSourceIdentity(cache, cacheKey);
         this.cache = cache;
         this.vfi = vfi;
         this.cacheKey = cacheKey;
     }
 
     hasIso(): boolean { return this.vfi !== null; }
+    get persistenceWarning(): string | null { return this.cacheWarning; }
 
     async cached(): Promise<ImageCatalog | null> {
         if (this.catalog) return this.catalog;
         if (!this.cache) return null;
-        const raw = await this.cache.read(META);
-        if (!raw) return null;
+        let raw: Uint8Array | null;
         try {
-            const catalog = JSON.parse(new TextDecoder().decode(raw)) as ImageCatalog;
-            if (catalog.v !== 3 || !Array.isArray(catalog.textures)
-                || (catalog.storage !== undefined
-                    && catalog.storage !== "textures"
-                    && catalog.storage !== "containers")
-                || catalog.textures.some(texture =>
-                    !Array.isArray(texture.pictures)
-                    || !["sprite", "texture", "other"].includes(texture.role)))
-                return null;
-            this.catalog = catalog;
-            return catalog;
-        } catch {
+            raw = await this.cache.read(META);
+        } catch (error) {
+            this.useIsoAfterCacheFailure(
+                error,
+                "the image cache is unavailable -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
             return null;
         }
+        if (!raw) return null;
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(new TextDecoder().decode(raw));
+        } catch (error) {
+            this.useIsoAfterCacheFailure(
+                error,
+                "the cached image index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
+            return null;
+        }
+        if (!isImageCatalog(parsed, this.cacheKey)) {
+            this.useIsoAfterCacheFailure(
+                new Error("the cached image index has an invalid schema"),
+                "the cached image index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
+            return null;
+        }
+        this.catalog = parsed;
+        return parsed;
     }
 
     async attachIso(file: File): Promise<void> {
         const disc = await openDisc(new BlobSource(file));
-        if (this.cacheKey && disc.cacheKey !== this.cacheKey)
-            throw new Error("this ISO is a different disc than the cached one "
-                            + "-- forget the disc first to switch");
+        assertAttachedDiscIdentity(this.cacheKey, disc.cacheKey);
         this.vfi = disc.vfi;
+        this.containerCache.clear();
+    }
+
+    private useIsoAfterCacheFailure(error: unknown, message: string): void {
+        if (!this.vfi)
+            throw new Error(message, { cause: error });
+        this.cacheWarning = `${message} (${technicalReason(error)}); `
+            + "using the attached ISO for this session";
+        console.warn(`${message}; using the attached ISO`, error);
+        this.cache = null;
+        this.containerCache.clear();
     }
 
     async extract(progress: ImageProgress): Promise<ImageCatalog> {
         if (!this.vfi)
             throw new Error("no ISO attached -- choose your disc image first");
         let cache = this.cache;
-        const textures = await scanImageTextures(this.vfi, {
+        const sources: ImageSourceIdentity[] = [];
+        const scan = await scanImageTextures(this.vfi, {
             progress,
             container: async (entry, bytes) => {
+                const identity = await fingerprintBytes(bytes);
+                sources.push({
+                    entryOffset: entry.entryOff,
+                    sourcePath: entry.path,
+                    ...identity,
+                });
                 if (!cache) return;
                 const id = entry.entryOff.toString(16).padStart(8, "0");
-                const path = `image-container/${id}.bin`;
                 try {
-                    if (!await cache.has(path)) await cache.write(path, bytes);
+                    await cache.write(`image-container/${id}.bin`, bytes);
                 } catch (error) {
-                    console.warn("OPFS failed; images remain available from the ISO", error);
+                    this.useIsoAfterCacheFailure(
+                        error,
+                        "cached image storage is unavailable",
+                    );
                     cache = null;
                 }
             },
         });
-        const catalog: ImageCatalog = { v: 3, storage: "containers", textures };
-        if (cache)
-            await cache.write(META,
-                new TextEncoder().encode(JSON.stringify(catalog)));
+        sources.sort((left, right) => left.entryOffset - right.entryOffset);
+        const issues = scan.issues.map(issue => ({
+            format: issue.format,
+            reason: technicalReason(issue.reason),
+        }));
+        const catalog: ImageCatalog = {
+            v: 4,
+            sourceKey: this.cacheKey,
+            storage: "containers",
+            textures: scan.textures,
+            sources,
+            issues,
+        };
+        if (cache) {
+            try {
+                await cache.write(META,
+                    new TextEncoder().encode(JSON.stringify(catalog)));
+            } catch (error) {
+                this.useIsoAfterCacheFailure(
+                    error,
+                    "cached image storage is unavailable",
+                );
+            }
+        }
+        this.containerCache.clear();
         this.catalog = catalog;
         return catalog;
     }
 
-    private async readContainer(texture: ImageTexture): Promise<Uint8Array | null> {
-        if (!this.cache) return null;
-        const id = texture.id.slice(0, 8);
+    private sourceIdentity(texture: ImageTexture,
+                           locator: ImageTextureLocator,
+                           catalog: ImageCatalog): ImageSourceIdentity {
+        const source = catalog.sources.find(candidate =>
+            candidate.entryOffset === locator.entryOffset
+            && candidate.sourcePath === texture.sourcePath);
+        if (!source)
+            throw new Error("the image source identity is missing from the catalog");
+        return source;
+    }
+
+    private async loadContainer(texture: ImageTexture,
+                                locator: ImageTextureLocator,
+                                expected: ImageSourceIdentity): Promise<Uint8Array | null> {
+        let stored: Uint8Array | null;
+        if (this.vfi) {
+            const entry = this.vfi.entries.find(candidate =>
+                candidate.entryOff === locator.entryOffset
+                && candidate.path === expected.sourcePath);
+            if (!entry)
+                throw new Error("the image source is missing from the attached disc");
+            stored = await this.vfi.read(entry);
+        } else {
+            if (!this.cache) return null;
+            try {
+                stored = await this.cache.read(
+                    `image-container/${locator.containerId}.bin`,
+                );
+            } catch (error) {
+                this.useIsoAfterCacheFailure(
+                    error,
+                    "the image cache is unavailable -- reconnect the same disc or forget the disc cache",
+                );
+                return null;
+            }
+        }
+        if (!stored) return null;
+        const actual = await fingerprintBytes(stored);
+        if (!contentFingerprintMatches(actual, expected)) {
+            this.catalog = null;
+            this.containerCache.clear();
+            throw new Error(
+                "the image source content does not match this catalog -- "
+                + "reconnect the same disc or forget the disc cache",
+            );
+        }
+        return /\.sz$/i.test(texture.sourcePath)
+            ? inflateSz(stored, "image source")
+            : stored;
+    }
+
+    private async readContainer(texture: ImageTexture,
+                                locator: ImageTextureLocator,
+                                expected: ImageSourceIdentity): Promise<Uint8Array | null> {
+        const id = `${locator.containerId}:${expected.sha256}`;
         let pending = this.containerCache.get(id);
         if (pending) {
             this.containerCache.delete(id);
             this.containerCache.set(id, pending);
         } else {
-            pending = this.cache.read(`image-container/${id}.bin`).then(stored => {
-                if (!stored) return null;
-                return /\.sz$/i.test(texture.sourcePath) ? inflateSz(stored) : stored;
-            });
+            pending = this.loadContainer(texture, locator, expected);
             this.containerCache.set(id, pending);
             if (this.containerCache.size > CONTAINER_CACHE_LIMIT) {
                 const oldest = this.containerCache.keys().next().value as string | undefined;
                 if (oldest !== undefined) this.containerCache.delete(oldest);
             }
         }
-        const container = await pending;
-        if (!container) {
+        try {
+            const container = await pending;
+            if (!container) this.containerCache.delete(id);
+            return container;
+        } catch (error) {
             this.containerCache.delete(id);
-            return null;
+            throw error;
         }
-        if (texture.memberIndex === null) return container;
-        const members = unpackPck(container);
-        const member = members?.[texture.memberIndex];
-        if (!member || member.name !== texture.memberName)
-            throw new Error(`${texture.sourcePath}: cached image member changed`);
-        return memberBytes(container, member);
     }
 
     async read(texture: ImageTexture): Promise<Uint8Array | null> {
-        if (this.cache) {
-            const catalog = this.catalog ?? await this.cached();
-            if (catalog?.storage === "containers") {
-                const cached = await this.readContainer(texture);
-                if (cached) return cached;
-            } else {
-                const cached = await this.cache.read(`image/${texture.id}.tm2`);
-                if (cached) return cached;
-            }
+        const locator = imageTextureLocator(texture.id);
+        if (!locator || locator.memberIndex !== texture.memberIndex)
+            throw new Error("the image texture identifier is invalid");
+        const catalog = this.catalog ?? await this.cached();
+        if (!catalog) return null;
+        const expected = this.sourceIdentity(texture, locator, catalog);
+        const container = await this.readContainer(texture, locator, expected);
+        if (!container) return null;
+
+        if (locator.memberIndex === null) {
+            inspectTim2(container, "image source");
+            return container;
         }
-        return this.vfi ? readImageTexture(this.vfi, texture) : null;
+        const members = unpackPck(container, "image source");
+        const member = members?.[locator.memberIndex];
+        if (!member || member.name !== texture.memberName)
+            throw new Error("the image member does not match this catalog");
+        const bytes = memberBytes(container, member);
+        inspectTim2(bytes, "image member");
+        return bytes;
     }
 }

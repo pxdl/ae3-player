@@ -47,6 +47,30 @@ AAC encoding through WebCodecs in a worker.
 If OPFS is unavailable or the browser declines a write, the app reads from the
 attached ISO for that session instead of persisting the extracted data.
 
+### Disc build support
+
+This matrix records client-side browsing through the real application flow,
+measured with
+[`ae3-sdk` revision `5b2207e3580ae4cc1d588641f4fe3f898350e501`](https://github.com/pxdl/ae3-sdk/commit/5b2207e3580ae4cc1d588641f4fe3f898350e501).
+`Untested` means no claim is made for that build or asset family.
+
+For each regional serial below, measurements cover one observed asset family
+only. A serial does not establish whole-disc support; unmeasured families remain
+`Untested`.
+The UI keeps a conservative partial/untested warning for every non-US or
+unknown serial, including builds with one measured family in this table.
+The PAL beta reports the same `SCES_536.42` serial as retail; the measured PAL
+row applies only to the retail build, and the beta remains untested.
+
+| Build | Images | Effects | FMV |
+| --- | --- | --- | --- |
+| US retail (`SCUS_975.01`) | Tested: 11,931 textures / 11,950 pictures | Tested: 101 banks | Tested: 22/22 inspected |
+| Japanese demo (`PCPX_966.57`) | Tested: 3,518 textures / 3,527 pictures | Untested | Untested |
+| Korean retail (`SCKA_200.62`) | Untested | Tested: 101 banks; `boss_specter` inspected | Untested |
+| PAL retail (`SCES_536.42`) | Untested | Untested | Tested: 22/22 inspected; `new_play01` played |
+| PAL beta (`SCES_536.42`; serial shared with retail) | Untested | Untested | Untested |
+| All other builds and regions | Untested | Untested | Untested |
+
 ## Development
 
 Use Node.js 20.19 or newer and npm. CI runs on Node.js 24.

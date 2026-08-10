@@ -9,10 +9,12 @@ import {
     imageTreePath,
     type ImageCatalog,
 } from "../src/images.ts";
-import { storeZipBlob } from "../src/zip.ts";
+import { storeZip, storeZipBlob } from "../src/zip.ts";
 
 const catalog: ImageCatalog = {
-    v: 3,
+    v: 4,
+    sourceKey: "disc",
+    storage: "containers",
     textures: [
         {
             id: "00000010-direct",
@@ -47,6 +49,21 @@ const catalog: ImageCatalog = {
             ],
         },
     ],
+    sources: [
+        {
+            entryOffset: 0x10,
+            sourcePath: "debug/us/static/logo.tm2",
+            bytes: 128,
+            sha256: "0".repeat(64),
+        },
+        {
+            entryOffset: 0x20,
+            sourcePath: "debug/us/stage/zero/ui.pck.sz",
+            bytes: 256,
+            sha256: "1".repeat(64),
+        },
+    ],
+    issues: [],
 };
 
 test("image catalog expands every TIM2 picture", () => {
@@ -67,6 +84,35 @@ test("image export paths preserve package hierarchy and picture identity", () =>
     assert.equal(imageExportPath(entries[2]!, "tm2"),
                  "debug/us/stage/zero/ui/cursor_1.tm2");
 });
+test("image export paths reject untrusted source and member names", () => {
+    const direct = imageEntries(catalog)[0]!;
+    const unsafe = [
+        { ...direct, texture: {
+            ...direct.texture,
+            fileName: "../escape.tm2",
+        } },
+        { ...direct, texture: {
+            ...direct.texture,
+            sourcePath: "/absolute/logo.tm2",
+        } },
+        { ...direct, texture: {
+            ...direct.texture,
+            sourcePath: "logo.tm2",
+            fileName: "C:/escape.tm2",
+        } },
+        { ...direct, texture: {
+            ...direct.texture,
+            fileName: "\\\\server\\share\\escape.tm2",
+        } },
+        { ...direct, texture: {
+            ...direct.texture,
+            fileName: "bad\0name.tm2",
+        } },
+    ];
+    for (const entry of unsafe)
+        assert.throws(() => imageExportPath(entry, "png"), /ZIP entry path/);
+});
+
 
 test("image filters use semantic roles and source metadata", () => {
     const entries = imageEntries(catalog);
@@ -122,4 +168,44 @@ test("large image ZIP uses valid store-only Blob parts", async () => {
     assert.deepEqual([...bytes.subarray(35, 38)], [1, 2, 3]);
     assert.equal(view.getUint32(bytes.length - 22, true), 0x06054b50);
     assert.equal(view.getUint16(bytes.length - 14, true), 2);
+});
+test("every ZIP writer rejects non-canonical or unsafe entry paths", () => {
+    const payload = Uint8Array.of(1);
+    const unsafe = [
+        "",
+        "/absolute.bin",
+        "C:/drive.bin",
+        "\\\\server\\share\\file.bin",
+        "dir\\file.bin",
+        "file:alternate-stream.bin",
+        "dir/../escape.bin",
+        "dir/./file.bin",
+        "dir//file.bin",
+        "nul\0file.bin",
+        "control\u001ffile.bin",
+        "e\u0301.bin",
+        `${"a".repeat(256)}.bin`,
+        `${Array.from({ length: 20 }, () => "a".repeat(220)).join("/")}.bin`,
+        "\ud800.bin",
+    ];
+    const writers = [
+        (path: string): unknown => storeZip([[path, payload]]),
+        (path: string): unknown => storeZipBlob([[path, payload]]),
+    ];
+    for (const writer of writers) {
+        for (const path of unsafe)
+            assert.throws(() => writer(path), /ZIP entry path/);
+    }
+});
+
+test("byte-array ZIP rejects entry counts beyond ZIP32", () => {
+    const empty = new Uint8Array();
+    const entries: [string, Uint8Array][] = Array.from(
+        { length: 0x10000 },
+        (_, index) => [`f${index}`, empty],
+    );
+    assert.throws(
+        () => storeZip(entries),
+        /ZIP32 supports at most 65535/,
+    );
 });

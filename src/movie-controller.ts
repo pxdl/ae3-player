@@ -44,6 +44,7 @@ export class MovieController {
     private session: DiscSession | null = null;
     private catalog: MovieCatalog | null = null;
     private catalogResolved = false;
+    private catalogLoading = false;
     private selectedName: string | null = null;
     private playback: MoviePlaybackSession | null = null;
     private cache: MovieCacheInfo | null = null;
@@ -62,31 +63,35 @@ export class MovieController {
     private playbackAutoplay = false;
     private playbackTask: Promise<void> | null = null;
     private playbackDisposal: Promise<void> = Promise.resolve();
+    private playbackDisposalWarning: string | null = null;
     private connectionGeneration = 0;
 
     constructor(hooks: MovieControllerHooks) {
         this.hooks = hooks;
     }
 
-    async connect(session: DiscSession): Promise<void> {
+    async connect(session: DiscSession,
+                  isCurrent: () => boolean = () => true): Promise<void> {
+        if (!isCurrent()) return;
         const generation = ++this.connectionGeneration;
         this.abortAll();
         this.session = null;
         this.catalog = null;
         this.catalogResolved = false;
+        this.catalogLoading = false;
         this.selectedName = null;
         this.cache = null;
         this.attaching = false;
         this.preparing = false;
         this.exporting = false;
         this.progress = 0;
-        this.status = "Loading movie catalog…";
+        this.status = "";
         this.error = false;
         await this.disposePlayback();
-        if (generation !== this.connectionGeneration) return;
+        if (generation !== this.connectionGeneration || !isCurrent()) return;
         this.session = session;
         this.touch();
-        void this.loadCatalog(session, generation);
+        if (this.active) this.requestCatalog();
     }
 
     setActive(active: boolean): void {
@@ -95,6 +100,7 @@ export class MovieController {
         if (active) {
             this.hooks.pauseOtherMedia();
             this.touch();
+            this.requestCatalog();
             if (this.selectedName) void this.previewIfAvailable("preview");
             return;
         }
@@ -110,6 +116,10 @@ export class MovieController {
         const hasIso = this.session?.movies.hasIso() ?? false;
         const sourceComplete = entry !== null && this.cache !== null
             && movieSourceComplete(entry, this.cache);
+        const status = this.currentStatus(playback);
+        const cleanupStatus = this.playbackDisposalWarning
+            ? `Movie decoder cleanup warning: ${this.playbackDisposalWarning}`
+            : "";
         return {
             revision: this.revision,
             active: this.active,
@@ -118,19 +128,20 @@ export class MovieController {
             cache: this.cache,
             prepared: playback !== null && playback.state !== "error",
             hasIso,
-            sourceRequired: this.catalogResolved && !hasIso && (
+            sourceRequired: this.catalogResolved && (
                 this.catalog === null
-                || (entry !== null && this.cache !== null && !sourceComplete)
+                || (!hasIso && entry !== null && !sourceComplete)
             ),
             cancellable: this.attachAbort !== null || this.exportAbort !== null
                 || this.playbackAbort !== null || this.playbackBusy(playback),
-            loading: this.attaching || this.preparing,
+            loading: this.catalogLoading || this.attaching || this.preparing,
             exporting: this.exporting,
             progress: this.progress,
-            status: this.currentStatus(playback),
-            error: this.error || playback?.state === "error",
+            status: [status, cleanupStatus].filter(Boolean).join(" · "),
+            error: this.error || playback?.state === "error"
+                || this.playbackDisposalWarning !== null,
             current: playback?.currentTime ?? 0,
-            duration: playback?.duration ?? this.selectedEntry()?.duration ?? 0,
+            duration: playback?.duration ?? entry?.duration ?? 0,
             playing: playback?.playing ?? false,
             caption: playback?.caption ?? null,
             captionsEnabled: playback?.captionsEnabled ?? true,
@@ -207,11 +218,13 @@ export class MovieController {
     }
 
     async attachIso(file: File): Promise<void> {
-        if (!this.session || this.attaching || this.preparing || this.exporting) return;
+        if (!this.session || this.catalogLoading || this.attaching
+                || this.preparing || this.exporting)
+            return;
         const target = this.session;
         this.invalidatePlayIntent();
         const priorTask = this.playbackTask;
-        if (priorTask) await priorTask.catch(() => {});
+        if (priorTask) await priorTask;
         await this.disposePlayback();
         if (this.session !== target) return;
 
@@ -236,7 +249,9 @@ export class MovieController {
             if (this.session !== target) return;
             if (!this.catalog?.entries.some(entry => entry.name === this.selectedName))
                 this.selectedName = this.catalog?.entries[0]?.name ?? null;
-            this.status = `${this.catalog?.entries.length ?? 0} movies indexed locally`;
+            const unavailable = this.catalog?.issues.length ?? 0;
+            this.status = `${this.catalog?.entries.length ?? 0} movies indexed locally`
+                + (unavailable ? `; ${unavailable} unavailable` : "");
             this.error = false;
             if (this.selectedName) await this.refreshCache(this.selectedName, controller.signal);
         } catch (cause) {
@@ -249,7 +264,8 @@ export class MovieController {
                 this.touch();
             }
         }
-        if (this.active && this.session === target && !controller.signal.aborted)
+        if (this.active && this.session === target
+                && !controller.signal.aborted && !this.error)
             await this.previewIfAvailable("preview");
     }
 
@@ -335,6 +351,7 @@ export class MovieController {
         await this.disposePlayback();
         this.catalog = null;
         this.catalogResolved = false;
+        this.catalogLoading = false;
         this.selectedName = null;
         this.cache = null;
         this.attaching = false;
@@ -359,15 +376,29 @@ export class MovieController {
         this.hooks.changed();
     }
 
+    private requestCatalog(): void {
+        const target = this.session;
+        if (!target || this.catalogResolved || this.catalogLoading) return;
+        const generation = this.connectionGeneration;
+        this.catalogLoading = true;
+        this.status = "Loading movie catalog…";
+        this.error = false;
+        this.touch();
+        void this.loadCatalog(target, generation);
+    }
+
     private async loadCatalog(target: DiscSession, generation: number): Promise<void> {
         try {
             const catalog = await target.movies.catalog();
             if (this.session !== target || generation !== this.connectionGeneration) return;
+            this.catalogLoading = false;
             this.catalog = catalog;
             this.catalogResolved = true;
             this.selectedName = catalog?.entries[0]?.name ?? null;
+            const unavailable = catalog?.issues.length ?? 0;
             this.status = catalog
                 ? `${catalog.entries.length} movies indexed locally`
+                    + (unavailable ? `; ${unavailable} unavailable` : "")
                 : "Attach the source ISO once to scan its movie archive.";
             this.error = false;
             this.touch();
@@ -376,6 +407,7 @@ export class MovieController {
             else await this.refreshCache(this.selectedName);
         } catch (cause) {
             if (this.session !== target || generation !== this.connectionGeneration) return;
+            this.catalogLoading = false;
             this.catalogResolved = true;
             this.fail(cause);
         }
@@ -389,6 +421,8 @@ export class MovieController {
 
     private abortAll(): void {
         this.invalidatePlayIntent();
+        this.playbackAbort = null;
+        this.playbackTask = null;
         this.attachAbort?.abort();
         this.exportAbort?.abort();
         this.attachAbort = null;
@@ -411,8 +445,16 @@ export class MovieController {
         this.playback = null;
         if (!playback) return this.playbackDisposal;
         const disposal = this.playbackDisposal.then(() => playback.dispose());
-        this.playbackDisposal = disposal.catch(() => {});
-        return disposal;
+        this.playbackDisposal = disposal.then(
+            () => {
+                this.playbackDisposalWarning = null;
+            },
+            cause => {
+                this.playbackDisposalWarning = friendlyError(cause);
+                console.error("movie playback disposal failed", cause);
+            },
+        );
+        return this.playbackDisposal;
     }
 
     private async refreshCache(name: string, signal?: AbortSignal): Promise<void> {
@@ -432,7 +474,7 @@ export class MovieController {
 
     private async finishSelection(name: string, mode: MovieStartMode,
                                   priorTask: Promise<void> | null): Promise<void> {
-        if (priorTask) await priorTask.catch(() => {});
+        if (priorTask) await priorTask;
         await this.disposePlayback();
         if (this.selectedName !== name || !this.active) {
             if (this.selectedName === name) await this.refreshCache(name);
@@ -448,8 +490,12 @@ export class MovieController {
         }
         const task = this.prepareSelected(mode);
         this.playbackTask = task;
-        void task.finally(() => {
+        void task.catch(cause => {
+            if (this.playbackTask === task) this.fail(cause);
+        }).finally(() => {
             if (this.playbackTask === task) this.playbackTask = null;
+        }).catch(cause => {
+            console.error("movie preparation failure handler failed", cause);
         });
     }
 
@@ -572,11 +618,12 @@ export class MovieController {
         this.exportAbort = controller;
         this.exporting = true;
         this.progress = 0;
-        this.status = kind === "mp4"
-            ? "Starting Fast MP4 export…"
-            : kind === "mkv"
-                ? "Starting Lossless MKV export…"
-                : `Preparing ${kind} export…`;
+        if (kind === "mp4")
+            this.status = "Starting Fast MP4 export…";
+        else if (kind === "mkv")
+            this.status = "Starting Lossless MKV export…";
+        else
+            this.status = `Preparing ${kind} export…`;
         this.error = false;
         this.touch();
         try {

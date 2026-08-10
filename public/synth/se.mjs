@@ -165,11 +165,13 @@ function requestInfo(raw, programs) {
         const loopVoices = active.filter((voice) => voice.tone.sampleLoop);
         const sustainedVoices =
             loopVoices.filter((voice) => voice.tone.indefinite).length;
-        const sourceEndExactFrame = loopVoices.reduce(
+        const finiteLoopVoices = loopVoices.filter(
+            (voice) => Number.isFinite(voice.tone.envelopeFrames));
+        const sourceEndExactFrame = finiteLoopVoices.reduce(
             (end, voice) => Math.max(
                 end, voice.startExactFrame + voice.tone.envelopeFrames),
             exactFrame);
-        const sourceEndConsoleFrame = loopVoices.reduce(
+        const sourceEndConsoleFrame = finiteLoopVoices.reduce(
             (end, voice) => Math.max(
                 end, voice.startConsoleFrame + voice.tone.envelopeFrames),
             consoleFrame);
@@ -321,7 +323,7 @@ function programDetails(hd, bd) {
                 noise,
                 adsr1,
                 adsr2,
-                envelopeFrames: envFrames,
+                ...(Number.isFinite(envFrames) ? { envelopeFrames: envFrames } : {}),
                 indefinite: !silent && sample.sampleLoop && !Number.isFinite(envFrames),
             };
         });

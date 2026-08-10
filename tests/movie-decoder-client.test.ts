@@ -134,3 +134,45 @@ test("rejects all pending work for an unknown current-generation request", async
     });
     assert.equal(worker.terminated, true);
 });
+
+test("rejects malformed nested frame data for the current request", async () => {
+    const { client, worker } = await initializedClient();
+    const pulling = client.pull({ untilTimestamp: 1, maxFrames: 1, maxBytes: 6 });
+    const request = worker.requests.at(-1)!;
+    worker.respond({
+        type: "frames",
+        requestId: request.requestId,
+        generation: request.generation,
+        frames: [{
+            index: -1,
+            timestamp: 0,
+            duration: 1001 / 30000,
+            width: 2,
+            height: 2,
+            format: "I420",
+            data: new ArrayBuffer(6),
+            layout: [
+                { offset: 0, stride: 2 },
+                { offset: 4, stride: 1 },
+                { offset: 5, stride: 1 },
+            ],
+        }],
+        eof: false,
+        stats: {
+            packets: 1,
+            decodedFrames: 1,
+            outputFrames: 1,
+            droppedFrames: 0,
+            decodeWallTime: 0,
+            pendingBytes: 0,
+            wasmBytes: 1,
+        },
+    } as unknown as MovieDecoderResponse);
+
+    await assert.rejects(pulling, (error: unknown) => {
+        assert.ok(error instanceof MovieDecoderWorkerError);
+        assert.match(error.message, /malformed response/);
+        return true;
+    });
+    assert.equal(worker.terminated, true);
+});
