@@ -65,11 +65,15 @@ row applies only to the retail build, and the beta remains untested.
 | Build | Images | Effects | FMV |
 | --- | --- | --- | --- |
 | US retail (`SCUS_975.01`) | Tested: 11,931 textures / 11,950 pictures | Tested: 101 banks | Tested: 22/22 inspected |
-| Japanese demo (`PCPX_966.57`) | Tested: 3,518 textures / 3,527 pictures | Untested | Untested |
+| Japanese demo (`PCPX_966.57`) | Tested: 3,518 textures / 3,527 pictures; 22 declared entries without TIM2 signatures listed | Untested | Untested |
 | Korean retail (`SCKA_200.62`) | Untested | Tested: 101 banks; `boss_specter` inspected | Untested |
 | PAL retail (`SCES_536.42`) | Untested | Untested | Tested: 22/22 inspected; `new_play01` played |
 | PAL beta (`SCES_536.42`; serial shared with retail) | Untested | Untested | Untested |
 | All other builds and regions | Untested | Untested | Untested |
+
+The Images tab reports package members that are declared as TIM2 but do not
+contain a TIM2 signature. They stay out of the usable image catalog and appear
+in an expandable list with their package, member index, size, and reason.
 
 ## Development
 

@@ -356,6 +356,20 @@
             <button id="image-export-all" type="button" disabled>EXPORT ALL PNG</button>
           </div>
         </header>
+        <details id="image-skipped" hidden>
+          <summary>
+            <span class="image-skipped-copy">
+              <strong id="image-skipped-title" aria-live="polite"></strong>
+              <span>Declared as TIM2, but the payload is not image data.</span>
+            </span>
+            <span class="image-skipped-action" aria-hidden="true">Details</span>
+          </summary>
+          <div id="image-skipped-body">
+            <p>These package entries have no TIM2 signature, so they were not
+              opened as images. Valid images from the same disc remain available.</p>
+            <ol id="image-skipped-list" aria-label="Skipped declared image entries"></ol>
+          </div>
+        </details>
         <div id="image-workspace">
           <section id="image-preview" aria-label="Selected image preview">
             <canvas id="image-canvas"></canvas>

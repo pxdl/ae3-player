@@ -12,7 +12,7 @@ import {
 import { storeZip, storeZipBlob } from "../src/zip.ts";
 
 const catalog: ImageCatalog = {
-    v: 4,
+    v: 5,
     sourceKey: "disc",
     storage: "containers",
     textures: [
@@ -64,6 +64,7 @@ const catalog: ImageCatalog = {
         },
     ],
     issues: [],
+    skipped: [],
 };
 
 test("image catalog expands every TIM2 picture", () => {

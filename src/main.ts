@@ -848,6 +848,7 @@ const IMAGE_COLLATOR = new Intl.Collator(undefined, {
     sensitivity: "base",
 });
 const IMAGE_THUMBNAIL_CACHE_LIMIT = 256;
+const IMAGE_SKIPPED_ROW_LIMIT = 500;
 const imageThumbnailCache = new Map<string, ImageData>();
 
 function updateImageSortButton(): void {
@@ -1229,12 +1230,49 @@ function updateImageRoleOptions(): void {
     }
 }
 
+function renderSkippedImageMembers(catalog: ImageCatalog | null): void {
+    const details = $<HTMLDetailsElement>("image-skipped");
+    const list = $<HTMLOListElement>("image-skipped-list");
+    const skipped = catalog?.skipped ?? [];
+    if (skipped.length === 0) {
+        details.hidden = true;
+        details.open = false;
+        $("image-skipped-title").textContent = "";
+        list.replaceChildren();
+        return;
+    }
+
+    const count = skipped.length.toLocaleString();
+    $("image-skipped-title").textContent =
+        `${count} declared image ${skipped.length === 1 ? "entry" : "entries"} skipped`;
+    const items = skipped.slice(0, IMAGE_SKIPPED_ROW_LIMIT).map(entry => {
+        const item = document.createElement("li");
+        const name = document.createElement("code");
+        name.textContent = entry.fileName;
+        const metadata = document.createElement("span");
+        metadata.textContent = `${entry.sourcePath} · member #${entry.memberIndex} · `
+            + `${entry.byteLength.toLocaleString()} bytes`;
+        item.append(name, metadata);
+        return item;
+    });
+    const remaining = skipped.length - items.length;
+    if (remaining > 0) {
+        const item = document.createElement("li");
+        item.className = "image-skipped-remainder";
+        item.textContent = `${remaining.toLocaleString()} more entries not shown`;
+        items.push(item);
+    }
+    list.replaceChildren(...items);
+    details.hidden = false;
+}
+
 function installImageCatalog(catalog: ImageCatalog): void {
     imageCatalog = catalog;
     imageAllRows = imageEntries(catalog);
     imageEntryById = new Map();
     for (const entry of imageAllRows) imageEntryById.set(entry.id, entry);
     updateImageRoleOptions();
+    renderSkippedImageMembers(catalog);
 }
 
 function ensureImageCatalog(): Promise<void> {
@@ -1388,6 +1426,14 @@ function imageCatalogIssueWarning(catalog: ImageCatalog | null): string {
         + ` (${shown.join("; ")}${remainder > 0 ? `; +${remainder} more` : ""})`;
 }
 
+function imageCatalogSkippedWarning(catalog: ImageCatalog | null): string {
+    const count = catalog?.skipped.length ?? 0;
+    if (count === 0) return "";
+    return `${count.toLocaleString()} declared image `
+        + `entr${count === 1 ? "y was" : "ies were"} skipped because `
+        + `the payload had no TIM2 signature; open the skipped list for details`;
+}
+
 function persistenceWarnings(target: DiscSession, targetTab: AppTab): string {
     const warnings: string[] = [];
     const support = discSupportWarning(target.serial).replace(/^ - /, "");
@@ -1401,6 +1447,8 @@ function persistenceWarnings(target: DiscSession, targetTab: AppTab): string {
     if (targetTab === "images") {
         const issueWarning = imageCatalogIssueWarning(imageCatalog);
         if (issueWarning) warnings.push(issueWarning);
+        const skippedWarning = imageCatalogSkippedWarning(imageCatalog);
+        if (skippedWarning) warnings.push(skippedWarning);
     }
     if (targetTab === "se" && target.se.persistenceWarning)
         warnings.push(target.se.persistenceWarning);
@@ -3570,6 +3618,7 @@ async function performDiscReset(): Promise<void> {
     seMeasureToken++;
 
     imageCatalog = null;
+    renderSkippedImageMembers(null);
     imageCatalogRequest = null;
     imageAllRows = [];
     imageRows = [];

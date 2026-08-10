@@ -6,14 +6,17 @@ import {
     memberBytes,
     openDisc,
     OpfsCache,
+    pckFileNames,
+    typeOf,
     unpackPck,
     scanImageTextures,
     type ImageRole,
     type ImageRoleEvidence,
     type ImageTexture,
     type Vfi,
+    type VfiEntry,
 } from "./vendor/extract/index.ts";
-import { type ImageFormat } from "./vendor/extract/image-format.ts";
+import type { ImageFormat } from "./vendor/extract/image-format.ts";
 import {
     assertAttachedDiscIdentity,
     assertCacheSourceIdentity,
@@ -41,13 +44,23 @@ export interface ImageCatalogIssue {
     readonly reason: string;
 }
 
+export interface ImageCatalogSkippedMember {
+    readonly entryOffset: number;
+    readonly sourcePath: string;
+    readonly memberIndex: number;
+    readonly fileName: string;
+    readonly byteLength: number;
+    readonly reason: "missing-tim2-magic";
+}
+
 export interface ImageCatalog {
-    readonly v: 4;
+    readonly v: 5;
     readonly sourceKey: string;
     readonly storage: "containers";
     readonly textures: readonly ImageTexture[];
     readonly sources: readonly ImageSourceIdentity[];
     readonly issues: readonly ImageCatalogIssue[];
+    readonly skipped: readonly ImageCatalogSkippedMember[];
 }
 
 export interface ImageEntry {
@@ -199,6 +212,65 @@ function isImageFormat(value: unknown): value is ImageFormat {
     return value === "TIM2" || value === "PCK" || value === "SZ";
 }
 
+function hasTim2Magic(data: Uint8Array): boolean {
+    return data.length >= 4
+        && data[0] === 0x54
+        && data[1] === 0x49
+        && data[2] === 0x4d
+        && data[3] === 0x32;
+}
+
+async function skippedDeclaredTim2Members(
+    entry: VfiEntry,
+    stored: Uint8Array,
+): Promise<ImageCatalogSkippedMember[]> {
+    if (/\.tm2$/i.test(entry.path)) return [];
+    try {
+        const pck = /\.sz$/i.test(entry.path)
+            ? await inflateSz(stored, "image package")
+            : stored;
+        const members = unpackPck(pck, "image package");
+        if (!members) return [];
+        const names = pckFileNames(members);
+        return members.flatMap(member => {
+            const bytes = memberBytes(pck, member);
+            if (typeOf(member.attrs).toLowerCase() !== "tm2"
+                    || hasTim2Magic(bytes))
+                return [];
+            return [{
+                entryOffset: entry.entryOff,
+                sourcePath: entry.path,
+                memberIndex: member.index,
+                fileName: names[member.index]!,
+                byteLength: bytes.length,
+                reason: "missing-tim2-magic" as const,
+            }];
+        });
+    } catch {
+        /* Let the canonical scan below own parsing and error classification. */
+        return [];
+    }
+}
+
+function isImageCatalogSkippedMember(
+    value: unknown,
+): value is ImageCatalogSkippedMember {
+    if (value === null || typeof value !== "object") return false;
+    const skipped = value as Record<string, unknown>;
+    return isSafeInteger(skipped.entryOffset)
+        && typeof skipped.sourcePath === "string"
+        && skipped.sourcePath.length > 0
+        && skipped.sourcePath.length <= 4096
+        && /\.pck(?:\.sz)?$/i.test(skipped.sourcePath)
+        && isSafeInteger(skipped.memberIndex)
+        && typeof skipped.fileName === "string"
+        && skipped.fileName.length > 0
+        && skipped.fileName.length <= 1024
+        && /\.tm2$/i.test(skipped.fileName)
+        && isSafeInteger(skipped.byteLength)
+        && skipped.reason === "missing-tim2-magic";
+}
+
 function isImageCatalogIssue(value: unknown): value is ImageCatalogIssue {
     if (value === null || typeof value !== "object") return false;
     const issue = value as Record<string, unknown>;
@@ -213,17 +285,24 @@ function sourceIdentityKey(entryOffset: number, sourcePath: string): string {
     return `${entryOffset}\0${sourcePath}`;
 }
 
+function imageMemberKey(entryOffset: number, memberIndex: number): string {
+    return `${entryOffset}\0${memberIndex}`;
+}
+
 function isImageCatalog(value: unknown, expectedSourceKey: string): value is ImageCatalog {
     if (value === null || typeof value !== "object") return false;
     const catalog = value as Record<string, unknown>;
-    if (catalog.v !== 4
+    if (catalog.v !== 5
             || catalog.sourceKey !== expectedSourceKey
             || catalog.storage !== "containers"
             || !Array.isArray(catalog.textures)
             || !Array.isArray(catalog.sources)
             || !Array.isArray(catalog.issues)
             || catalog.issues.length > 4096
-            || catalog.issues.some(issue => !isImageCatalogIssue(issue)))
+            || catalog.issues.some(issue => !isImageCatalogIssue(issue))
+            || !Array.isArray(catalog.skipped)
+            || catalog.skipped.length > 65536
+            || catalog.skipped.some(item => !isImageCatalogSkippedMember(item)))
         return false;
 
     const sources = new Map<string, ImageSourceIdentity>();
@@ -241,6 +320,14 @@ function isImageCatalog(value: unknown, expectedSourceKey: string): value is Ima
         sources.set(key, source);
     }
 
+    const skippedMembers = new Set<string>();
+    for (const value of catalog.skipped) {
+        const skipped = value as ImageCatalogSkippedMember;
+        const key = imageMemberKey(skipped.entryOffset, skipped.memberIndex);
+        if (skippedMembers.has(key)) return false;
+        skippedMembers.add(key);
+    }
+
     const ids = new Set<string>();
     const usedSources = new Set<string>();
     for (const value of catalog.textures) {
@@ -250,6 +337,11 @@ function isImageCatalog(value: unknown, expectedSourceKey: string): value is Ima
         if (!locator
                 || ids.has(texture.id as string)
                 || locator.memberIndex !== texture.memberIndex
+                || (locator.memberIndex !== null
+                    && skippedMembers.has(imageMemberKey(
+                        locator.entryOffset,
+                        locator.memberIndex,
+                    )))
                 || typeof texture.sourcePath !== "string"
                 || texture.sourcePath.length === 0
                 || !sources.has(sourceIdentityKey(
@@ -362,11 +454,21 @@ export class ImageStore {
     }
 
     async extract(progress: ImageProgress): Promise<ImageCatalog> {
-        if (!this.vfi)
+        const vfi = this.vfi;
+        if (!vfi)
             throw new Error("no ISO attached -- choose your disc image first");
         let cache = this.cache;
         const sources: ImageSourceIdentity[] = [];
-        const scan = await scanImageTextures(this.vfi, {
+        const skipped: ImageCatalogSkippedMember[] = [];
+        const reportingVfi = {
+            entries: vfi.entries,
+            read: async (entry: VfiEntry): Promise<Uint8Array> => {
+                const stored = await vfi.read(entry);
+                skipped.push(...await skippedDeclaredTim2Members(entry, stored));
+                return stored;
+            },
+        } as Vfi;
+        const scan = await scanImageTextures(reportingVfi, {
             progress,
             container: async (entry, bytes) => {
                 const identity = await fingerprintBytes(bytes);
@@ -389,17 +491,25 @@ export class ImageStore {
             },
         });
         sources.sort((left, right) => left.entryOffset - right.entryOffset);
+        skipped.sort((left, right) => {
+            const source = IMAGE_NAME_COLLATOR.compare(
+                left.sourcePath,
+                right.sourcePath,
+            );
+            return source || left.memberIndex - right.memberIndex;
+        });
         const issues = scan.issues.map(issue => ({
             format: issue.format,
             reason: technicalReason(issue.reason),
         }));
         const catalog: ImageCatalog = {
-            v: 4,
+            v: 5,
             sourceKey: this.cacheKey,
             storage: "containers",
             textures: scan.textures,
             sources,
             issues,
+            skipped,
         };
         if (cache) {
             try {

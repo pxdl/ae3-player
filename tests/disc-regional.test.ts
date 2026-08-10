@@ -178,6 +178,91 @@ function makeTim2(): Uint8Array {
     return bytes;
 }
 
+function makePck(
+    members: readonly {
+        name: string;
+        attrs: string;
+        data: Uint8Array;
+    }[],
+): Uint8Array {
+    const encoded = members.map(member => ({
+        name: encoder.encode(`${member.name}\0`),
+        attrs: encoder.encode(`${member.attrs}\0`),
+        data: member.data,
+    }));
+    let stringOffset = 12;
+    const records = encoded.map(member => {
+        const nameOffset = stringOffset;
+        stringOffset += member.name.length;
+        const attrsOffset = stringOffset;
+        stringOffset += member.attrs.length;
+        return { ...member, nameOffset, attrsOffset };
+    });
+    const infoOffset = (stringOffset + 3) & ~3;
+    let dataOffset = infoOffset + records.length * 16;
+    const dataOffsets = records.map(record => {
+        const offset = dataOffset;
+        dataOffset += record.data.length;
+        return offset;
+    });
+    const bytes = new Uint8Array(dataOffset);
+    bytes.set([0x50, 0x43, 0x4b, 0], 0);
+    setU32(bytes, 4, infoOffset);
+    setU32(bytes, 8, records.length);
+    for (let index = 0; index < records.length; index++) {
+        const record = records[index]!;
+        bytes.set(record.name, record.nameOffset);
+        bytes.set(record.attrs, record.attrsOffset);
+        const tableOffset = infoOffset + index * 16;
+        setU32(bytes, tableOffset, record.nameOffset);
+        setU32(bytes, tableOffset + 4, record.attrsOffset);
+        setU32(bytes, tableOffset + 8, dataOffsets[index]!);
+        setU32(bytes, tableOffset + 12, record.data.length);
+        bytes.set(record.data, dataOffsets[index]!);
+    }
+    return bytes;
+}
+
+function declaredImageStubVfi(): {
+    readonly pck: Uint8Array;
+    readonly valid: Uint8Array;
+    readonly vfi: Vfi;
+} {
+    const valid = makeTim2();
+    const pck = makePck([
+        {
+            name: "ape_nrm02_b",
+            attrs: "tm2",
+            data: new Uint8Array(16),
+        },
+        {
+            name: "regional_sprite",
+            attrs: "tm2",
+            data: valid,
+        },
+    ]);
+    const entry: VfiEntry = {
+        entryOff: 0x30,
+        entrySize: 16,
+        parentOff: 0,
+        sector: 0,
+        size: pck.length,
+        name: "character.pck",
+        path: "debug/test/stage/character.pck",
+    };
+    const vfi = {
+        entries: [entry],
+        async read(candidate: VfiEntry): Promise<Uint8Array> {
+            assert.equal(candidate, entry);
+            return pck;
+        },
+        find(path: string): VfiEntry | null {
+            return path === entry.path ? entry : null;
+        },
+    } as unknown as Vfi;
+    return { pck, valid, vfi };
+}
+
 function imageFixture(): {
     bytes: Uint8Array;
     texture: ImageTexture;
@@ -265,7 +350,7 @@ async function imageCatalogFor(texture: ImageTexture,
                                bytes: Uint8Array,
                                sourceKey = "disc"): Promise<ImageCatalog> {
     return {
-        v: 4,
+        v: 5,
         sourceKey,
         storage: "containers",
         textures: [texture],
@@ -275,6 +360,7 @@ async function imageCatalogFor(texture: ImageTexture,
             ...await fingerprintBytes(bytes),
         }],
         issues: [],
+        skipped: [],
     };
 }
 
@@ -1179,6 +1265,49 @@ test("malformed image containers persist as issues beside valid neighbors", asyn
     const cached = await resumed.cached();
     assert.ok(cached);
     assert.deepEqual(cached.issues, extracted.issues);
+    assert.deepEqual(
+        await resumed.read(cached.textures[0]!),
+        fixture.valid,
+    );
+});
+
+test("declared non-TIM2 package members remain visible as skipped diagnostics",
+     async () => {
+    const fixture = declaredImageStubVfi();
+    const files = new Map<string, Uint8Array>();
+    const cache = cacheDouble({
+        async read(name: string): Promise<Uint8Array | null> {
+            return files.get(name) ?? null;
+        },
+        async has(name: string): Promise<boolean> {
+            return files.has(name);
+        },
+        async write(name: string, data: Uint8Array): Promise<void> {
+            files.set(name, data.slice());
+        },
+    });
+    const attached = new ImageStore(cache, fixture.vfi, "disc");
+    const extracted = await attached.extract(() => {});
+    assert.equal(extracted.textures.length, 1);
+    assert.equal(extracted.textures[0]!.fileName, "regional_sprite.tm2");
+    assert.deepEqual(extracted.issues, []);
+    assert.deepEqual(extracted.skipped, [{
+        entryOffset: 0x30,
+        sourcePath: "debug/test/stage/character.pck",
+        memberIndex: 0,
+        fileName: "ape_nrm02_b.tm2",
+        byteLength: 16,
+        reason: "missing-tim2-magic",
+    }]);
+    assert.deepEqual(
+        await attached.read(extracted.textures[0]!),
+        fixture.valid,
+    );
+
+    const resumed = new ImageStore(cache, null, "disc");
+    const cached = await resumed.cached();
+    assert.ok(cached);
+    assert.deepEqual(cached.skipped, extracted.skipped);
     assert.deepEqual(
         await resumed.read(cached.textures[0]!),
         fixture.valid,
