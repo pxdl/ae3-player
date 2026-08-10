@@ -8,6 +8,7 @@ import {
 } from "./pck.ts";
 import { inspectTim2, type Tim2PictureInfo } from "./tim2.ts";
 import { type Vfi, type VfiEntry } from "./vfi.ts";
+import { ImageFormatError, type ImageFormat } from "./image-format.ts";
 
 export type ImageRole = "sprite" | "texture" | "other";
 export type ImageRoleEvidence =
@@ -28,13 +29,27 @@ export interface ImageTexture {
     pictures: Tim2PictureInfo[];
 }
 
+export interface ImageScanIssue {
+    /** Sanitized VFI path of the failed container, bounded for display. */
+    path: string;
+    /** Container format whose structural validation failed. */
+    format: ImageFormat;
+    /** Sanitized parser context and reason, bounded for display. */
+    reason: string;
+}
+
+export interface ImageScanResult {
+    textures: ImageTexture[];
+    issues: ImageScanIssue[];
+}
+
 export interface ImageScanOptions {
     progress?: (done: number, total: number, path: string) => void;
     texture?: (texture: ImageTexture, bytes: Uint8Array) => void | Promise<void>;
     container?: (entry: VfiEntry, bytes: Uint8Array) => void | Promise<void>;
 }
 
-function isTim2(data: Uint8Array): boolean {
+function hasTim2Magic(data: Uint8Array): boolean {
     return data.length >= 4 && data[0] === 0x54 && data[1] === 0x49
         && data[2] === 0x4d && data[3] === 0x32;
 }
@@ -132,9 +147,38 @@ interface ScannedImageContainer {
 
 const IMAGE_SCAN_CONCURRENCY = 8;
 
-async function scanImageContainer(vfi: Vfi,
-                                  entry: VfiEntry): Promise<ScannedImageContainer> {
-    const stored = await vfi.read(entry);
+const MAX_ISSUE_TEXT = 256;
+
+function boundedIssueText(value: string, fallback: string): string {
+    const text = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?")
+        .replace(/(?:^|\s)(?:[A-Za-z]:[\\/]|\/)[^\s)]+/g, "$1<path>")
+        .slice(0, MAX_ISSUE_TEXT);
+    return text || fallback;
+}
+
+function issuePath(path: string): string {
+    const normalized = path.replace(/\\/g, "/")
+        .replace(/^[A-Za-z]:\/+/, "")
+        .replace(/^\/+/, "");
+    const segments = normalized.split("/")
+        .filter(segment => segment.length > 0 && segment !== "." && segment !== "..")
+        .map(segment => segment.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?"));
+    return boundedIssueText(segments.join("/"), "image-container");
+}
+
+function imageIssue(entry: VfiEntry, error: ImageFormatError): ImageScanIssue {
+    return {
+        path: issuePath(entry.path),
+        format: error.format,
+        reason: boundedIssueText(
+            `${error.source}: ${error.detail} (offset 0x${error.offset.toString(16)})`,
+            "invalid image container format",
+        ),
+    };
+}
+
+async function scanImageContainer(entry: VfiEntry,
+                                  stored: Uint8Array): Promise<ScannedImageContainer> {
     if (/\.tm2$/i.test(entry.path)) {
         const fileName = entry.path.slice(entry.path.lastIndexOf("/") + 1);
         return {
@@ -154,16 +198,15 @@ async function scanImageContainer(vfi: Vfi,
         };
     }
 
-    const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored) : stored;
-    const members = unpackPck(pck);
-    if (!members) throw new Error(`${entry.path}: not a PCK`);
+    const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored, entry.path) : stored;
+    const members = unpackPck(pck, entry.path);
+    if (!members)
+        throw new ImageFormatError(entry.path, 0, "not a PCK", "PCK");
     const names = pckFileNames(members);
-    const imageMembers = members.filter(member => {
-        const bytes = memberBytes(pck, member);
-        return typeOf(member.attrs) === "tm2" || isTim2(bytes);
-    });
-    const classification = classifyMembers(pck, members, imageMembers);
-    const images = imageMembers.map(member => {
+    const tim2Members = members.filter(member =>
+        hasTim2Magic(memberBytes(pck, member)));
+    const classification = classifyMembers(pck, members, tim2Members);
+    const images = tim2Members.map(member => {
         const bytes = memberBytes(pck, member);
         const label = `${entry.path}#${member.index}:${member.name}`;
         const role = classification.roles.get(member.index)!;
@@ -185,6 +228,20 @@ async function scanImageContainer(vfi: Vfi,
         uiReferences: classification.uiReferences,
         modelReferences: classification.modelReferences,
     };
+}
+
+type ImageScanOutcome =
+    | { container: ScannedImageContainer }
+    | { issue: ImageScanIssue };
+
+async function scanImageOutcome(vfi: Vfi, entry: VfiEntry): Promise<ImageScanOutcome> {
+    const stored = await vfi.read(entry);
+    try {
+        return { container: await scanImageContainer(entry, stored) };
+    } catch (error) {
+        if (!(error instanceof ImageFormatError)) throw error;
+        return { issue: imageIssue(entry, error) };
+    }
 }
 
 function refineUnclassified(textures: ImageTexture[],
@@ -211,13 +268,18 @@ function refineUnclassified(textures: ImageTexture[],
 /**
  * Inspect every direct TIM2 and every TIM2 member of every PCK in DATA.BIN.
  * The callback receives each original source texture once, including
- * multi-picture textures, after cross-container role evidence is resolved.
+ * multi-picture textures. Unclassified roles are deferred until cross-container
+ * evidence is resolved; already-classified textures may be delivered per batch.
  * No decoded pixels are retained by the scanner.
+ * A proven TIM2/PCK/SZ format violation after a successful VFI read is
+ * returned as one bounded issue for that container; source/I/O, resource,
+ * abort, callback, and unexpected failures still reject the scan.
  */
 export async function scanImageTextures(vfi: Vfi,
-                                        options: ImageScanOptions = {}): Promise<ImageTexture[]> {
+                                        options: ImageScanOptions = {}): Promise<ImageScanResult> {
     const containers = locateImageContainers(vfi);
     const textures: ImageTexture[] = [];
+    const issues: ImageScanIssue[] = [];
     const uiReferences = new Set<string>();
     const modelReferences = new Set<string>();
     const deferred: Array<{ texture: ImageTexture; bytes: Uint8Array }> = [];
@@ -225,8 +287,15 @@ export async function scanImageTextures(vfi: Vfi,
         const batch = containers.slice(start, start + IMAGE_SCAN_CONCURRENCY);
         for (let offset = 0; offset < batch.length; offset++)
             options.progress?.(start + offset, containers.length, batch[offset]!.path);
-        const scanned = await Promise.all(batch.map(entry => scanImageContainer(vfi, entry)));
-        for (const container of scanned) {
+        const scanned = await Promise.all(batch.map(entry => scanImageOutcome(vfi, entry)));
+        const successful: ScannedImageContainer[] = [];
+        for (const outcome of scanned) {
+            if ("issue" in outcome) {
+                issues.push(outcome.issue);
+                continue;
+            }
+            const container = outcome.container;
+            successful.push(container);
             for (const name of container.uiReferences) uiReferences.add(name);
             for (const name of container.modelReferences) modelReferences.add(name);
             for (const image of container.images) {
@@ -235,7 +304,7 @@ export async function scanImageTextures(vfi: Vfi,
                     deferred.push({ texture: image.texture, bytes: image.bytes.slice() });
             }
         }
-        await Promise.all(scanned.map(async container => {
+        await Promise.all(successful.map(async container => {
             if (container.images.length === 0) return;
             await options.container?.(container.entry, container.stored);
             for (const image of container.images)
@@ -250,7 +319,7 @@ export async function scanImageTextures(vfi: Vfi,
                 .map(image => options.texture!(image.texture, image.bytes)));
     }
     options.progress?.(containers.length, containers.length, "done");
-    return textures;
+    return { textures, issues };
 }
 
 /** Re-read one source TIM2 represented by a scan result. */
@@ -265,8 +334,8 @@ export async function readImageTexture(vfi: Vfi,
         inspectTim2(stored, texture.sourcePath);
         return stored;
     }
-    const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored) : stored;
-    const members = unpackPck(pck);
+    const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored, entry.path) : stored;
+    const members = unpackPck(pck, entry.path);
     const member = members?.[texture.memberIndex];
     if (!member || member.name !== texture.memberName)
         throw new Error(`${texture.sourcePath}: image member ${texture.memberIndex} changed`);

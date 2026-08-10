@@ -1,7 +1,7 @@
 /* Store-only ZIP writer (no compression, no dependency). Needed because a
  * single click may only trigger one download: Chrome's multiple-downloads
- * policy silently blocks the second same-gesture download, so multi-file
- * exports (the .hd/.bd bank pair, the future sample kit) ship as one zip.
+ * policy silently blocks the second same-gesture download, so current
+ * multi-file exports such as .hd/.bd bank pairs ship as one zip.
  * Output is deterministic -- fixed 1980-01-01 timestamps -- so exports can
  * be byte-compared in gates. */
 
@@ -16,6 +16,48 @@ const CRC_TABLE = (() => {
     return t;
 })();
 
+const ZIP_PATH_MAX_BYTES = 4096;
+const ZIP_COMPONENT_MAX_BYTES = 255;
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+const DRIVE_PREFIX = /^[A-Za-z]:/;
+const textEncoder = new TextEncoder();
+
+function isWellFormedUnicode(value: string): boolean {
+    for (let index = 0; index < value.length; index++) {
+        const unit = value.charCodeAt(index);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+            const next = value.charCodeAt(++index);
+            if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Require one canonical, traversal-safe relative POSIX archive path. */
+export function assertZipEntryPath(path: string): void {
+    if (typeof path !== "string" || path.length === 0)
+        throw new Error("ZIP entry path is empty");
+    if (!isWellFormedUnicode(path) || path.normalize("NFC") !== path)
+        throw new Error("ZIP entry path must be well-formed NFC Unicode");
+    if (CONTROL_CHARACTER.test(path))
+        throw new Error("ZIP entry path contains a control character");
+    if (path.startsWith("/") || path.includes("\\") || DRIVE_PREFIX.test(path)
+            || path.includes(":"))
+        throw new Error("ZIP entry path must be a platform-safe relative POSIX path");
+
+    const components = path.split("/");
+    if (components.some(component =>
+        component.length === 0 || component === "." || component === ".."))
+        throw new Error("ZIP entry path contains an empty or dot component");
+    if (components.some(component =>
+        textEncoder.encode(component).byteLength > ZIP_COMPONENT_MAX_BYTES))
+        throw new Error("ZIP entry path component is too long");
+    if (textEncoder.encode(path).byteLength > ZIP_PATH_MAX_BYTES)
+        throw new Error("ZIP entry path is too long");
+}
+
 function crc32(b: Uint8Array): number {
     let c = 0xffffffff;
     for (let i = 0; i < b.length; i++)
@@ -23,23 +65,43 @@ function crc32(b: Uint8Array): number {
     return (c ^ 0xffffffff) >>> 0;
 }
 
-/** Pack `entries` (ASCII names) into a store-only zip. */
+/** Pack `entries` with UTF-8 names into a store-only zip. */
 export function storeZip(entries: [name: string, data: Uint8Array][]): Uint8Array {
-    const enc = new TextEncoder();
-    const files = entries.map(([name, data]) =>
-        ({ name: enc.encode(name), data, crc: crc32(data), offset: 0 }));
-
-    const localSize = files.reduce((s, f) => s + 30 + f.name.length + f.data.length, 0);
-    const centralSize = files.reduce((s, f) => s + 46 + f.name.length, 0);
-    const out = new Uint8Array(localSize + centralSize + 22);
+    if (entries.length > 0xffff)
+        throw new Error(`ZIP has ${entries.length} files; ZIP32 supports at most 65535`);
+    const files: Array<{
+        name: Uint8Array;
+        data: Uint8Array;
+        crc: number;
+        offset: number;
+    }> = [];
+    let localSize = 0;
+    let centralSize = 0;
+    for (const [path, data] of entries) {
+        assertZipEntryPath(path);
+        if (data.length > 0xffffffff)
+            throw new Error(`${path}: file is too large for ZIP32`);
+        const name = textEncoder.encode(path);
+        localSize += 30 + name.length + data.length;
+        centralSize += 46 + name.length;
+        if (localSize > 0xffffffff)
+            throw new Error("ZIP payload exceeds the 4 GiB ZIP32 limit");
+        if (centralSize > 0xffffffff)
+            throw new Error("ZIP directory exceeds the ZIP32 limit");
+        files.push({ name, data, crc: crc32(data), offset: 0 });
+    }
+    const archiveSize = localSize + centralSize + 22;
+    if (archiveSize > 0xffffffff)
+        throw new Error("ZIP archive exceeds the 4 GiB ZIP32 limit");
+    const out = new Uint8Array(archiveSize);
     const v = new DataView(out.buffer);
     let p = 0;
 
-    /* common fields of local header + central entry: version 2.0, no flags,
+    /* common fields of local header + central entry: version 2.0, UTF-8 flag,
      * method 0 (store), DOS timestamp 1980-01-01 00:00:00 */
     const common = (f: typeof files[0]) => {
         v.setUint16(p, 20, true); p += 2;               /* version needed */
-        v.setUint16(p, 0, true); p += 2;                /* flags */
+        v.setUint16(p, 0x0800, true); p += 2;           /* UTF-8 names */
         v.setUint16(p, 0, true); p += 2;                /* method: store */
         v.setUint16(p, 0, true); p += 2;                /* mod time */
         v.setUint16(p, 0x21, true); p += 2;             /* mod date */
@@ -87,7 +149,7 @@ export function storeZip(entries: [name: string, data: Uint8Array][]): Uint8Arra
 export function storeZipBlob(entries: [name: string, data: Uint8Array][]): Blob {
     if (entries.length > 0xffff)
         throw new Error(`ZIP has ${entries.length} files; ZIP32 supports at most 65535`);
-    const enc = new TextEncoder();
+    const enc = textEncoder;
     const parts: BlobPart[] = [];
     const files: Array<{
         name: Uint8Array;
@@ -97,6 +159,7 @@ export function storeZipBlob(entries: [name: string, data: Uint8Array][]): Blob 
     }> = [];
     let offset = 0;
     for (const [path, data] of entries) {
+        assertZipEntryPath(path);
         if (data.length > 0xffffffff)
             throw new Error(`${path}: file is too large for ZIP32`);
         const name = enc.encode(path);

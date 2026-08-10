@@ -8,6 +8,7 @@
  * bytes), so consumers must key on the member table, not on filenames. */
 
 import { cstrAt, u32 } from "./bytes.ts";
+import { ImageFormatError } from "./image-format.ts";
 
 export interface PckMember {
     index: number;
@@ -17,25 +18,39 @@ export interface PckMember {
     size: number;
 }
 
+function fail(source: string, offset: number, detail: string): never {
+    throw new ImageFormatError(source, offset, detail, "PCK");
+}
+
 /** Member table, or null if the blob is not a PCK. */
-export function unpackPck(data: Uint8Array): PckMember[] | null {
+export function unpackPck(data: Uint8Array, source = "PCK"): PckMember[] | null {
     if (!(data.length >= 4 && data[0] === 0x50 && data[1] === 0x43
           && data[2] === 0x4b && data[3] === 0))
         return null;
     if (data.length < 12)
-        throw new Error("PCK truncated before its header");
+        fail(source, 0, "PCK truncated before its header");
     const infoOff = u32(data, 4);
     const files = u32(data, 8);
+    const tableEnd = infoOff + files * 16;
+    if (!Number.isSafeInteger(tableEnd) || infoOff < 12 || tableEnd > data.length)
+        fail(source, infoOff, "PCK member table exceeds PCK data");
     const out: PckMember[] = [];
     for (let i = 0; i < files; i++) {
         const o = infoOff + i * 16;
-        if (o + 16 > data.length) break;
+        const nameOff = u32(data, o);
+        const attrOff = u32(data, o + 4);
+        const offset = u32(data, o + 8);
+        const size = u32(data, o + 12);
+        if (nameOff >= data.length || attrOff >= data.length)
+            fail(source, o, `PCK member ${i} string offset is outside PCK data`);
+        if (offset + size > data.length)
+            fail(source, o + 8, `PCK member ${i} data exceeds PCK data`);
         out.push({
             index: i,
-            name: cstrAt(data, u32(data, o)),
-            attrs: cstrAt(data, u32(data, o + 4)),
-            offset: u32(data, o + 8),
-            size: u32(data, o + 12),
+            name: cstrAt(data, nameOff),
+            attrs: cstrAt(data, attrOff),
+            offset,
+            size,
         });
     }
     return out;

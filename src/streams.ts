@@ -14,6 +14,11 @@
 
 import { OpfsCache, openDisc, BlobSource,
          type Vfi, type VfiEntry } from "./vendor/extract/index.ts";
+import {
+    assertAttachedDiscIdentity,
+    assertCacheSourceIdentity,
+} from "./disc-identity.ts";
+import { technicalReason } from "./errors.ts";
 
 const META = "stream_meta.json";
 
@@ -27,7 +32,11 @@ export interface StreamEntry {
     length: number;      /* header length field; 16 files overstate (spec §4) */
 }
 
-export interface StreamCatalog { v: 1; entries: StreamEntry[]; }
+export interface StreamCatalog {
+    readonly v: 2;
+    readonly sourceKey: string;
+    readonly entries: readonly StreamEntry[];
+}
 
 /* Catalog-time header read (magic + channels s16@+0x06 + rate u32@+0x08 +
  * length u32@+0x14, little-endian) -- the same fields ae3_exst_parse
@@ -50,7 +59,7 @@ function xHeader(b: Uint8Array, size: number, name: string): Omit<StreamEntry, "
 
 export interface StreamGroup { key: string; entries: StreamEntry[]; }
 
-export function groupStreams(entries: StreamEntry[]):
+export function groupStreams(entries: readonly StreamEntry[]):
         { music: StreamGroup[]; voice: StreamGroup[] } {
     const buckets = { music: new Map<string, StreamEntry[]>(),
                       voice: new Map<string, StreamEntry[]>() };
@@ -67,17 +76,52 @@ export function groupStreams(entries: StreamEntry[]):
     return { music: order(buckets.music), voice: order(buckets.voice) };
 }
 
+const STREAM_NAME = /^[^/\\\u0000-\u001f\u007f-\u009f]+\.x$/i;
+
+function isSafeInteger(value: unknown, minimum = 0): value is number {
+    return typeof value === "number"
+        && Number.isSafeInteger(value)
+        && value >= minimum;
+}
+
+function isStreamCatalog(value: unknown,
+                         expectedSourceKey: string): value is StreamCatalog {
+    if (value === null || typeof value !== "object") return false;
+    const catalog = value as Record<string, unknown>;
+    if (catalog.v !== 2 || catalog.sourceKey !== expectedSourceKey
+            || !Array.isArray(catalog.entries)
+            || catalog.entries.length === 0)
+        return false;
+    const names = new Set<string>();
+    return catalog.entries.every(value => {
+        if (value === null || typeof value !== "object") return false;
+        const entry = value as Record<string, unknown>;
+        if (typeof entry.name !== "string"
+                || !STREAM_NAME.test(entry.name)
+                || names.has(entry.name)
+                || !isSafeInteger(entry.channels, 1) || entry.channels > 8
+                || !isSafeInteger(entry.rate, 1)
+                || !isSafeInteger(entry.sectors)
+                || !isSafeInteger(entry.length))
+            return false;
+        names.add(entry.name);
+        return true;
+    });
+}
+
 /* ---- store: OPFS phase + payload access ---------------------------------- */
 
 export class StreamStore {
     private cache: OpfsCache | null;
     private vfi: Vfi | null;
-    private readonly cacheKey: string | null;
+    private readonly cacheKey: string;
     private byName = new Map<string, VfiEntry>();
     private catalog: StreamCatalog | null = null;   /* in-memory (no-OPFS runs) */
+    private cacheWarning: string | null = null;
 
     constructor(cache: OpfsCache | null, vfi: Vfi | null,
-                cacheKey: string | null) {
+                cacheKey: string) {
+        assertCacheSourceIdentity(cache, cacheKey);
         this.cache = cache;
         this.vfi = vfi;
         this.cacheKey = cacheKey;
@@ -85,32 +129,60 @@ export class StreamStore {
 
     /** ISO reachable this session (constructed from one, or attachIso ran). */
     hasIso(): boolean { return this.vfi !== null; }
+    get persistenceWarning(): string | null { return this.cacheWarning; }
 
     /** Completed catalog, if the streams phase ever finished (or ran
      *  cache-less this session). null = show the setup panel. */
     async cached(): Promise<StreamCatalog | null> {
         if (this.catalog) return this.catalog;
         if (!this.cache) return null;
-        const raw = await this.cache.read(META);
-        if (!raw) return null;
+        let raw: Uint8Array | null;
         try {
-            const c = JSON.parse(new TextDecoder().decode(raw)) as StreamCatalog;
-            if (c.v !== 1 || !Array.isArray(c.entries)) return null;
-            this.catalog = c;
-            return c;
-        } catch {
+            raw = await this.cache.read(META);
+        } catch (error) {
+            this.useAttachedIsoAfterCacheFailure(
+                error,
+                "the Streams cache is unavailable -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
             return null;
         }
+        if (!raw) return null;
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(new TextDecoder().decode(raw));
+        } catch (error) {
+            this.useAttachedIsoAfterCacheFailure(
+                error,
+                "the cached Streams index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
+            return null;
+        }
+        if (!isStreamCatalog(parsed, this.cacheKey)) {
+            this.useAttachedIsoAfterCacheFailure(
+                new Error("the cached Streams index has an invalid schema"),
+                "the cached Streams index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+            );
+            return null;
+        }
+        this.catalog = parsed;
+        return parsed;
     }
 
     /** Re-attach the ISO for a session resumed from OPFS. Refuses a
      *  different disc: the streams would land under the wrong cache key. */
     async attachIso(file: File): Promise<void> {
         const disc = await openDisc(new BlobSource(file));
-        if (this.cacheKey && disc.cacheKey !== this.cacheKey)
-            throw new Error("this ISO is a different disc than the cached one "
-                            + "-- forget the disc first to switch");
+        assertAttachedDiscIdentity(this.cacheKey, disc.cacheKey);
         this.vfi = disc.vfi;
+        this.byName.clear();
+    }
+
+    private useAttachedIsoAfterCacheFailure(error: unknown, message: string): void {
+        if (!this.vfi) throw new Error(message, { cause: error });
+        this.cacheWarning = `${message} (${technicalReason(error)}); `
+            + "using the attached ISO for this session";
+        console.warn("Streams cache failed; using the attached ISO", error);
+        this.cache = null;
         this.byName.clear();
     }
 
@@ -152,23 +224,43 @@ export class StreamStore {
             if (!cache) continue;
             try {
                 if (await cache.has(`stream/${name}`)) continue;
-            } catch (err) {
-                console.warn("OPFS failed; streams from the ISO this visit", err);
+            } catch (error) {
+                this.useAttachedIsoAfterCacheFailure(
+                    error,
+                    "the Streams cache is unavailable",
+                );
                 cache = null;
                 continue;
             }
             const data = await this.vfi.read(e);        /* hard failure */
             try {
                 await cache.write(`stream/${name}`, data);
-            } catch (err) {
-                console.warn("OPFS write failed; streams from the ISO this visit", err);
+            } catch (error) {
+                this.useAttachedIsoAfterCacheFailure(
+                    error,
+                    "the Streams cache is unavailable",
+                );
                 cache = null;
             }
         }
-        const catalog: StreamCatalog = { v: 1, entries: rows };
-        if (cache)
-            await cache.write(META,
-                new TextEncoder().encode(JSON.stringify(catalog)));
+        const catalog: StreamCatalog = {
+            v: 2,
+            sourceKey: this.cacheKey,
+            entries: rows,
+        };
+        if (cache) {
+            try {
+                await cache.write(
+                    META,
+                    new TextEncoder().encode(JSON.stringify(catalog)),
+                );
+            } catch (error) {
+                this.useAttachedIsoAfterCacheFailure(
+                    error,
+                    "the Streams index could not be persisted",
+                );
+            }
+        }
         this.catalog = catalog;
         progress(entries.length, entries.length, "done");
         return catalog;
@@ -176,12 +268,21 @@ export class StreamStore {
 
     /** One stream's bytes: OPFS first, ISO fallback when in hand. */
     async read(name: string): Promise<Uint8Array | null> {
+        if (!STREAM_NAME.test(name))
+            throw new Error("the stream name is invalid");
         if (this.cache) {
-            const b = await this.cache.read(`stream/${name}`);
-            if (b) return b;
+            try {
+                const bytes = await this.cache.read(`stream/${name}`);
+                if (bytes) return bytes;
+            } catch (error) {
+                this.useAttachedIsoAfterCacheFailure(
+                    error,
+                    "the Streams cache is unavailable",
+                );
+            }
         }
-        const e = this.locate().get(name);
-        return e && this.vfi ? this.vfi.read(e) : null;
+        const entry = this.locate().get(name);
+        return entry && this.vfi ? this.vfi.read(entry) : null;
     }
 }
 
@@ -197,6 +298,93 @@ export interface DecodedStream {
     samplesPerChannel: number;    /* untrimmed */
     pcm: Int16Array;              /* untrimmed, interleaved */
 }
+interface StreamDone {
+    readonly t: "stream-done";
+    readonly id: number;
+    readonly header: DecodedStream["header"];
+    readonly sectors: number;
+    readonly padFrames: number;
+    readonly samplesPerChannel: number;
+    readonly pcm: Int16Array;
+}
+
+interface StreamWavDone {
+    readonly t: "stream-wav-done";
+    readonly id: number;
+    readonly name: string;
+    readonly wav: Uint8Array;
+}
+
+type StreamWorkerSuccess = StreamDone | StreamWavDone;
+type StreamPendingKind = "decode" | "wav";
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === "object"
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function hasOnlyKeys(
+    value: Record<string, unknown>,
+    allowed: ReadonlySet<string>,
+): boolean {
+    return Object.keys(value).every(key => allowed.has(key));
+}
+
+const STREAM_ERROR_KEYS = new Set(["t", "id", "message"]);
+
+function isIntegerArray(value: unknown, length: number): value is number[] {
+    return Array.isArray(value)
+        && value.length === length
+        && value.every(item => typeof item === "number"
+            && Number.isSafeInteger(item));
+}
+
+function isStreamDone(value: unknown): value is StreamDone {
+    const message = objectRecord(value);
+    const header = objectRecord(message?.header);
+    if (!message || message.t !== "stream-done"
+            || !hasOnlyKeys(message, new Set([
+                "t", "id", "header", "sectors", "padFrames",
+                "samplesPerChannel", "pcm",
+            ]))
+            || !isSafeInteger(message.id, 1)
+            || !header
+            || !hasOnlyKeys(header, new Set([
+                "channels", "rate", "loop", "loop_start", "length",
+                "vol_l", "vol_r", "reverb",
+            ]))
+            || !isSafeInteger(header.channels, 1) || header.channels > 8
+            || !isSafeInteger(header.rate, 1)
+            || !(header.loop === 0 || header.loop === 1)
+            || !isSafeInteger(header.loop_start, -1)
+            || !isSafeInteger(header.length)
+            || !isIntegerArray(header.vol_l, 8)
+            || !isIntegerArray(header.vol_r, 8)
+            || !isIntegerArray(header.reverb, 8)
+            || !isSafeInteger(message.sectors)
+            || !isSafeInteger(message.padFrames)
+            || !isSafeInteger(message.samplesPerChannel)
+            || !(message.pcm instanceof Int16Array))
+        return false;
+    const samples = message.samplesPerChannel as number;
+    const channels = header.channels as number;
+    return Number.isSafeInteger(samples * channels)
+        && message.pcm.length === samples * channels
+        && (message.padFrames as number) * 28 <= samples;
+}
+
+function isStreamWavDone(value: unknown, expectedName: string): value is StreamWavDone {
+    const message = objectRecord(value);
+    return message !== null
+        && hasOnlyKeys(message, new Set(["t", "id", "name", "wav"]))
+        && message.t === "stream-wav-done"
+        && isSafeInteger(message.id, 1)
+        && message.name === expectedName
+        && message.wav instanceof Uint8Array
+        && message.wav.byteLength >= 44;
+}
+
 
 /* Own worker (same script as the exporter's): stream decodes never queue
  * behind a WAV render, and vice versa. */
@@ -204,52 +392,146 @@ export class StreamDecoder {
     private worker: Worker | null = null;
     private seq = 0;
     private pending = new Map<number, {
-        resolve: (v: any) => void; reject: (e: Error) => void }>();
+        kind: StreamPendingKind;
+        name: string;
+        resolve: (value: StreamWorkerSuccess) => void;
+        reject: (error: Error) => void;
+    }>();
+
+    private failWorker(worker: Worker, error: Error): void {
+        if (this.worker !== worker) return;
+        worker.terminate();
+        this.worker = null;
+        for (const pending of this.pending.values()) pending.reject(error);
+        this.pending.clear();
+    }
 
     private ensure(): Worker {
         if (this.worker) return this.worker;
-        this.worker = new Worker(
-            `${import.meta.env.BASE_URL}synth/export-worker.mjs`,
-            { type: "module" });
-        this.worker.onmessage = (e) => {
-            const m = e.data;
-            const p = this.pending.get(m.id);
-            if (!p) return;
-            this.pending.delete(m.id);
-            if (m.t === "error") p.reject(new Error(m.message));
-            else p.resolve(m);
+        const worker = new Worker(
+            `${import.meta.env?.BASE_URL ?? "/"}synth/export-worker.mjs`,
+            { type: "module" },
+        );
+        this.worker = worker;
+        worker.onmessage = event => {
+            if (this.worker !== worker) return;
+            const message = objectRecord(event.data);
+            if (!message || !isSafeInteger(message.id, 1)) {
+                this.failWorker(worker, new Error("invalid stream worker response"));
+                return;
+            }
+            const id = message.id;
+            const pending = this.pending.get(id);
+            if (!pending) {
+                this.failWorker(worker, new Error("invalid stream worker response"));
+                return;
+            }
+            if (message.t === "error") {
+                if (!hasOnlyKeys(message, STREAM_ERROR_KEYS)
+                        || typeof message.message !== "string"
+                        || message.message.length === 0) {
+                    this.failWorker(worker, new Error("invalid stream worker response"));
+                    return;
+                }
+                this.pending.delete(id);
+                pending.reject(new Error(technicalReason(message.message)));
+                return;
+            }
+            let result: StreamWorkerSuccess;
+            if (pending.kind === "decode") {
+                if (!isStreamDone(message)) {
+                    this.failWorker(worker, new Error("invalid stream worker response"));
+                    return;
+                }
+                result = message;
+            } else {
+                if (!isStreamWavDone(message, pending.name)) {
+                    this.failWorker(worker, new Error("invalid stream worker response"));
+                    return;
+                }
+                result = message;
+            }
+            this.pending.delete(id);
+            pending.resolve(result);
         };
-        this.worker.onerror = (e) => {
-            const err = new Error(e.message || "stream worker failed");
-            for (const p of this.pending.values()) p.reject(err);
-            this.pending.clear();
+        worker.onerror = event => {
+            event.preventDefault();
+            this.failWorker(
+                worker,
+                new Error(technicalReason(event.message || "stream worker failed")),
+            );
         };
-        return this.worker;
+        worker.onmessageerror = () => {
+            this.failWorker(worker, new Error("invalid stream worker response"));
+        };
+        return worker;
     }
 
-    private call<T>(msg: Record<string, unknown>,
-                    transfer: Transferable[]): Promise<T> {
+    dispose(): void {
+        const error = new Error("stream operation cancelled for another disc");
+        if (this.worker) {
+            this.failWorker(this.worker, error);
+            return;
+        }
+        for (const pending of this.pending.values()) pending.reject(error);
+        this.pending.clear();
+    }
+
+    private call(kind: "decode", name: string,
+                 msg: Record<string, unknown>,
+                 transfer: Transferable[]): Promise<StreamDone>;
+    private call(kind: "wav", name: string,
+                 msg: Record<string, unknown>,
+                 transfer: Transferable[]): Promise<StreamWavDone>;
+    private call(kind: StreamPendingKind, name: string,
+                 msg: Record<string, unknown>,
+                 transfer: Transferable[]): Promise<StreamWorkerSuccess> {
         const id = ++this.seq;
-        return new Promise<T>((resolve, reject) => {
-            this.pending.set(id, { resolve, reject });
+        const { promise, resolve, reject } =
+            Promise.withResolvers<StreamWorkerSuccess>();
+        this.pending.set(id, { kind, name, resolve, reject });
+        try {
             this.ensure().postMessage({ ...msg, id }, transfer);
-        });
+        } catch (cause) {
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            const worker = this.worker;
+            if (worker) this.failWorker(worker, error);
+            else {
+                this.pending.delete(id);
+                reject(error);
+            }
+        }
+        return promise;
     }
 
     /** Full untrimmed decode (the UI derives the trimmed view locally). */
     async decode(name: string, file: Uint8Array): Promise<DecodedStream> {
-        const m = await this.call<any>({ t: "stream", file }, [file.buffer]);
-        return { name, header: m.header, sectors: m.sectors,
-                 padFrames: m.padFrames,
-                 samplesPerChannel: m.samplesPerChannel, pcm: m.pcm };
+        const message = await this.call(
+            "decode",
+            name,
+            { t: "stream", file },
+            [file.buffer],
+        );
+        return {
+            name,
+            header: message.header,
+            sectors: message.sectors,
+            padFrames: message.padFrames,
+            samplesPerChannel: message.samplesPerChannel,
+            pcm: message.pcm,
+        };
     }
 
     /** WAV bytes exactly as `ae3 exst --decode [--trim-pad]` frames them. */
     async wav(name: string, file: Uint8Array,
               trimPad: boolean): Promise<Uint8Array> {
-        const m = await this.call<any>(
-            { t: "stream-wav", file, trimPad, name }, [file.buffer]);
-        return m.wav;
+        const message = await this.call(
+            "wav",
+            name,
+            { t: "stream-wav", file, trimPad, name },
+            [file.buffer],
+        );
+        return message.wav;
     }
 }
 
@@ -261,6 +543,7 @@ export class StreamDecoder {
  * tail samples, so no re-decode round-trip. */
 export class StreamPlayer {
     onended: (() => void) | null = null;
+    onerror: ((error: Error) => void) | null = null;
     private ctx: AudioContext | null = null;
     private node: AudioBufferSourceNode | null = null;
     private stream: DecodedStream | null = null;
@@ -269,13 +552,20 @@ export class StreamPlayer {
     private playing_ = false;
     private t0 = 0;             /* ctx.currentTime at start */
     private off = 0;            /* seconds into the buffer at start */
+    private generation = 0;
 
     /** Lazy context -- call from a user gesture (Safari autoplay policy,
      *  same stance as the BGM player). */
-    private ensureCtx(): AudioContext {
+    private ensureCtx(generation: number): AudioContext {
         this.ctx ??= new AudioContext();
-        void this.ctx.resume();
-        return this.ctx;
+        const ctx = this.ctx;
+        void ctx.resume().catch(cause => {
+            if (this.ctx !== ctx || this.generation !== generation) return;
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            this.stopNode();
+            this.onerror?.(error);
+        });
+        return ctx;
     }
 
     private samples(trim: boolean): number {
@@ -335,7 +625,8 @@ export class StreamPlayer {
 
     play(): void {
         if (!this.stream || this.playing_) return;
-        const ctx = this.ensureCtx();
+        const generation = ++this.generation;
+        const ctx = this.ensureCtx(generation);
         if (this.off >= this.dur()) this.off = 0;     /* SPACE after end restarts */
         const node = ctx.createBufferSource();
         node.buffer = this.buffer(this.trim);
@@ -354,10 +645,17 @@ export class StreamPlayer {
     }
 
     private stopNode(): void {
+        this.generation++;
         if (this.node) {
-            const n = this.node;
+            const node = this.node;
             this.node = null;                         /* mute onended */
-            try { n.stop(); } catch { /* not started */ }
+            try {
+                node.stop();
+            } catch (error) {
+                if (!(error instanceof DOMException
+                        && error.name === "InvalidStateError"))
+                    console.error("stream source stop failed", error);
+            }
         }
         this.playing_ = false;
     }
