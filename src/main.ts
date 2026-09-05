@@ -121,6 +121,7 @@ const cfg = { songvol: 44, revDepth: 30, exact: true, gaussian: true, loop: true
 const exporter = new Exporter();
 const discOpens = new DiscOpenCoordinator();
 const discCleanup = new SerializedDiscCleanup();
+let tickFrame: number | null = null;
 let audioMode: "bgm" | "se" | null = null;
 let viewerRevision = 0;
 const VIEWER_LEVEL_COUNT = 32;
@@ -147,6 +148,7 @@ type AppTab = "bgm" | "streams" | "se" | "fmv" | "images"
     | "stage-previews" | "models" | "report";
 let tab: AppTab = "bgm";
 let sCatalog: StreamCatalog | null = null;
+let sMultipleSources = false;
 let streamCatalogRequest: {
     target: DiscSession;
     promise: Promise<void>;
@@ -189,10 +191,24 @@ let imageSelected: ImageEntry | null = null;
 type ImageViewMode = "grid" | "list" | "tree";
 let imageViewMode: ImageViewMode = "grid";
 let imageSortDirection: ImageSortDirection = "asc";
-let imageVisibleLimit = 120;
+let imageVisibleStart = -1;
+let imageVisibleEnd = 0;
+let imageSavedScrollTop = 0;
+let imageWindowColumns = 1;
+let imageWindowStride = 0;
+let imageWindowGap = 0;
+let imageWindowFrame = 0;
+let imageWindowNeedsMeasure = false;
+const imageRenderedItems = new Map<string, HTMLLIElement>();
+let imagePreviewPending: {
+    target: DiscSession;
+    entry: ImageEntry;
+    generation: number;
+} | null = null;
+let imagePreviewTask: Promise<void> | null = null;
 let imageLoadGeneration = 0;
 let imageRenderGeneration = 0;
-let imageListObserver: IntersectionObserver | null = null;
+let imageResizeObserver: ResizeObserver | null = null;
 let imageThumbnailObserver: IntersectionObserver | null = null;
 let imageThumbnailQueue: Array<{
     canvas: HTMLCanvasElement;
@@ -244,6 +260,7 @@ type SeRow =
     | { kind: "bank"; entry: SeBankEntry }
     | { kind: "cue"; entry: SeBankEntry; bank: number; request: number };
 let seCatalog: SeCatalog | null = null;
+let seMultipleSources = false;
 let seCatalogRequest: {
     target: DiscSession;
     promise: Promise<boolean>;
@@ -665,12 +682,7 @@ function metadataSection(title: string, rows: readonly (readonly [string, string
         `<div><dt>${escapeMarkup(label)}</dt><dd>${value}</dd></div>`).join("")}</dl></section>`;
 }
 
-function movieSidecarRows(label: string, entry: MovieEntry["subtitleBin"]): [string, string][] {
-    if (!entry) return [
-        [`${label} name`, "None"],
-        [`${label} path`, "None"],
-        [`${label} size`, "None"],
-    ];
+function movieSidecarRows(label: string, entry: MovieEntry["subtitleTracks"][number]["bin"]): [string, string][] {
     return [
         [`${label} name`, `<code>${escapeMarkup(entry.name)}</code>`],
         [`${label} path`, `<code>${escapeMarkup(entry.path)}</code>`],
@@ -701,8 +713,10 @@ function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
             ["VFI sector", `${entry.movie.sector} · ${movieHex(entry.movie.sector)}`],
             ["Byte offset", movieHex(entry.movie.sector * 0x800)],
             [".str size", movieBytesDetail(entry.movie.size)],
-            ...movieSidecarRows(".bin", entry.subtitleBin),
-            ...movieSidecarRows(".sbt", entry.subtitleSbt),
+            ...entry.subtitleTracks.flatMap(track => [
+                ...movieSidecarRows(`${track.label} .bin`, track.bin),
+                ...movieSidecarRows(`${track.label} .sbt`, track.sbt),
+            ]),
         ]),
         metadataSection("Container & picture", [
             ["Fields", String(entry.header.fields)],
@@ -716,6 +730,8 @@ function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
             ["Display aspect", entry.video.displayAspect.join(":")],
         ]),
         metadataSection("Audio", [
+            ["Available tracks", entry.audioTracks.map(track => escapeMarkup(track.label)).join(", ")],
+            ["Selected track", escapeMarkup(entry.audioTracks[snapshot.selection?.audioTrack ?? 0]?.label ?? "—")],
             ["Channels", String(entry.header.channels)],
             ["Sample rate", `${entry.header.sampleRate} Hz`],
             ["Codec", "PS-ADPCM"],
@@ -726,6 +742,8 @@ function renderFmvInspector(snapshot: MovieControllerSnapshot): void {
         ]),
         metadataSection("Subtitles", [
             ["Disc cues", subtitles],
+            ["Selected language", escapeMarkup(entry.subtitleTracks.find(
+                track => track.id === snapshot.selection?.subtitleId)?.label ?? "Off")],
             ["Attached ISO", snapshot.hasIso ? "Yes" : "No"],
         ]),
         metadataSection("Local cache", [
@@ -742,14 +760,14 @@ function renderFmvExport(snapshot: MovieControllerSnapshot): void {
     const entryChanged = fmvRenderedEntryName !== snapshot.entry?.name;
     fmvRenderedEntryName = snapshot.entry?.name ?? null;
     const captions = $<HTMLInputElement>("fmv-export-captions");
-    captions.disabled = !snapshot.entry?.subtitleCues;
-    if (entryChanged) captions.checked = (snapshot.entry?.subtitleCues ?? 0) > 0;
+    captions.disabled = snapshot.selection?.subtitleId == null;
+    if (entryChanged) captions.checked = snapshot.selection?.subtitleId != null;
     const mp4Detail = document.querySelector<HTMLElement>(
         "[data-fmv-export='mp4'] span");
     if (mp4Detail) {
         mp4Detail.textContent = snapshot.entry?.video.fieldOrder === "progressive"
             ? "H.264 / AAC · browser encode"
-            : "H.264 / AAC · 59.94p browser encode";
+            : `H.264 / AAC · ${Number(((snapshot.entry?.video.frameRate ?? 0) * 2).toFixed(2))}p browser encode`;
     }
     const remove = $<HTMLButtonElement>("fmv-remove-cache");
     remove.textContent = snapshot.cache?.totalBytes
@@ -761,11 +779,30 @@ function renderFmvExport(snapshot: MovieControllerSnapshot): void {
         snapshot.loading || snapshot.exporting || !snapshot.sourceRequired;
 }
 
+function renderFmvLanguages(snapshot: MovieControllerSnapshot): void {
+    const audio = $<HTMLSelectElement>("fmv-audio-language");
+    const captions = $<HTMLSelectElement>("fmv-caption-language");
+    const entry = snapshot.entry;
+    audio.replaceChildren(...(entry?.audioTracks ?? []).map(track =>
+        new Option(track.label, String(track.index))));
+    audio.value = String(snapshot.selection?.audioTrack ?? 0);
+    audio.disabled = !entry || snapshot.loading || snapshot.exporting;
+    audio.onchange = () => movieController.setAudioTrack(Number(audio.value));
+    captions.replaceChildren(new Option("Off", ""),
+        ...(entry?.subtitleTracks ?? []).map(track => new Option(track.label, track.id)));
+    captions.value = snapshot.selection?.subtitleId ?? "";
+    captions.disabled = !entry?.subtitleTracks.length || snapshot.exporting;
+    captions.onchange = () => movieController.setSubtitleTrack(captions.value || null);
+    $("fmv-audio-language-control").hidden = (entry?.audioTracks.length ?? 0) <= 1;
+    $("fmv-caption-language-control").hidden = (entry?.subtitleTracks.length ?? 0) <= 1;
+}
+
 function renderFmvStatic(snapshot: MovieControllerSnapshot): void {
     fmvRenderedRevision = snapshot.revision;
     renderFmvList(snapshot);
     renderFmvInspector(snapshot);
     renderFmvExport(snapshot);
+    renderFmvLanguages(snapshot);
     const entry = snapshot.entry;
     $("fmv-title").textContent = entry?.label ?? "—";
     $("fmv-heading").textContent = entry
@@ -857,8 +894,10 @@ const IMAGE_COLLATOR = new Intl.Collator(undefined, {
     sensitivity: "base",
 });
 const IMAGE_THUMBNAIL_CACHE_LIMIT = 256;
+const IMAGE_OVERSCAN_ROWS = 4;
 const IMAGE_SKIPPED_ROW_LIMIT = 500;
 const imageThumbnailCache = new Map<string, ImageData>();
+const imageThumbnailCanvas = document.createElement("canvas");
 
 function updateImageSortButton(): void {
     const button = $<HTMLButtonElement>("image-sort");
@@ -943,6 +982,9 @@ function cacheImageThumbnail(id: string, image: ImageData): void {
 async function renderImageThumbnail(canvas: HTMLCanvasElement,
                                     entry: ImageEntry,
                                     generation: number): Promise<void> {
+    const target = session;
+    if (!target || tab !== "images" || generation !== imageRenderGeneration
+        || !canvas.isConnected) return;
     const cached = imageThumbnailCache.get(entry.id);
     if (cached) {
         imageThumbnailCache.delete(entry.id);
@@ -953,41 +995,47 @@ async function renderImageThumbnail(canvas: HTMLCanvasElement,
         canvas.classList.add("ready");
         return;
     }
-    const source = await session?.images.read(entry.texture);
+    const source = await target.images.read(entry.texture);
+    if (session !== target || tab !== "images"
+        || generation !== imageRenderGeneration || !canvas.isConnected) return;
     if (!source) throw new Error(`${entry.texture.fileName}: source texture is unavailable`);
     const decoded = decodeTim2(source, entry.pictureIndex);
-    if (generation !== imageRenderGeneration || !canvas.isConnected) return;
 
     const scale = Math.min(112 / decoded.width, 84 / decoded.height, 1);
     const width = Math.max(1, Math.round(decoded.width * scale));
     const height = Math.max(1, Math.round(decoded.height * scale));
-    const sourceCanvas = document.createElement("canvas");
+    const sourceCanvas = imageThumbnailCanvas;
     sourceCanvas.width = decoded.width;
     sourceCanvas.height = decoded.height;
-    const sourceContext = sourceCanvas.getContext("2d");
-    const context = canvas.getContext("2d");
-    if (!sourceContext || !context) throw new Error("2D canvas is unavailable");
-    sourceContext.putImageData(new ImageData(
-        new Uint8ClampedArray(decoded.rgba),
-        decoded.width,
-        decoded.height,
-    ), 0, 0);
-    canvas.width = width;
-    canvas.height = height;
-    context.imageSmoothingEnabled = false;
-    context.drawImage(sourceCanvas, 0, 0, width, height);
-    const thumbnail = context.getImageData(0, 0, width, height);
-    cacheImageThumbnail(entry.id, thumbnail);
+    try {
+        const sourceContext = sourceCanvas.getContext("2d");
+        const context = canvas.getContext("2d");
+        if (!sourceContext || !context) throw new Error("2D canvas is unavailable");
+        sourceContext.putImageData(new ImageData(
+            new Uint8ClampedArray(decoded.rgba.buffer as ArrayBuffer,
+                decoded.rgba.byteOffset, decoded.rgba.byteLength),
+            decoded.width,
+            decoded.height,
+        ), 0, 0);
+        canvas.width = width;
+        canvas.height = height;
+        context.imageSmoothingEnabled = false;
+        context.drawImage(sourceCanvas, 0, 0, width, height);
+        cacheImageThumbnail(entry.id, context.getImageData(0, 0, width, height));
+    } finally {
+        sourceCanvas.width = sourceCanvas.height = 1;
+    }
     canvas.classList.add("ready");
 }
 
 function pumpImageThumbnailQueue(): void {
-    while (imageThumbnailActive < 4 && imageThumbnailQueue.length > 0) {
+    while (tab === "images" && imageThumbnailActive < 4 && imageThumbnailQueue.length > 0) {
         const job = imageThumbnailQueue.shift()!;
         if (job.generation !== imageRenderGeneration || !job.canvas.isConnected) continue;
         imageThumbnailActive++;
         void renderImageThumbnail(job.canvas, job.entry, job.generation)
             .catch(error => {
+                if (job.generation !== imageRenderGeneration || !job.canvas.isConnected) return;
                 job.canvas.classList.add("failed");
                 job.canvas.title = friendlyError(error);
                 console.warn("image thumbnail failed", error);
@@ -1000,19 +1048,25 @@ function pumpImageThumbnailQueue(): void {
 }
 
 function observeImageThumbnails(list: HTMLElement, generation: number): void {
-    imageThumbnailObserver?.disconnect();
-    imageThumbnailObserver = new IntersectionObserver(records => {
-        for (const record of records) {
-            if (!record.isIntersecting) continue;
-            const canvas = record.target as HTMLCanvasElement;
-            imageThumbnailObserver?.unobserve(canvas);
-            const entry = imageEntryById.get(canvas.dataset.imageThumbnail ?? "");
-            if (entry) imageThumbnailQueue.push({ canvas, entry, generation });
-        }
-        pumpImageThumbnailQueue();
-    }, { root: list, rootMargin: "240px 0px" });
-    for (const canvas of list.querySelectorAll<HTMLCanvasElement>("[data-image-thumbnail]"))
+    if (!imageThumbnailObserver) {
+        const observer = new IntersectionObserver(records => {
+            if (generation !== imageRenderGeneration || tab !== "images") return;
+            for (const record of records) {
+                const canvas = record.target as HTMLCanvasElement;
+                if (!record.isIntersecting || !canvas.isConnected) continue;
+                observer.unobserve(canvas);
+                const entry = imageEntryById.get(canvas.dataset.imageThumbnail ?? "");
+                if (entry) imageThumbnailQueue.push({ canvas, entry, generation });
+            }
+            pumpImageThumbnailQueue();
+        }, { root: list, rootMargin: "240px 0px" });
+        imageThumbnailObserver = observer;
+    }
+    for (const canvas of list.querySelectorAll<HTMLCanvasElement>("[data-image-thumbnail]")) {
+        if (canvas.dataset.observed) continue;
+        canvas.dataset.observed = "true";
         imageThumbnailObserver.observe(canvas);
+    }
 }
 
 function buildImageTree(entries: ImageEntry[]): ImageTreeNode {
@@ -1058,9 +1112,13 @@ function populateImageTree(parent: HTMLElement, node: ImageTreeNode): void {
         nested.className = "image-tree-children";
         details.append(summary, nested);
         details.addEventListener("toggle", () => {
-            if (!details.open || details.dataset.loaded) return;
-            details.dataset.loaded = "true";
-            populateImageTree(nested, child);
+            if (!details.open) {
+                nested.replaceChildren();
+                delete details.dataset.loaded;
+            } else if (!details.dataset.loaded) {
+                details.dataset.loaded = "true";
+                populateImageTree(nested, child);
+            }
         });
         item.append(details);
         parent.append(item);
@@ -1069,31 +1127,144 @@ function populateImageTree(parent: HTMLElement, node: ImageTreeNode): void {
         parent.append(createImageItem(entry, "tree"));
 }
 
-function observeImageListEnd(list: HTMLElement, generation: number): void {
-    imageListObserver?.disconnect();
-    const sentinel = list.querySelector("[data-image-sentinel]");
-    if (!sentinel) return;
-    imageListObserver = new IntersectionObserver(records => {
-        if (generation !== imageRenderGeneration
-            || !records.some(record => record.isIntersecting)) return;
-        imageVisibleLimit += imageViewMode === "grid" ? 120 : 300;
-        renderImageList();
-    }, { root: list, rootMargin: "320px 0px" });
-    imageListObserver.observe(sentinel);
+function releaseImageList(): void {
+    imageRenderGeneration++;
+    imageResizeObserver?.disconnect();
+    imageResizeObserver = null;
+    imageThumbnailObserver?.disconnect();
+    imageThumbnailObserver = null;
+    imageThumbnailQueue = [];
+    cancelAnimationFrame(imageWindowFrame);
+    imageWindowFrame = 0;
+    imageWindowNeedsMeasure = false;
+    const list = $("imagelist");
+    for (const canvas of list.querySelectorAll("canvas"))
+        canvas.width = canvas.height = 1;
+    imageRenderedItems.clear();
+    list.replaceChildren();
+    imageVisibleStart = -1;
+    imageVisibleEnd = 0;
+    imageWindowStride = 0;
 }
 
-function renderImageList(): void {
+function suspendImageBrowser(): void {
+    imageSavedScrollTop = $("imagelist").scrollTop;
+    imageLoadGeneration++;
+    imagePreviewPending = null;
+    releaseImageList();
+    const canvas = $<HTMLCanvasElement>("image-canvas");
+    canvas.width = canvas.height = 1;
+    $("image-empty").hidden = false;
+}
+
+function imageWindowSpacer(height: number): HTMLLIElement {
+    const spacer = document.createElement("li");
+    spacer.setAttribute("aria-hidden", "true");
+    spacer.style.gridColumn = "1 / -1";
+    spacer.style.height = `${Math.max(0, height)}px`;
+    return spacer;
+}
+
+function renderImageWindow(measure = false): void {
+    if (tab !== "images" || imageViewMode === "tree" || !imageRows.length) return;
     const list = $("imagelist");
-    imageRenderGeneration++;
-    const generation = imageRenderGeneration;
-    imageListObserver?.disconnect();
-    imageThumbnailObserver?.disconnect();
-    imageThumbnailQueue = [];
+    if (list.clientHeight === 0 || list.clientWidth === 0) return;
+    const previousScroll = list.scrollTop;
+    if (measure || imageWindowStride === 0) {
+        const row = imageRenderedItems.values().next().value
+            ?? createImageItem(imageRows[0]!, imageViewMode);
+        const probe = !row.isConnected;
+        if (probe) list.append(row);
+        const style = getComputedStyle(list);
+        imageWindowColumns = imageViewMode === "grid"
+            ? Math.max(1, style.gridTemplateColumns.split(/\s+/).length) : 1;
+        imageWindowGap = imageViewMode === "grid" ? parseFloat(style.rowGap) || 0 : 0;
+        imageWindowStride = row.getBoundingClientRect().height + imageWindowGap;
+        if (probe) row.remove();
+        if (imageWindowStride <= 0) return;
+    }
+    const totalRows = Math.ceil(imageRows.length / imageWindowColumns);
+    const firstRow = Math.max(0,
+        Math.min(totalRows - 1, Math.floor(previousScroll / imageWindowStride))
+            - IMAGE_OVERSCAN_ROWS);
+    const lastRow = Math.min(totalRows,
+        Math.ceil((previousScroll + list.clientHeight) / imageWindowStride)
+            + IMAGE_OVERSCAN_ROWS);
+    const start = firstRow * imageWindowColumns;
+    const end = Math.min(imageRows.length, lastRow * imageWindowColumns);
+    if (!measure && start === imageVisibleStart && end === imageVisibleEnd) return;
+    imageVisibleStart = start;
+    imageVisibleEnd = end;
+
+    const active = document.activeElement;
+    const focusedId = active instanceof HTMLButtonElement && list.contains(active)
+        ? active.dataset.imageId : undefined;
+    const next = new Map<string, HTMLLIElement>();
+    const children: HTMLElement[] = [];
+    if (firstRow > 0)
+        children.push(imageWindowSpacer(firstRow * imageWindowStride - imageWindowGap));
+    for (let index = start; index < end; index++) {
+        const entry = imageRows[index]!;
+        const item = imageRenderedItems.get(entry.id) ?? createImageItem(entry, imageViewMode);
+        item.setAttribute("aria-posinset", String(index + 1));
+        item.setAttribute("aria-setsize", String(imageRows.length));
+        next.set(entry.id, item);
+        children.push(item);
+    }
+    if (lastRow < totalRows)
+        children.push(imageWindowSpacer((totalRows - lastRow) * imageWindowStride - imageWindowGap));
+    for (const [id, item] of imageRenderedItems) {
+        if (next.has(id)) continue;
+        const canvas = item.querySelector("canvas");
+        if (canvas) {
+            imageThumbnailObserver?.unobserve(canvas);
+            canvas.width = canvas.height = 1;
+        }
+    }
+    list.replaceChildren(...children);
+    imageRenderedItems.clear();
+    for (const [id, item] of next) imageRenderedItems.set(id, item);
+    imageThumbnailQueue = imageThumbnailQueue.filter(job => job.canvas.isConnected);
+    list.scrollTop = previousScroll;
+    if (focusedId) next.get(focusedId)?.querySelector("button")?.focus({ preventScroll: true });
+    if (imageViewMode === "grid") observeImageThumbnails(list, imageRenderGeneration);
+    $("image-result-count").textContent =
+        `${(start + 1).toLocaleString()}–${end.toLocaleString()} of `
+        + `${imageRows.length.toLocaleString()} assets`;
+}
+
+function scheduleImageWindow(measure = false): void {
+    imageWindowNeedsMeasure ||= measure;
+    if (imageWindowFrame || tab !== "images") return;
+    imageWindowFrame = requestAnimationFrame(() => {
+        imageWindowFrame = 0;
+        const needsMeasure = imageWindowNeedsMeasure;
+        imageWindowNeedsMeasure = false;
+        renderImageWindow(needsMeasure);
+    });
+}
+
+function revealImageRow(index: number): void {
+    if (imageViewMode !== "tree" && imageWindowStride > 0) {
+        const list = $("imagelist");
+        const top = Math.floor(index / imageWindowColumns) * imageWindowStride;
+        const bottom = top + imageWindowStride - imageWindowGap;
+        if (top < list.scrollTop) list.scrollTop = top;
+        else if (bottom > list.scrollTop + list.clientHeight)
+            list.scrollTop = bottom - list.clientHeight;
+        renderImageWindow();
+    }
+    $("imagelist").querySelector(`[data-image-id="${CSS.escape(imageRows[index]!.id)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+}
+
+function renderImageList(previousScroll = $("imagelist").scrollTop): void {
+    const list = $("imagelist");
+    releaseImageList();
     if (!imageCatalog) {
         imageAllRows = [];
         imageRows = [];
         imageEntryById.clear();
-        list.replaceChildren();
         $("image-result-count").textContent = "";
         updateImageActions();
         return;
@@ -1106,9 +1277,6 @@ function renderImageList(): void {
         imageSortDirection,
     );
     list.className = `image-${imageViewMode}`;
-    const previousScroll = list.scrollTop;
-    list.replaceChildren();
-
     if (!imageRows.length) {
         const item = document.createElement("li");
         item.className = "fmv-list-message";
@@ -1116,29 +1284,19 @@ function renderImageList(): void {
             ? "No images match these filters."
             : "No TIM2 images found.";
         list.append(item);
+        $("image-result-count").textContent = "0 assets";
     } else if (imageViewMode === "tree") {
         populateImageTree(list, buildImageTree(imageRows));
+        list.scrollTop = previousScroll;
+        $("image-result-count").textContent =
+            `${imageRows.length.toLocaleString()} assets · source hierarchy`;
     } else {
-        const visible = imageRows.slice(0, imageVisibleLimit);
-        list.append(...visible.map(entry => createImageItem(entry, imageViewMode)));
-        if (visible.length < imageRows.length) {
-            const sentinel = document.createElement("li");
-            sentinel.className = "image-list-sentinel";
-            sentinel.dataset.imageSentinel = "true";
-            sentinel.textContent =
-                `${(imageRows.length - visible.length).toLocaleString()} more`;
-            list.append(sentinel);
-        }
-        observeImageListEnd(list, generation);
-        if (imageViewMode === "grid") observeImageThumbnails(list, generation);
+        renderImageWindow(true);
+        list.scrollTop = previousScroll;
+        renderImageWindow();
+        imageResizeObserver = new ResizeObserver(() => scheduleImageWindow(true));
+        imageResizeObserver.observe(list);
     }
-    list.scrollTop = previousScroll;
-    const shown = imageViewMode === "tree"
-        ? imageRows.length
-        : Math.min(imageRows.length, imageVisibleLimit);
-    $("image-result-count").textContent = imageViewMode === "tree"
-        ? `${imageRows.length.toLocaleString()} assets · source hierarchy`
-        : `${shown.toLocaleString()} of ${imageRows.length.toLocaleString()} assets`;
     updateImageActions();
 }
 
@@ -1181,41 +1339,59 @@ function renderImageInspector(entry: ImageEntry): void {
 
 async function selectImage(entry: ImageEntry): Promise<void> {
     const target = session;
-    if (!target) return;
+    if (!target || tab !== "images") return;
     imageSelected = entry;
     markImageSelection(entry.id);
-    const generation = ++imageLoadGeneration;
-    status(`DECODING ${entry.texture.fileName}...`);
-    try {
-        const data = await target.images.read(entry.texture);
-        if (!data) throw new Error("source texture is not cached; reconnect the disc");
-        const image = decodeTim2(data, entry.pictureIndex, entry.texture.fileName);
-        if (session !== target || generation !== imageLoadGeneration
-                || imageSelected?.id !== entry.id)
-            return;
-        const canvas = $<HTMLCanvasElement>("image-canvas");
-        canvas.classList.toggle("small-image",
-            image.width <= 256 && image.height <= 256);
-        canvas.width = image.width;
-        canvas.height = image.height;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("2D canvas is unavailable");
-        context.putImageData(
-            new ImageData(new Uint8ClampedArray(image.rgba), image.width, image.height),
-            0,
-            0,
-        );
-        $("image-empty").hidden = true;
-        renderImageInspector(entry);
-        statusWithWarnings(
-            target,
-            "images",
-            `${entry.texture.fileName} · ${image.width}×${image.height} · `
-                + `${IMAGE_TYPE_LABELS[image.imageType] ?? `type ${image.imageType}`}`,
-        );
-    } catch (error) {
-        if (session !== target || generation !== imageLoadGeneration) return;
-        status(`IMAGE FAILED: ${friendlyError(error)}`, true);
+    updateImageActions();
+    imagePreviewPending = { target, entry, generation: ++imageLoadGeneration };
+    if (!imagePreviewTask) {
+        const task = renderSelectedImages();
+        imagePreviewTask = task;
+        void task.then(() => {
+            if (imagePreviewTask === task) imagePreviewTask = null;
+        });
+    }
+    return imagePreviewTask;
+}
+
+async function renderSelectedImages(): Promise<void> {
+    while (imagePreviewPending) {
+        const { target, entry, generation } = imagePreviewPending;
+        imagePreviewPending = null;
+        if (session !== target || tab !== "images" || generation !== imageLoadGeneration) continue;
+        status(`DECODING ${entry.texture.fileName}...`);
+        try {
+            const data = await target.images.read(entry.texture);
+            if (session !== target || tab !== "images"
+                || generation !== imageLoadGeneration || imageSelected?.id !== entry.id)
+                continue;
+            if (!data) throw new Error("source texture is not cached; reconnect the disc");
+            const image = decodeTim2(data, entry.pictureIndex, entry.texture.fileName);
+            const canvas = $<HTMLCanvasElement>("image-canvas");
+            canvas.classList.toggle("small-image",
+                image.width <= 256 && image.height <= 256);
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("2D canvas is unavailable");
+            context.putImageData(
+                new ImageData(new Uint8ClampedArray(image.rgba.buffer as ArrayBuffer,
+                    image.rgba.byteOffset, image.rgba.byteLength), image.width, image.height),
+                0,
+                0,
+            );
+            $("image-empty").hidden = true;
+            renderImageInspector(entry);
+            statusWithWarnings(
+                target,
+                "images",
+                `${entry.texture.fileName} · ${image.width}×${image.height} · `
+                    + `${IMAGE_TYPE_LABELS[image.imageType] ?? `type ${image.imageType}`}`,
+            );
+        } catch (error) {
+            if (session !== target || generation !== imageLoadGeneration) continue;
+            status(`IMAGE FAILED: ${friendlyError(error)}`, true);
+        }
     }
 }
 
@@ -1276,6 +1452,14 @@ function renderSkippedImageMembers(catalog: ImageCatalog | null): void {
 }
 
 function installImageCatalog(catalog: ImageCatalog): void {
+    imageThumbnailCache.clear();
+    imageLoadGeneration++;
+    imagePreviewPending = null;
+    imageSelected = null;
+    const canvas = $<HTMLCanvasElement>("image-canvas");
+    canvas.width = canvas.height = 1;
+    $("image-empty").hidden = false;
+    $("image-inspector").replaceChildren();
     imageCatalog = catalog;
     imageAllRows = imageEntries(catalog);
     imageEntryById = new Map();
@@ -1490,6 +1674,7 @@ function showLazyCatalogError(origin: AppTab, target: DiscSession | null,
 
 function switchTab(t: AppTab): void {
     if (t !== "se") seSourceLoopViz?.clear();
+    if (tab === "images" && t !== "images") suspendImageBrowser();
     tab = t;
     const target = session;
     $("tab-bgm").classList.toggle("on", t === "bgm");
@@ -1545,9 +1730,14 @@ function switchTab(t: AppTab): void {
         void ensureSeCatalog().catch(error =>
             showLazyCatalogError(t, target, "se-setup-status", error));
     if (t === "fmv") renderFmvStatic(movieController.snapshot());
-    if (t === "images")
+    if (t === "images") {
+        if (imageCatalog) {
+            renderImageList(imageSavedScrollTop);
+            if (imageSelected) void selectImage(imageSelected);
+        }
         void ensureImageCatalog().catch(error =>
             showLazyCatalogError(t, target, "image-setup-status", error));
+    }
     if (t === "stage-previews") ensureStagePreviewBrowser().open();
     else stagePreviewBrowser?.close();
     if (t === "models") {
@@ -1578,14 +1768,35 @@ function ensureStreams(): Promise<void> {
     return promise;
 }
 
+function installStreamCatalog(catalog: StreamCatalog): void {
+    sCatalog = catalog;
+    const directories = [...new Set(catalog.entries.map(entry =>
+        entry.name.slice(0, entry.name.lastIndexOf("/"))))];
+    sMultipleSources = directories.length > 1;
+    const source = $<HTMLSelectElement>("s-source");
+    source.replaceChildren(new Option("All sources", ""), ...directories.map(path => new Option(path, path)));
+    source.onchange = () => { sSel = 0; renderStreamList(); };
+    $("s-source-filter").hidden = !sMultipleSources;
+    $("s-setup").hidden = true;
+    $("s-stage").hidden = false;
+    renderStreamList();
+}
+
+function streamLabel(name: string): string {
+    const slash = name.lastIndexOf("/");
+    const basename = name.slice(slash + 1).replace(/\.x$/i, "");
+    return sMultipleSources ? `${basename} · ${name.slice(0, slash)}` : basename;
+}
+
+function streamExportName(name: string): string {
+    return sMultipleSources ? encodeURIComponent(name) : name.slice(name.lastIndexOf("/") + 1);
+}
+
 async function loadStreamCatalog(target: DiscSession): Promise<void> {
     const catalog = await target.streams.cached();
     if (session !== target) return;
     if (catalog) {
-        sCatalog = catalog;
-        $("s-setup").hidden = true;
-        $("s-stage").hidden = false;
-        renderStreamList();
+        installStreamCatalog(catalog);
         if (tab === "streams")
             statusWithWarnings(target, "streams",
                 `${catalog.entries.length} streams - SPACE or click one to play`);
@@ -1595,6 +1806,9 @@ async function loadStreamCatalog(target: DiscSession): Promise<void> {
     const hasIso = target.streams.hasIso();
     $("s-extract").hidden = true;
     $("s-iso-pick").hidden = hasIso;
+    if (!hasIso)
+        $("s-setup-status").textContent = target.streams.persistenceWarning
+            ?? "Reconnect the same ISO to load the stream sources.";
     if (hasIso) await extractStreams();
 }
 
@@ -1617,10 +1831,7 @@ async function extractStreams(): Promise<void> {
             pstat.textContent = `extracting ${name} (${done}/${total})`;
         });
         if (session !== target) return;
-        sCatalog = catalog;
-        $("s-setup").hidden = true;
-        $("s-stage").hidden = false;
-        renderStreamList();
+        installStreamCatalog(catalog);
         if (tab === "streams")
             statusWithWarnings(target, "streams",
                 `${catalog.entries.length} streams - SPACE or click one to play`);
@@ -1656,9 +1867,11 @@ function renderStreamList(): void {
         return;
     }
     const q = $<HTMLInputElement>("stream-search").value.toLowerCase();
+    const source = $<HTMLSelectElement>("s-source").value;
     const match = (e: StreamEntry): boolean =>
         !q || e.name.toLowerCase().includes(q);
-    const { music, voice } = groupStreams(sCatalog.entries);
+    const { music, voice } = groupStreams(sCatalog.entries.filter(entry =>
+        !source || entry.name.slice(0, entry.name.lastIndexOf("/")) === source));
     if (!sFoldInit) {                   /* first render: categories folded */
         sFoldInit = true;
         for (const [sec, gs] of [["MUSIC", music], ["VOICE", voice]] as const)
@@ -1704,7 +1917,8 @@ function renderStreamList(): void {
                 const li = document.createElement("li");
                 li.className = "entry";
                 const nm = document.createElement("span");
-                nm.textContent = e.name.replace(/\.x$/, "");
+                nm.textContent = streamLabel(e.name);
+                li.title = e.name;
                 const dur = document.createElement("span");
                 dur.className = "dur";
                 dur.textContent = fmtSec(sDur(e));
@@ -1767,7 +1981,7 @@ async function loadStreamEntry(e: StreamEntry, autoplay: boolean): Promise<void>
         sPlayer.load(decoded, sTrim);
         sPlayingName = e.name;
         sViz?.set(decoded, sTrim);
-        $("s-name").textContent = e.name.replace(/\.x$/, "");
+        $("s-name").textContent = streamLabel(e.name);
         $("s-len").textContent = fmtSec(sPlayer.dur());
         renderStreamInfo();
         updateSBarPad();
@@ -1847,7 +2061,7 @@ async function sExportRaw(): Promise<void> {
         if (!bytes)
             throw new Error(`missing stream ${decoded.name} -- re-extract, or `
                             + "re-open the ISO");
-        download(bytes, decoded.name, "application/octet-stream");
+        download(bytes, streamExportName(decoded.name), "application/octet-stream");
         status(`EXPORTED ${decoded.name}`);
     } catch (error) {
         if (session === target)
@@ -1862,7 +2076,7 @@ async function sExport(): Promise<void> {
     if (!decoded) return;
     const trim = sTrim;
     sBusy = true;
-    const stemName = decoded.name.replace(/\.x$/, "");
+    const stemName = streamExportName(decoded.name).replace(/\.x$/i, "");
     const file = `${stemName}${trim ? "_trim" : ""}.wav`;
     const btn = $<HTMLButtonElement>("s-exportbtn");
     btn.disabled = true;
@@ -2004,12 +2218,37 @@ function sameSeRow(a: SeRow, b: SeRow): boolean {
         (b.kind === "cue" && a.bank === b.bank && a.request === b.request);
 }
 
+function installSeCatalog(catalog: SeCatalog): void {
+    seCatalog = catalog;
+    const directories = [...new Set(catalog.entries.map(entry =>
+        entry.name.slice(0, entry.name.lastIndexOf("/"))))];
+    seMultipleSources = directories.length > 1;
+    const source = $<HTMLSelectElement>("se-source");
+    source.replaceChildren(new Option("All sources", ""), ...directories.map(path => new Option(path, path)));
+    source.onchange = () => renderSeList();
+    $("se-source-filter").hidden = !seMultipleSources;
+    seSetup(false);
+    renderSeList();
+}
+
+function seLabel(name: string): string {
+    const slash = name.lastIndexOf("/");
+    const basename = name.slice(slash + 1);
+    return seMultipleSources ? `${basename} · ${name.slice(0, slash)}` : basename;
+}
+
+function seExportName(name: string): string {
+    return seMultipleSources ? encodeURIComponent(name) : name.slice(name.lastIndexOf("/") + 1);
+}
+
 function buildSeRows(): void {
     const selected = seRows[seSel];
     const q = $<HTMLInputElement>("se-search").value.trim().toLowerCase();
+    const source = $<HTMLSelectElement>("se-source").value;
     const rows: SeRow[] = [];
     for (const entry of seCatalog?.entries ?? []) {
         if (q && !entry.name.toLowerCase().includes(q)) continue;
+        if (source && entry.name.slice(0, entry.name.lastIndexOf("/")) !== source) continue;
         rows.push({ kind: "bank", entry });
         if (entry.name !== seOpenBank || !seShape) continue;
         for (let bank = 0; bank < seShape.length; bank++) {
@@ -2035,7 +2274,8 @@ function renderSeList(): void {
         if (row.kind === "bank") {
             const open = row.entry.name === seOpenBank;
             const label = document.createElement("span");
-            label.textContent = `${open ? "\u25BE" : "\u25B8"} ${row.entry.name}`;
+            label.textContent = `${open ? "\u25BE" : "\u25B8"} ${seLabel(row.entry.name)}`;
+            li.title = `${row.entry.hd} + ${row.entry.bd}`;
             const count = document.createElement("span");
             count.className = "count";
             count.textContent = open && seShape
@@ -2085,15 +2325,16 @@ async function loadSeCatalog(target: DiscSession): Promise<boolean> {
     if (!meta) {
         const needsIso = !target.se.hasIso();
         seSetup(true, needsIso);
+        if (needsIso)
+            $("se-setup-status").textContent = target.se.persistenceWarning
+                ?? "Reconnect the same ISO to load the Effects sources.";
         if (!needsIso) {
             await extractSeBanks();
             return session === target && seCatalog !== null;
         }
         return false;
     }
-    seCatalog = meta;
-    seSetup(false);
-    renderSeList();
+    installSeCatalog(meta);
     return true;
 }
 async function extractSeBanks(): Promise<void> {
@@ -2115,10 +2356,8 @@ async function extractSeBanks(): Promise<void> {
             st.textContent = `extracting ${done}/${total}: ${name}`;
         });
         if (session !== target) return;
-        seCatalog = catalog;
+        installSeCatalog(catalog);
         st.textContent = `${catalog.entries.length} SE banks ready`;
-        seSetup(false);
-        renderSeList();
         if (tab === "se")
             statusWithWarnings(target, "se",
                 `${catalog.entries.length} SE banks cached`);
@@ -2303,7 +2542,7 @@ async function loadSeCue(
         viewerLevelHistory.fill(0);
         viewerLevelHead = 0;
         seSequenceViz?.set(info);
-        $("se-name").textContent = row.entry.name;
+        $("se-name").textContent = seLabel(row.entry.name);
         $("se-coord").textContent = `bank ${row.bank} · request ${row.request}`;
         renderSeLength();
         $<HTMLButtonElement>("se-playbtn").disabled = false;
@@ -2594,7 +2833,7 @@ async function exportSeCue(
     seBusy = true;
     $("se-export-menu").hidden = true;
     updateSeExportBtn();
-    status(`EXPORTING se_${row.entry.name}_${row.bank}_${row.request}_${mode}.wav...`);
+    status(`EXPORTING se_${seExportName(row.entry.name)}_${row.bank}_${row.request}_${mode}.wav...`);
     try {
         const { assets } = await seSynthAssets(target, row.entry);
         if (session !== target) return;
@@ -2603,7 +2842,7 @@ async function exportSeCue(
             revDepth: seCfg.revDepth, exact: seCfg.exact,
             bright: !seCfg.gaussian, seconds: cap, loop: looping,
         };
-        exporter.se(`se_${row.entry.name}_${mode}`, assets, opts);
+        exporter.se(`se_${seExportName(row.entry.name)}_${mode}`, assets, opts);
     } catch (error) {
         if (session === target)
             status(`EXPORT FAILED: ${friendlyError(error)}`, true);
@@ -2626,7 +2865,7 @@ async function exportSeBank(): Promise<void> {
             [row.entry.hd, hd],
             [row.entry.bd, bd],
         ]);
-        const file = `${row.entry.name}_bank.zip`;
+        const file = `${seExportName(row.entry.name)}_bank.zip`;
         download(zip, file, "application/zip");
         statusWithWarnings(target, "se", `EXPORTED ${file}`);
     } catch (error) {
@@ -2644,7 +2883,7 @@ function fmtTime(samples: number): string {
 }
 
 function tick(): void {
-    requestAnimationFrame(tick);
+    tickFrame = requestAnimationFrame(tick);
     if (tab === "fmv") {
         const movie = movieController.snapshot();
         const search = $<HTMLInputElement>("fmv-search").value.trim().toLocaleLowerCase();
@@ -2677,11 +2916,13 @@ function tick(): void {
         $("fmv-duration").textContent = fmtSec(movie.duration);
 
         const caption = $("fmv-caption");
+        caption.lang = movie.entry?.subtitleTracks.find(
+            track => track.id === movie.selection?.subtitleId)?.language ?? "";
         const captionText = movie.caption ?? "";
         if (caption.textContent !== captionText) caption.textContent = captionText;
         caption.hidden = !movie.captionsEnabled || movie.caption === null;
         const cc = $<HTMLButtonElement>("fmv-cc");
-        cc.disabled = !movie.prepared || !movie.entry?.subtitleCues;
+        cc.disabled = !movie.prepared || movie.selection?.subtitleId == null;
         cc.setAttribute("aria-pressed", String(movie.captionsEnabled));
 
         const statusElement = $("fmv-status");
@@ -2978,16 +3219,9 @@ function onKey(e: KeyboardEvent): void {
             const delta = e.key === "ArrowUp" ? -1 : 1;
             const origin = current < 0 ? (delta > 0 ? -1 : 0) : current;
             const index = (origin + delta + imageRows.length) % imageRows.length;
-            if (imageViewMode !== "tree" && index >= imageVisibleLimit) {
-                const batch = imageViewMode === "grid" ? 120 : 300;
-                imageVisibleLimit = Math.ceil((index + 1) / batch) * batch;
-                renderImageList();
-            }
             const entry = imageRows[index]!;
             void selectImage(entry);
-            requestAnimationFrame(() =>
-                $("imagelist").querySelector(`[data-image-id="${CSS.escape(entry.id)}"]`)
-                    ?.scrollIntoView({ block: "nearest" }));
+            revealImageRow(index);
             break;
         }
         case "Enter":
@@ -3232,7 +3466,7 @@ export function viewerLibrary(): ViewerLibrary {
             const id = `stream:${entry.name}`;
             items.push({
                 id,
-                label: entry.name.replace(/\.x$/, ""),
+                label: streamLabel(entry.name),
                 detail: `${entry.channels === 2 ? "Stereo music" : "Voice"} · `
                     + `${entry.channels}ch · ${entry.rate} Hz · EXST`,
                 duration: sDur(entry),
@@ -3248,7 +3482,7 @@ export function viewerLibrary(): ViewerLibrary {
                 const id = `effect-bank:${row.entry.name}`;
                 items.push({
                     id,
-                    label: row.entry.name,
+                    label: seLabel(row.entry.name),
                     detail: row.entry.name === seOpenBank && seShape
                         ? `${seShape.reduce((total, value) => total + value, 0)} requests`
                         : `${(row.entry.bytes / 1048576).toFixed(1)} MB bank`,
@@ -3262,7 +3496,7 @@ export function viewerLibrary(): ViewerLibrary {
                 const info = currentSeInfo(row);
                 items.push({
                     id,
-                    label: `${row.entry.name} · ${row.bank}:${row.request}`,
+                    label: `${seLabel(row.entry.name)} · ${row.bank}:${row.request}`,
                     detail: info ? seDurationLabel(info) : "Sequenced effect request",
                     duration: info ? seEventFrames(info) / RATE : null,
                     kind: "media",
@@ -3392,14 +3626,14 @@ export function viewerTransport(): ViewerTransport {
         isPlaying = audioMode === "bgm" && !!player?.snap?.playing;
         isLoading = loading;
     } else if (tab === "streams") {
-        title = sPlayingName?.replace(/\.x$/, "") ?? "";
+        title = sPlayingName ? streamLabel(sPlayingName) : "";
         current = sPlayer.pos();
         duration = sPlayer.dur();
         isPlaying = sPlayer.playing();
         isLoading = sLoading || sExtracting;
     } else {
         title = sePlaying
-            ? `${sePlaying.entry.name} · ${sePlaying.bank}:${sePlaying.request}`
+            ? `${seLabel(sePlaying.entry.name)} · ${sePlaying.bank}:${sePlaying.request}`
             : "";
         const frame = audioMode === "se" ? (player?.snap?.pos ?? 0) : 0;
         current = seDisplayFrame(frame, currentSeInfo()) / RATE;
@@ -3581,6 +3815,8 @@ export function viewerChooseDisc(): void {
 
 /* ---- app states --------------------------------------------------------- */
 async function performDiscReset(): Promise<void> {
+    if (tickFrame !== null) cancelAnimationFrame(tickFrame);
+    tickFrame = null;
     const audio = player;
     session = null;
     player = null;
@@ -3644,12 +3880,9 @@ async function performDiscReset(): Promise<void> {
     imageSelected = null;
     imageExtracting = false;
     imageExporting = false;
-    imageLoadGeneration++;
-    imageRenderGeneration++;
-    imageListObserver?.disconnect();
-    imageThumbnailObserver?.disconnect();
-    imageThumbnailQueue = [];
-    imageThumbnailActive = 0;
+    suspendImageBrowser();
+    imageThumbnailCache.clear();
+    imageSavedScrollTop = 0;
 
     fmvRenderedRevision = -1;
     fmvAttachedRevision = -1;
@@ -3715,7 +3948,7 @@ async function enterPlayer(s: DiscSession, ticket: DiscOpenTicket): Promise<void
         `${session.songs.length} songs - SPACE or click one to play${region}${persistence}`,
         s.persistenceWarning !== null,
     );
-    requestAnimationFrame(tick);
+    if (tickFrame === null) tickFrame = requestAnimationFrame(tick);
 }
 
 function wirePicker(): void {
@@ -3868,11 +4101,14 @@ async function main(): Promise<void> {
         },
         get imageState() {
             return { catalog: imageCatalog, selected: imageSelected,
-                     rows: imageRows.length, visible: imageVisibleLimit,
+                     rows: imageRows.length, visible: imageRenderedItems.size,
+                     firstVisible: imageVisibleStart, endVisible: imageVisibleEnd,
                      view: imageViewMode,
                      role: $<HTMLSelectElement>("image-role").value,
                      sort: imageSortDirection,
                      thumbnails: imageThumbnailCache.size,
+                     thumbnailActive: imageThumbnailActive,
+                     thumbnailQueued: imageThumbnailQueue.length,
                      extracting: imageExtracting, exporting: imageExporting };
         },
         get stagePreviewState() { return stagePreviewBrowser?.snapshot() ?? null; },
@@ -3901,19 +4137,17 @@ async function main(): Promise<void> {
         const entry = imageEntryById.get(button?.dataset.imageId ?? "");
         if (entry) void selectImage(entry);
     });
+    $("imagelist").onscroll = () => scheduleImageWindow();
     $<HTMLInputElement>("image-search").oninput = () => {
-        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
         $("imagelist").scrollTop = 0;
         renderImageList();
     };
     $<HTMLSelectElement>("image-role").onchange = () => {
-        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
         $("imagelist").scrollTop = 0;
         renderImageList();
     };
     $("image-sort").onclick = () => {
         imageSortDirection = imageSortDirection === "asc" ? "desc" : "asc";
-        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
         $("imagelist").scrollTop = 0;
         updateImageSortButton();
         renderImageList();
@@ -3924,7 +4158,6 @@ async function main(): Promise<void> {
             .closest<HTMLButtonElement>("[data-image-view]");
         if (!button) return;
         imageViewMode = button.dataset.imageView as ImageViewMode;
-        imageVisibleLimit = imageViewMode === "grid" ? 120 : 300;
         for (const option of $("image-view-switch")
             .querySelectorAll<HTMLButtonElement>("[data-image-view]"))
             option.setAttribute("aria-pressed",

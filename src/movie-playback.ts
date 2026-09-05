@@ -48,6 +48,7 @@ export class MoviePlaybackSession {
     #state: MoviePlaybackState = "idle";
     #caption: string | null = null;
     #captionsEnabled = true;
+    #cues: readonly SubtitleCue[] = [];
     #playIntent = false;
     #buffering = false;
     #error: Error | null = null;
@@ -79,6 +80,7 @@ export class MoviePlaybackSession {
         this.#audio.addEventListener("error", this.#handleAudioError);
         this.#audio.src = this.#wavUrl;
         this.#audio.load();
+        this.setSubtitleTrack(source.subtitleId);
     }
 
     get state(): MoviePlaybackState {
@@ -215,6 +217,15 @@ export class MoviePlaybackSession {
         if (this.#captionsEnabled === enabled)
             return;
         this.#captionsEnabled = enabled;
+        this.#updateCaption();
+    }
+
+    setSubtitleTrack(id: string | null): void {
+        if (this.#disposed) return;
+        const track = this.#source.subtitleTracks.find(candidate => candidate.id === id);
+        if (id !== null && !track)
+            throw new Error("subtitle track is not available in this movie source");
+        this.#cues = track?.cues ?? [];
         this.#updateCaption();
     }
 
@@ -578,7 +589,7 @@ export class MoviePlaybackSession {
 
     #updateCaption(): void {
         const caption = this.#captionsEnabled
-            ? captionAt(this.#source.cues, this.currentTime)
+            ? captionAt(this.#cues, this.currentTime)
             : null;
         this.#setCaption(caption);
     }
@@ -691,7 +702,7 @@ function captionAt(cues: readonly SubtitleCue[], time: number): string | null {
             high = middle;
     }
     const cue = cues[low - 1];
-    return cue !== undefined && time < cue.end ? cue.text : null;
+    return cue !== undefined && time < cue.end && cue.text.length > 0 ? cue.text : null;
 }
 
 function audioError(error: MediaError | null): Error {

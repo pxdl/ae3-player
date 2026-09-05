@@ -1,6 +1,7 @@
 import { friendlyError, type DiscSession } from "./disc.ts";
 import { MoviePlaybackSession, type MoviePlaybackState } from "./movie-playback.ts";
 import { movieSourceComplete } from "./movie-presentation.ts";
+import { defaultMovieSelection, type MovieSelection } from "./movies.ts";
 import type {
     MovieCacheInfo,
     MovieCatalog,
@@ -31,6 +32,7 @@ export interface MovieControllerSnapshot {
     playing: boolean;
     caption: string | null;
     captionsEnabled: boolean;
+    selection: MovieSelection | null;
 }
 
 export interface MovieControllerHooks {
@@ -46,6 +48,9 @@ export class MovieController {
     private catalogResolved = false;
     private catalogLoading = false;
     private selectedName: string | null = null;
+    private selection: MovieSelection | null = null;
+    private resumeAt = 0;
+    private captionsEnabled = true;
     private playback: MoviePlaybackSession | null = null;
     private cache: MovieCacheInfo | null = null;
     private active = false;
@@ -80,6 +85,8 @@ export class MovieController {
         this.catalogResolved = false;
         this.catalogLoading = false;
         this.selectedName = null;
+        this.selection = null;
+        this.resumeAt = 0;
         this.cache = null;
         this.attaching = false;
         this.preparing = false;
@@ -144,7 +151,8 @@ export class MovieController {
             duration: playback?.duration ?? entry?.duration ?? 0,
             playing: playback?.playing ?? false,
             caption: playback?.caption ?? null,
-            captionsEnabled: playback?.captionsEnabled ?? true,
+            captionsEnabled: this.captionsEnabled,
+            selection: this.selection,
         };
     }
 
@@ -161,6 +169,8 @@ export class MovieController {
         const priorTask = this.playbackTask;
         this.playback?.pause();
         this.selectedName = name;
+        this.selection = defaultMovieSelection(entry);
+        this.resumeAt = 0;
         this.cache = null;
         this.progress = 0;
         this.status = "";
@@ -211,10 +221,41 @@ export class MovieController {
     }
 
     toggleCaptions(): void {
-        const playback = this.selectedPlayback();
-        if (!playback) return;
-        playback.setCaptionsEnabled(!playback.captionsEnabled);
+        this.captionsEnabled = !this.captionsEnabled;
+        this.selectedPlayback()?.setCaptionsEnabled(this.captionsEnabled);
         this.touch();
+    }
+
+    setSubtitleTrack(id: string | null): void {
+        const entry = this.selectedEntry();
+        if (!entry || !this.selection || this.exporting || this.attaching
+                || (id !== null && !entry.subtitleTracks.some(track => track.id === id)))
+            return;
+        this.selection = { ...this.selection, subtitleId: id };
+        this.selectedPlayback()?.setSubtitleTrack(id);
+        this.touch();
+    }
+
+    setAudioTrack(index: number): void {
+        const entry = this.selectedEntry();
+        if (!entry || !this.selection || this.exporting || this.attaching
+                || !entry.audioTracks.some(track => track.index === index)
+                || this.selection.audioTrack === index)
+            return;
+        const playback = this.selectedPlayback();
+        const mode = playback?.playing || this.playbackAutoplay ? "play" : "preview";
+        this.resumeAt = playback?.currentTime ?? this.resumeAt;
+        this.invalidatePlayIntent();
+        const priorTask = this.playbackTask;
+        playback?.pause();
+        this.selection = { ...this.selection, audioTrack: index };
+        this.status = "Switching audio language…";
+        this.error = false;
+        this.touch();
+        void this.finishSelection(entry.name, mode, priorTask).catch(cause => {
+            if (this.selectedName === entry.name && this.selection?.audioTrack === index)
+                this.fail(cause);
+        });
     }
 
     async attachIso(file: File): Promise<void> {
@@ -249,6 +290,9 @@ export class MovieController {
             if (this.session !== target) return;
             if (!this.catalog?.entries.some(entry => entry.name === this.selectedName))
                 this.selectedName = this.catalog?.entries[0]?.name ?? null;
+            const selected = this.selectedEntry();
+            this.selection = selected ? defaultMovieSelection(selected) : null;
+            this.resumeAt = 0;
             const unavailable = this.catalog?.issues.length ?? 0;
             this.status = `${this.catalog?.entries.length ?? 0} movies indexed locally`
                 + (unavailable ? `; ${unavailable} unavailable` : "");
@@ -353,6 +397,8 @@ export class MovieController {
         this.catalogResolved = false;
         this.catalogLoading = false;
         this.selectedName = null;
+        this.selection = null;
+        this.resumeAt = 0;
         this.cache = null;
         this.attaching = false;
         this.preparing = false;
@@ -395,6 +441,9 @@ export class MovieController {
             this.catalog = catalog;
             this.catalogResolved = true;
             this.selectedName = catalog?.entries[0]?.name ?? null;
+            this.selection = catalog?.entries[0]
+                ? defaultMovieSelection(catalog.entries[0]) : null;
+            this.resumeAt = 0;
             const unavailable = catalog?.issues.length ?? 0;
             this.status = catalog
                 ? `${catalog.entries.length} movies indexed locally`
@@ -474,8 +523,12 @@ export class MovieController {
 
     private async finishSelection(name: string, mode: MovieStartMode,
                                   priorTask: Promise<void> | null): Promise<void> {
+        const target = this.session;
+        const generation = this.playIntentGeneration;
         if (priorTask) await priorTask;
+        if (this.session !== target || this.playIntentGeneration !== generation) return;
         await this.disposePlayback();
+        if (this.session !== target || this.playIntentGeneration !== generation) return;
         if (this.selectedName !== name || !this.active) {
             if (this.selectedName === name) await this.refreshCache(name);
             return;
@@ -505,6 +558,9 @@ export class MovieController {
             return;
         const target = this.session;
         const name = this.selectedName;
+        const selection = this.selection;
+        const resumeAt = this.resumeAt;
+        if (!selection) return;
         const existing = this.selectedPlayback();
         if (existing && existing.state !== "error") {
             if (mode !== "play") return;
@@ -536,7 +592,7 @@ export class MovieController {
                 if (!this.startIsCurrent(target, name, controller, generation)) return;
                 this.progress = value;
                 this.status = "Loading movie…";
-            }, controller.signal);
+            }, controller.signal, selection);
             controller.signal.throwIfAborted();
             if (!this.startIsCurrent(target, name, controller, generation)) return;
             await this.disposePlayback();
@@ -555,6 +611,11 @@ export class MovieController {
                 return;
             }
             this.playback = playback;
+            playback.setSubtitleTrack(this.selection?.subtitleId ?? null);
+            playback.setCaptionsEnabled(this.captionsEnabled);
+            if (resumeAt > 0) await playback.seek(resumeAt);
+            if (!this.startIsCurrent(target, name, controller, generation, playback)) return;
+            this.resumeAt = 0;
             this.cache = prepared.cache;
             this.progress = 1;
             if (this.playbackAutoplay) {
@@ -613,7 +674,8 @@ export class MovieController {
     private async exportSelected(kind: MovieExportKind, captions: boolean): Promise<void> {
         const target = this.session;
         const name = this.selectedName;
-        if (!target || !name) return;
+        const selection = this.selection;
+        if (!target || !name || !selection) return;
         const controller = new AbortController();
         this.exportAbort = controller;
         this.exporting = true;
@@ -633,7 +695,7 @@ export class MovieController {
                     return;
                 this.progress = value;
                 this.status = stage;
-            }, controller.signal);
+            }, controller.signal, selection);
             controller.signal.throwIfAborted();
             if (this.session !== target || this.selectedName !== name) return;
             this.hooks.deliver(output);

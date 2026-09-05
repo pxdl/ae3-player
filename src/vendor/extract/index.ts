@@ -26,23 +26,36 @@ export {
     type Packfile, type PackfileSlot, type PackfileMember,
 } from "./packfile.ts";
 export { locateImageContainers, scanImageTextures, readImageTexture,
-         type ImageTexture, type ImageScanOptions, type ImageRole,
-         type ImageRoleEvidence } from "./images.ts";
+         type ImageTexture, type ImageScanIssue, type ImageScanResult,
+         type ImageScanSkippedMember,
+         type ImageScanOptions, type ImageRole, type ImageRoleEvidence } from "./images.ts";
+export { ImageFormatError, type ImageFormat } from "./image-format.ts";
 export {
     locateModelContainers, scanModelAssets, readModelAsset, readModelPackage,
     inspectI3dModel, decodeI3dModel, decodeI3dAnimation, decodeI3dCollision,
     type ModelAssetKind, type ModelAsset, type ModelScanOptions,
-    type ModelInspection, type DecodedBone, type DecodedMesh, type DecodedModel,
+    type ModelInspection, type DecodedBone, type DecodedMaterialState,
+    type DecodedMesh, type DecodedModel,
     type DecodedAnimationTrack, type DecodedAnimation, type DecodedCollision,
 } from "./models.ts";
+export {
+    i3dAlphaRegister, i3dTestRegister, i3dFactorScale, evaluateFogState,
+    evaluateFogFactor, evaluateDirectionalLights, evaluateMode2DirectionalLights,
+    evaluatePointLights, evaluateMode2PointLights, evaluateSpotLights,
+    evaluateMode2SpotLights, evaluateRadialLights, evaluateHemisphereLights,
+    evaluateFinalColor, type FogSource, type EvaluatedFogState,
+    type DirectionalLightVector, type PointLightVector, type SpotLightVector,
+    type RadialLightVector, type HemisphereLightVector, type Vec4,
+} from "./i3drender.ts";
 export { parseExdb, bgmDescRecords, bgmSongTable, natcmp,
          type Exdb, type ExdbField, type BgmDescRecord, type BgmSong } from "./exdb.ts";
 export { openDisc, locateBgmAssets, loadBgmDesc, readPckMember, sniff,
          type Ae3Disc, type BgmAssetSet } from "./manifest.ts";
 export { locateFmvAssets, parseFmvHeader, parseMpeg2VideoInfo,
-         indexMpeg2SeekPoints, inspectFmvPrefix, inspectFmvAsset, demuxFmv,
+         indexMpeg2SeekPoints, inspectFmvPrefix, inspectFmvAsset, inspectFmv, demuxFmv,
          parseFmvSubtitles, subtitlesToSrt, subtitlesToVtt,
-         type FmvAsset, type FmvHeader, type FmvVideoInfo, type FmvGroup,
+         fmvLanguage, FMV_PAL_AUDIO_LANGUAGES,
+         type FmvAsset, type FmvSubtitleAsset, type FmvHeader, type FmvVideoInfo, type FmvGroup,
          type FmvDemux, type Mpeg2SeekPoint, type Mpeg2SeekIndex,
          type SubtitleCue } from "./fmv.ts";
 export {

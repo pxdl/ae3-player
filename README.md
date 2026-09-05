@@ -14,11 +14,11 @@ keeps extracted assets in private browser storage, and includes no game data.
 
 | Area | Capabilities |
 | --- | --- |
-| Audio | Sequenced music, streamed audio, and embedded sound effects; WebAssembly synthesis; live visualizers; WAV, MIDI, decoded sample, and source exports |
-| FMV | Original MPEG-2 playback, captions, seeking, source and master archives, lossless MKV, and fast MP4 export |
+| Audio | Sequenced music, streamed audio, and embedded sound effects; source/language filters; WebAssembly synthesis; live visualizers; WAV, MIDI, decoded sample, and source exports |
+| FMV | Original MPEG-2 playback at the authored cadence, selectable audio and caption languages, seeking, source and master archives, lossless MKV, and fast MP4 export |
 | Images | TIM2 textures and sprite sheets from direct files and PCK packages; PNG and byte-exact source export |
-| Stage previews | IPC stills with TIM2 title art; separate, composite, and source exports |
-| 3D | I3D models, TIM2 materials, skeletal animation, and collision; interactive preview and GLB or source export |
+| Stage previews | Every localized IPC archive and its TIM2 title art; source/language selection; separate, composite, and source exports |
+| 3D | I3D models, TIM2 materials, authored RGBA, skeletal animation, and collision; interactive preview and GLB or source export; lighting remains an approximation |
 | Disc report | Reproducible local compatibility scan for images, effect banks, and FMV metadata; complete JSON and Markdown table output |
 
 ## Use the app
@@ -30,11 +30,14 @@ keeps extracted assets in private browser storage, and includes no game data.
 
 The disc reader accepts plain ISO9660 images with 2048-byte sectors. CHD, CSO,
 raw BIN/CUE, and 2352-byte-sector dumps are not supported.
+The US demo's nested `APEESC3/DATA.BIN` archive is supported.
 
 Completed extraction phases are cached in the browser's origin-private file
 system (OPFS). Later visits can use those cached assets without the ISO. If a
-library has not been cached yet, the app asks for the same ISO again. Use
-`clear data` to remove the local session and its cache.
+library has not been cached yet, the app asks for the same ISO again. Reattaching
+the ISO rebuilds interrupted or obsolete indexes without disabling writable
+storage. Cached music payloads are verified before reuse. Use `clear data` to
+remove the local session and its cache.
 
 AE3 Asset Lab is an installable PWA. The application shell and any resources
 already fetched by the browser remain available offline.
@@ -50,34 +53,57 @@ attached ISO for that session instead of persisting the extracted data.
 
 ### Disc build support
 
-This matrix records client-side browsing through the real application flow.
-Generate the automated portion from the app's **Report** tab or the equivalent
-[`ae3-report` command in `ae3-sdk`](https://github.com/pxdl/ae3-sdk/tree/main/extract-web).
-The measurements below used
-[`ae3-sdk` revision `5b2207e3580ae4cc1d588641f4fe3f898350e501`](https://github.com/pxdl/ae3-sdk/commit/5b2207e3580ae4cc1d588641f4fe3f898350e501).
-Named playback and rendering observations remain manual. `Untested` means no
-claim is made for that build or asset family.
+The table records extracted inventories, not a claim that every asset was
+manually inspected. Generate image, effect-bank, and FMV metadata counts from
+the app's **Report** tab. `Untested` means no claim is made for that family.
+The UI retains a conservative warning for non-US and unknown serials.
 
-For each regional serial below, measurements cover one observed asset family
-only. A serial does not establish whole-disc support; unmeasured families remain
-`Untested`.
-The UI keeps a conservative partial/untested warning for every non-US or
-unknown serial, including builds with one measured family in this table.
-The PAL beta reports the same `SCES_536.42` serial as retail; the measured PAL
-row applies only to the retail build, and the beta remains untested.
+The tested PAL beta (2006-02-21) and retail images share `SCES_536.42`.
+A full byte comparison found their 3,919,091,712-byte `DATA.BIN` archives
+identical; the PAL inventory below applies to those two images, not every
+build with that serial. Playback checks used PAL retail.
+
+Japanese-demo and Korean-retail observations below are retained from checks
+using [`ae3-sdk` revision `5b2207e3580ae4cc1d588641f4fe3f898350e501`](https://github.com/pxdl/ae3-sdk/commit/5b2207e3580ae4cc1d588641f4fe3f898350e501).
 
 | Build | Images | Effects | FMV |
 | --- | --- | --- | --- |
 | US retail (`SCUS_975.01`) | Tested: 11,931 textures / 11,950 pictures | Tested: 101 banks | Tested: 22/22 inspected |
 | Japanese demo (`PCPX_966.57`) | Tested: 3,518 textures / 3,527 pictures; 22 declared entries without TIM2 signatures listed | Untested | Untested |
 | Korean retail (`SCKA_200.62`) | Untested | Tested: 101 banks; `boss_specter` inspected | Untested |
-| PAL retail (`SCES_536.42`) | Untested | Untested | Tested: 22/22 inspected; `new_play01` played |
-| PAL beta (`SCES_536.42`; serial shared with retail) | Untested | Untested | Untested |
+| PAL retail (`SCES_536.42`) | Tested: 25,353 textures / 25,380 pictures; 4 declared non-TIM2 members listed | Tested: 505 banks across 5 languages | Tested: 22 movies / 50 localized caption pairs |
+| PAL beta (2006-02-21; `SCES_536.42`) | Same verified asset archive as retail | Same verified asset archive as retail | 22 movies / 50 localized caption pairs independently inspected |
 | All other builds and regions | Untested | Untested | Untested |
 
 The Images tab reports package members that are declared as TIM2 but do not
 contain a TIM2 signature. They stay out of the usable image catalog and appear
 in an expandable list with their package, member index, size, and reason.
+
+The four PAL entries are `ape_nrm02_b.tm2` in
+`debug/{de,es,fr,it}/etc/title/bg_c/character.pck.sz`. Their source bytes do not
+contain TIM2 signatures; they remain explicit skipped diagnostics rather than
+fabricated images.
+
+Additional checks:
+
+- US demo (`SCUS_975.48`): 20 complete music cues extracted and resumed from
+  cache; `b_1_white_brass` played in the production build. Incomplete
+  retail-table references are not offered as playable cues.
+- PAL: 4,670 streams, including all five nested language archives and loose UK
+  streams; 505 effect banks; five stage archives with 28 slots each. Source
+  paths remain distinct in selection, cache keys, and exports.
+- PAL retail playback: French `phone_001`, Spanish `boss_specter` request 95:3,
+  and stage-preview decoding through all five language choices.
+- PAL FMV: all five audio/caption choices exercised. `new_scene02` played to
+  completion at 25 fps with measured presentation/audio-clock skew below
+  20 ms; interlaced `new_play01` presented at 50 fps with skew below 10 ms.
+  Italian MKV output retained 25 fps, Italian audio/subtitle tags, and the
+  32.64-second duration. These clock checks are not a subjective lip-sync audit.
+- US retail rendering: authored cyan glass and its alpha survive preview and
+  GLB export; opaque zero-alpha-texture materials remain visible. A 300-selection
+  mixed 3D browsing run returned to constant GPU resource counts with at most
+  three expanded packages retained. Exact retail VU1 lighting and GS rendering
+  are not yet reproduced.
 
 ## Development
 

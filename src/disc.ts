@@ -138,7 +138,7 @@ function parseMeta(raw: Uint8Array, expectedSourceKey: string): Meta | null {
     if (meta.sourceKey !== expectedSourceKey
             || !(meta.serial === null
                 || (typeof meta.serial === "string" && meta.serial.length > 0))
-            || typeof meta.volumeId !== "string" || meta.volumeId.length === 0
+            || typeof meta.volumeId !== "string"
             || !Array.isArray(meta.songs) || meta.songs.length === 0
             || !meta.songs.every(isBgmSong)
             || typeof meta.hasIrx !== "boolean"
@@ -355,7 +355,16 @@ export async function openIso(file: File, progress: Progress,
             cache = await OpfsCache.open(disc.cacheKey);
             ownedCache = cache;
             const raw = await cache.read(META);
-            previousMeta = raw ? parseMeta(raw, disc.cacheKey) : null;
+            if (raw) {
+                try {
+                    previousMeta = parseMeta(raw, disc.cacheKey);
+                } catch (error) {
+                    /* An interrupted first write can leave an empty file.
+                     * Rebuild corrupt metadata, not a permanently cache-free session. */
+                    console.warn("Cached disc metadata is damaged; rebuilding it from the ISO", error);
+                    await cache.remove(META);
+                }
+            }
             signal?.throwIfAborted();
         } catch (error) {
             signal?.throwIfAborted();
@@ -378,15 +387,17 @@ export async function openIso(file: File, progress: Progress,
             signal?.throwIfAborted();
             assetIdentities.push({ name, ...current });
             const previous = previousAssets.get(name);
-            const reusable = previous !== undefined
-                && contentFingerprintMatches(previous, current)
-                && await cache.has(name);
+            const stored = previous !== undefined
+                    && contentFingerprintMatches(previous, current)
+                ? await cache.read(name) : null;
+            const reusable = stored !== null && stored.byteLength === data.byteLength
+                && contentFingerprintMatches(current, await fingerprintBytes(stored));
             signal?.throwIfAborted();
             if (!reusable) {
                 await cache.write(name, data);
-                verifiedCacheAssets.add(name);
                 signal?.throwIfAborted();
             }
+            verifiedCacheAssets.add(name);
         } catch (error) {
             signal?.throwIfAborted();
             persistenceWarning = persistenceFallback(error);

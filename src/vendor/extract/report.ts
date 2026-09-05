@@ -1,13 +1,12 @@
 import { ascii } from "./bytes.ts";
 import { locateFmvAssets, inspectFmvAsset } from "./fmv.ts";
-import { locateImageContainers, scanImageTextures, type ImageTexture } from "./images.ts";
+import { locateImageContainers, scanImageTextures } from "./images.ts";
 import { Iso9660, systemCnfSerial } from "./iso9660.ts";
-import { inflateSz } from "./sz.ts";
-import { memberBytes, pckFileNames, typeOf, unpackPck } from "./pck.ts";
+import { locateDataBin } from "./manifest.ts";
 import { type ByteSource } from "./source.ts";
 import { Vfi, VFI_SECTOR, type VfiEntry } from "./vfi.ts";
 
-export const DISC_SUPPORT_REPORT_SCHEMA = 1 as const;
+export const DISC_SUPPORT_REPORT_SCHEMA = 2 as const;
 
 export type DiscSupportStatus = "passed" | "partial" | "failed" | "not-found";
 export type DiscSupportFamily = "images" | "effects" | "fmv";
@@ -54,7 +53,7 @@ export interface ImageSupportReport {
 export interface EffectSupportReport {
     status: DiscSupportStatus;
     checks: readonly ["HD/BD pairing", "complete file reads", "SShd header"];
-    directory: string | null;
+    directories: string[];
     pairedBanks: number;
     inspectedBanks: number;
     bytesRead: number;
@@ -169,7 +168,7 @@ export function isDiscSupportReport(value: unknown): value is DiscSupportReport 
     if (disc === null || images === null || effects === null || fmv === null)
         return false;
     if (!((disc.serial === null) || isBoundedText(disc.serial, 128))
-            || !isBoundedText(disc.volumeId, 128)
+            || !(disc.volumeId === "" || isBoundedText(disc.volumeId, 128))
             || !isCount(disc.dataBinBytes)
             || !isCount(disc.vfiEntries)
             || typeof disc.tableSha256 !== "string"
@@ -187,8 +186,9 @@ export function isDiscSupportReport(value: unknown): value is DiscSupportReport 
         return false;
     if (!isStatus(effects.status)
             || !hasChecks(effects.checks, EFFECT_CHECKS)
-            || !(effects.directory === null
-                || isBoundedText(effects.directory, 4096))
+            || !Array.isArray(effects.directories)
+            || !effects.directories.every(path => isBoundedText(path, 4096))
+            || new Set(effects.directories).size !== effects.directories.length
             || !isCount(effects.pairedBanks)
             || !isCount(effects.inspectedBanks)
             || effects.inspectedBanks > effects.pairedBanks
@@ -217,36 +217,6 @@ function errorReason(error: unknown): string {
     return bounded || "unknown error";
 }
 
-function hasTim2Magic(data: Uint8Array): boolean {
-    return data.length >= 4 && data[0] === 0x54 && data[1] === 0x49
-        && data[2] === 0x4d && data[3] === 0x32;
-}
-
-async function skippedDeclaredImages(entry: VfiEntry,
-                                     stored: Uint8Array): Promise<SkippedDeclaredImage[]> {
-    if (/\.tm2$/i.test(entry.path)) return [];
-    try {
-        const pck = /\.sz$/i.test(entry.path) ? await inflateSz(stored) : stored;
-        const members = unpackPck(pck);
-        if (!members) return [];
-        const names = pckFileNames(members);
-        return members.flatMap(member => {
-            if (typeOf(member.attrs).toLowerCase() !== "tm2"
-                    || hasTim2Magic(memberBytes(pck, member)))
-                return [];
-            return [{
-                path: entry.path,
-                memberIndex: member.index,
-                fileName: names[member.index]!,
-                byteLength: member.size,
-                reason: "missing-tim2-magic" as const,
-            }];
-        });
-    } catch {
-        // The canonical image scan below reports container format failures.
-        return [];
-    }
-}
 
 function familyStatus(successes: number, issues: number): DiscSupportStatus {
     if (successes === 0) return issues === 0 ? "not-found" : "failed";
@@ -268,29 +238,23 @@ async function inspectImages(vfi: Vfi,
         };
     }
 
-    const skippedDeclared: SkippedDeclaredImage[] = [];
-    const reportingVfi = {
-        entries: vfi.entries,
-        read: async (entry: VfiEntry): Promise<Uint8Array> => {
-            const stored = await vfi.read(entry);
-            skippedDeclared.push(...await skippedDeclaredImages(entry, stored));
-            return stored;
-        },
-    } as Vfi;
-
     try {
-        const scan = await scanImageTextures(reportingVfi, {
+        const scan = await scanImageTextures(vfi, {
             progress: (done, total, path) =>
                 options.progress?.({ family: "images", done, total, path }),
-        }) as ImageTexture[] | {
-            textures: ImageTexture[];
-            issues: DiscSupportIssue[];
-        };
-        const textures = Array.isArray(scan) ? scan : scan.textures;
+        });
+        const textures = scan.textures;
+        const skippedDeclared: SkippedDeclaredImage[] = scan.skipped.map(member => ({
+            path: errorReason(member.sourcePath),
+            memberIndex: member.memberIndex,
+            fileName: errorReason(member.fileName),
+            byteLength: member.byteLength,
+            reason: member.reason,
+        }));
         const pictures = textures.reduce((total, texture) =>
             total + texture.pictures.length, 0);
         const issues = [
-            ...(Array.isArray(scan) ? [] : scan.issues),
+            ...scan.issues,
             ...skippedDeclared.map(item => ({
                 path: `${item.path}#${item.memberIndex}:${item.fileName}`,
                 reason: "declared as TIM2 but has no TIM2 signature",
@@ -312,25 +276,12 @@ async function inspectImages(vfi: Vfi,
             containers: containers.length,
             textures: 0,
             pictures: 0,
-            skippedDeclared,
+            skippedDeclared: [],
             issues: [{ path: "images", reason: errorReason(error) }],
         };
     }
 }
 
-function selectEffectDirectory(vfi: Vfi): [string, VfiEntry[]] | null {
-    const entries = vfi.entries.filter(entry =>
-        /(^|\/)sound\/se\/[^/]+\.(hd|bd)$/i.test(entry.path));
-    const byDirectory = new Map<string, VfiEntry[]>();
-    for (const entry of entries) {
-        const directory = entry.path.slice(0, entry.path.lastIndexOf("/"));
-        const group = byDirectory.get(directory);
-        if (group) group.push(entry);
-        else byDirectory.set(directory, [entry]);
-    }
-    return [...byDirectory.entries()].sort((a, b) =>
-        b[1].length - a[1].length || a[0].localeCompare(b[0]))[0] ?? null;
-}
 
 function hasSshdMagic(header: Uint8Array): boolean {
     return header.length >= 0x10 && header[0x0c] === 0x53
@@ -340,12 +291,15 @@ function hasSshdMagic(header: Uint8Array): boolean {
 
 async function inspectEffects(vfi: Vfi,
                               options: DiscSupportOptions): Promise<EffectSupportReport> {
-    const selected = selectEffectDirectory(vfi);
-    if (!selected) {
+    const entries = vfi.entries.filter(entry =>
+        /(^|\/)sound\/se\/[^/]+\.(hd|bd)$/i.test(entry.path));
+    const directories = [...new Set(entries.map(entry =>
+        entry.path.slice(0, entry.path.lastIndexOf("/"))))].sort();
+    if (entries.length === 0) {
         return {
             status: "not-found",
             checks: EFFECT_CHECKS,
-            directory: null,
+            directories,
             pairedBanks: 0,
             inspectedBanks: 0,
             bytesRead: 0,
@@ -353,13 +307,12 @@ async function inspectEffects(vfi: Vfi,
         };
     }
 
-    const [directory, entries] = selected;
-    const byName = new Map(entries.map(entry => [entry.name.toLowerCase(), entry]));
+    const byPath = new Map(entries.map(entry => [entry.path.toLowerCase(), entry]));
     const pairs: Array<{ name: string; header: VfiEntry; body: VfiEntry }> = [];
     const issues: DiscSupportIssue[] = [];
     for (const header of entries.filter(entry => /\.hd$/i.test(entry.name))) {
-        const stem = header.name.slice(0, -3);
-        const body = byName.get(`${stem}.bd`.toLowerCase());
+        const stem = header.path.slice(0, -3);
+        const body = byPath.get(`${stem}.bd`.toLowerCase());
         if (body) pairs.push({ name: stem, header, body });
         else issues.push({ path: header.path, reason: "matching .bd file is missing" });
     }
@@ -400,7 +353,7 @@ async function inspectEffects(vfi: Vfi,
     return {
         status: familyStatus(inspectedBanks, issues.length),
         checks: EFFECT_CHECKS,
-        directory,
+        directories,
         pairedBanks: pairs.length,
         inspectedBanks,
         bytesRead,
@@ -520,9 +473,7 @@ export async function inspectDiscSupport(
     const serial = systemCnf
         ? systemCnfSerial(ascii(await iso.window(systemCnf).read(0, systemCnf.size)))
         : null;
-    const dataEntry = await iso.findRoot("DATA.BIN");
-    if (!dataEntry || dataEntry.isDir)
-        throw new Error("DATA.BIN not found on this disc (not Ape Escape 3?)");
+    const dataEntry = await locateDataBin(iso);
     const vfi = await Vfi.open(iso.window(dataEntry));
     return inspectVfiSupport(vfi, { serial, volumeId: iso.volumeId }, options);
 }

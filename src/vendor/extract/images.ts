@@ -38,9 +38,19 @@ export interface ImageScanIssue {
     reason: string;
 }
 
+export interface ImageScanSkippedMember {
+    readonly entryOffset: number;
+    readonly sourcePath: string;
+    readonly memberIndex: number;
+    readonly fileName: string;
+    readonly byteLength: number;
+    readonly reason: "missing-tim2-magic";
+}
+
 export interface ImageScanResult {
     textures: ImageTexture[];
     issues: ImageScanIssue[];
+    skipped: ImageScanSkippedMember[];
 }
 
 export interface ImageScanOptions {
@@ -65,22 +75,60 @@ function memberStem(name: string): string {
     return name.slice(slash + 1).replace(/\.tm2$/i, "").toLowerCase();
 }
 
-const REFERENCE_STEM = /^[a-z0-9_.-]{1,64}$/;
+/* Geometry bytes produce millions of short printable runs. Validate stems in
+ * place and reuse the at most 60,879 one-to-three-character normalized stems
+ * instead of allocating a decoder result for every run. */
+const SHORT_REFERENCE_STEMS = new Map<number, string>();
 
 function referencedNames(data: Uint8Array): Set<string> {
     const references = new Set<string>();
-    let start = -1;
+    let start = 0;
+    let valid = true;
     for (let index = 0; index <= data.length; index++) {
         const byte = index < data.length ? data[index]! : 0;
         if (byte >= 0x20 && byte < 0x7f) {
-            if (start < 0) start = index;
+            if (byte === 0x2f || byte === 0x5c) {
+                start = index + 1;
+                valid = true;
+            } else {
+                const lower = byte | 0x20;
+                valid &&= (lower >= 0x61 && lower <= 0x7a)
+                    || (byte >= 0x30 && byte <= 0x39)
+                    || byte === 0x5f || byte === 0x2e || byte === 0x2d;
+            }
             continue;
         }
-        if (start >= 0) {
-            const stem = memberStem(ASCII.decode(data.subarray(start, index)));
-            if (REFERENCE_STEM.test(stem)) references.add(stem);
-            start = -1;
+        if (valid) {
+            let end = index;
+            if (end - start >= 4 && data[end - 4] === 0x2e
+                    && (data[end - 3]! | 0x20) === 0x74
+                    && (data[end - 2]! | 0x20) === 0x6d
+                    && data[end - 1] === 0x32)
+                end -= 4;
+            const length = end - start;
+            if (length > 0 && length <= 64) {
+                let stem: string;
+                if (length <= 3) {
+                    let key = 0;
+                    for (let offset = start; offset < end; offset++) {
+                        const character = data[offset]!;
+                        key = (key << 7) | (character >= 0x41 && character <= 0x5a
+                            ? character + 0x20 : character);
+                    }
+                    const cached = SHORT_REFERENCE_STEMS.get(key);
+                    if (cached !== undefined) stem = cached;
+                    else {
+                        stem = ASCII.decode(data.subarray(start, end)).toLowerCase();
+                        SHORT_REFERENCE_STEMS.set(key, stem);
+                    }
+                } else {
+                    stem = ASCII.decode(data.subarray(start, end)).toLowerCase();
+                }
+                references.add(stem);
+            }
         }
+        start = index + 1;
+        valid = true;
     }
     return references;
 }
@@ -177,8 +225,8 @@ function imageIssue(entry: VfiEntry, error: ImageFormatError): ImageScanIssue {
     };
 }
 
-async function scanImageContainer(entry: VfiEntry,
-                                  stored: Uint8Array): Promise<ScannedImageContainer> {
+async function scanImageContainer(entry: VfiEntry, stored: Uint8Array,
+                                  skipped: ImageScanSkippedMember[]): Promise<ScannedImageContainer> {
     if (/\.tm2$/i.test(entry.path)) {
         const fileName = entry.path.slice(entry.path.lastIndexOf("/") + 1);
         return {
@@ -203,8 +251,21 @@ async function scanImageContainer(entry: VfiEntry,
     if (!members)
         throw new ImageFormatError(entry.path, 0, "not a PCK", "PCK");
     const names = pckFileNames(members);
-    const tim2Members = members.filter(member =>
-        hasTim2Magic(memberBytes(pck, member)));
+    const tim2Members: PckMember[] = [];
+    for (const member of members) {
+        if (hasTim2Magic(memberBytes(pck, member))) {
+            tim2Members.push(member);
+        } else if (typeOf(member.attrs).toLowerCase() === "tm2") {
+            skipped.push({
+                entryOffset: entry.entryOff,
+                sourcePath: entry.path,
+                memberIndex: member.index,
+                fileName: names[member.index]!,
+                byteLength: member.size,
+                reason: "missing-tim2-magic",
+            });
+        }
+    }
     const classification = classifyMembers(pck, members, tim2Members);
     const images = tim2Members.map(member => {
         const bytes = memberBytes(pck, member);
@@ -231,16 +292,17 @@ async function scanImageContainer(entry: VfiEntry,
 }
 
 type ImageScanOutcome =
-    | { container: ScannedImageContainer }
-    | { issue: ImageScanIssue };
+    | { container: ScannedImageContainer; skipped: ImageScanSkippedMember[] }
+    | { issue: ImageScanIssue; skipped: ImageScanSkippedMember[] };
 
 async function scanImageOutcome(vfi: Vfi, entry: VfiEntry): Promise<ImageScanOutcome> {
     const stored = await vfi.read(entry);
+    const skipped: ImageScanSkippedMember[] = [];
     try {
-        return { container: await scanImageContainer(entry, stored) };
+        return { container: await scanImageContainer(entry, stored, skipped), skipped };
     } catch (error) {
         if (!(error instanceof ImageFormatError)) throw error;
-        return { issue: imageIssue(entry, error) };
+        return { issue: imageIssue(entry, error), skipped };
     }
 }
 
@@ -271,6 +333,8 @@ function refineUnclassified(textures: ImageTexture[],
  * multi-picture textures. Unclassified roles are deferred until cross-container
  * evidence is resolved; already-classified textures may be delivered per batch.
  * No decoded pixels are retained by the scanner.
+ * Declared TM2 members lacking the signature are reported from the same PCK
+ * walk, even if a different member subsequently fails TIM2 validation.
  * A proven TIM2/PCK/SZ format violation after a successful VFI read is
  * returned as one bounded issue for that container; source/I/O, resource,
  * abort, callback, and unexpected failures still reject the scan.
@@ -280,6 +344,7 @@ export async function scanImageTextures(vfi: Vfi,
     const containers = locateImageContainers(vfi);
     const textures: ImageTexture[] = [];
     const issues: ImageScanIssue[] = [];
+    const skipped: ImageScanSkippedMember[] = [];
     const uiReferences = new Set<string>();
     const modelReferences = new Set<string>();
     const deferred: Array<{ texture: ImageTexture; bytes: Uint8Array }> = [];
@@ -290,6 +355,7 @@ export async function scanImageTextures(vfi: Vfi,
         const scanned = await Promise.all(batch.map(entry => scanImageOutcome(vfi, entry)));
         const successful: ScannedImageContainer[] = [];
         for (const outcome of scanned) {
+            skipped.push(...outcome.skipped);
             if ("issue" in outcome) {
                 issues.push(outcome.issue);
                 continue;
@@ -319,7 +385,7 @@ export async function scanImageTextures(vfi: Vfi,
                 .map(image => options.texture!(image.texture, image.bytes)));
     }
     options.progress?.(containers.length, containers.length, "done");
-    return { textures, issues };
+    return { textures, issues, skipped };
 }
 
 /** Re-read one source TIM2 represented by a scan result. */

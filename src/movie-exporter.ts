@@ -151,6 +151,7 @@ export async function exportMovieMp4(request: MovieMp4ExportRequest,
     const demux = runStage("demux", () => demuxFmv(
         new Uint8Array(request.fmv),
         request.name,
+        request.audioTrack,
     ));
     validateDemux(request, demux);
     controller.throwIfAborted();
@@ -210,9 +211,9 @@ export async function exportMovieMp4(request: MovieMp4ExportRequest,
             ? null
             : new TextSubtitleSource("webvtt");
         output.addVideoTrack(videoSource, { frameRate: ready.outputRate });
-        output.addAudioTrack(audioSource.source);
+        output.addAudioTrack(audioSource.source, { languageCode: request.audioLanguage ?? "und" });
         if (subtitleSource !== null)
-            output.addSubtitleTrack(subtitleSource, { languageCode: "eng" });
+            output.addSubtitleTrack(subtitleSource, { languageCode: request.subtitleLanguage ?? "und" });
 
         progress(0.15, "Starting MP4 muxer…");
         await runAsyncStage("mux", () => output!.start());
@@ -285,6 +286,7 @@ export async function exportMovieMkv(request: MovieMp4ExportRequest,
     const demux = runStage("demux", () => demuxFmv(
         new Uint8Array(request.fmv),
         request.name,
+        request.audioTrack,
     ));
     validateDemux(request, demux);
     controller.throwIfAborted();
@@ -324,9 +326,9 @@ export async function exportMovieMkv(request: MovieMp4ExportRequest,
         ? null
         : new TextSubtitleSource("webvtt");
     output.addVideoTrack(videoSource, { frameRate: demux.videoInfo.frameRate });
-    output.addAudioTrack(audioSource);
+    output.addAudioTrack(audioSource, { languageCode: request.audioLanguage ?? "und" });
     if (subtitleSource !== null)
-        output.addSubtitleTrack(subtitleSource, { languageCode: "eng" });
+        output.addSubtitleTrack(subtitleSource, { languageCode: request.subtitleLanguage ?? "und" });
 
     try {
         progress(0.14, "Starting lossless MKV muxer…");
@@ -394,7 +396,7 @@ function validateRuntimeSupport(): void {
 
 async function preflight(request: MovieMp4ExportRequest): Promise<void> {
     const { width, height, fieldOrder, channels, sampleRate } = request.expectations;
-    const frameRate = 1 / movieOutputFrameDuration(fieldOrder);
+    const frameRate = 1 / movieOutputFrameDuration(fieldOrder, request.expectations.frameRate);
     const bitrate = movieExportVideoBitrate(width, height, frameRate);
     let videoSupported: boolean;
     let audioSupported: boolean;
@@ -421,6 +423,7 @@ function validateDemux(request: MovieMp4ExportRequest, demux: FmvDemux): void {
     const actual = demux.videoInfo;
     if (actual.width !== expected.width || actual.height !== expected.height
             || actual.fieldOrder !== expected.fieldOrder
+            || actual.frameRate !== expected.frameRate
             || !sameRatio(actual.sampleAspect, expected.sampleAspect)
             || !sameRatio(actual.displayAspect, expected.displayAspect)) {
         throw new MovieExportStageError(
@@ -428,7 +431,7 @@ function validateDemux(request: MovieMp4ExportRequest, demux: FmvDemux): void {
             `${request.name} metadata does not match the scanned catalog`,
         );
     }
-    const duration = demux.header.fields / demux.header.fieldRate;
+    const duration = demux.duration;
     if (!nearlyEqual(duration, expected.duration)
             || demux.header.channels !== expected.channels
             || demux.header.sampleRate !== expected.sampleRate) {

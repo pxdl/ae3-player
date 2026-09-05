@@ -274,7 +274,8 @@ export class DiscReportView {
         this.renderFamily("effects", report.effects.status,
             `${count(report.effects.inspectedBanks)} / ${count(report.effects.pairedBanks)} `
                 + `${report.effects.pairedBanks === 1 ? "BANK" : "BANKS"}`,
-            `${bytes(report.effects.bytesRead)} read from ${report.effects.directory ?? "no effects tree"}`);
+            `${bytes(report.effects.bytesRead)} read from `
+                + (report.effects.directories.join(", ") || "no effects tree"));
         this.renderFamily("fmv", report.fmv.status,
             `${count(report.fmv.inspected)} / ${count(report.fmv.discovered)} `
                 + `${report.fmv.discovered === 1 ? "MOVIE" : "MOVIES"}`,

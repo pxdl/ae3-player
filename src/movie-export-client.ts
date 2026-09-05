@@ -13,6 +13,9 @@ const COPY_CHUNK_BYTES = 4 * 1024 * 1024;
 export interface MovieExportInput {
     name: string;
     fmv: Uint8Array;
+    audioTrack: number;
+    audioLanguage: string | null;
+    subtitleLanguage: string | null;
     vtt?: Uint8Array;
     expectations: MovieMp4ExportExpectations;
     cooperativeCopy?: boolean;
@@ -58,6 +61,9 @@ async function exportMovie(format: MovieExportFormat, input: MovieExportInput,
         jobId,
         name: input.name,
         fmv,
+        audioTrack: input.audioTrack,
+        audioLanguage: input.audioLanguage,
+        subtitleLanguage: input.subtitleLanguage,
         expectations: input.expectations,
         ...(vtt === undefined ? {} : { vtt }),
     };

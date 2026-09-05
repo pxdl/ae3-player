@@ -30,6 +30,7 @@ export interface InitializeDecoderRequest extends DecoderRequest {
     width: number;
     height: number;
     fieldOrder: MovieFieldOrder;
+    frameRate: number;
     duration: number;
     sourceFrames: number;
     seekPoints: readonly Mpeg2SeekPoint[];
@@ -120,11 +121,10 @@ export interface MovieDecoderStats {
     wasmBytes: number;
 }
 
-export const MPEG_FRAME_DURATION = 1001 / 30000;
-export const MPEG_BOB_FRAME_DURATION = 1001 / 60000;
-
-export function movieOutputFrameDuration(fieldOrder: MovieFieldOrder): number {
-    return fieldOrder === "progressive" ? MPEG_FRAME_DURATION : MPEG_BOB_FRAME_DURATION;
+export function movieOutputFrameDuration(fieldOrder: MovieFieldOrder, frameRate: number): number {
+    if (!Number.isFinite(frameRate) || frameRate <= 0)
+        throw new RangeError("movie frame rate must be positive and finite");
+    return 1 / (frameRate * (fieldOrder === "progressive" ? 1 : 2));
 }
 
 export function movieFrameByteLength(width: number, height: number): number {

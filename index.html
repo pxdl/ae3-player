@@ -35,10 +35,18 @@
       </div>
       <ul id="songlist"></ul>
       <div id="streamview" hidden>
+        <div id="s-source-filter" class="source-filter" hidden>
+          <label class="search-label" for="s-source">SOURCE / LANGUAGE</label>
+          <select id="s-source"><option value="">All sources</option></select>
+        </div>
         <input id="stream-search" type="search" placeholder="search streams" spellcheck="false" autocomplete="off" />
         <ul id="streamlist"></ul>
       </div>
       <div id="seview" hidden>
+        <div id="se-source-filter" class="source-filter" hidden>
+          <label class="search-label" for="se-source">SOURCE / LANGUAGE</label>
+          <select id="se-source"><option value="">All sources</option></select>
+        </div>
         <input id="se-search" type="search" placeholder="search SE banks" spellcheck="false" autocomplete="off" />
         <ul id="selist"></ul>
       </div>
@@ -75,6 +83,10 @@
         <div class="stage-preview-sidebar-head">
           <span>WARPGATE CATALOG</span>
           <strong id="stage-preview-count">—</strong>
+        </div>
+        <div id="stage-preview-source-filter" class="source-filter" hidden>
+          <label class="search-label" for="stage-preview-source">SOURCE / LANGUAGE</label>
+          <select id="stage-preview-source"></select>
         </div>
         <ul id="stage-preview-list" aria-label="Stage previews"></ul>
       </div>
@@ -195,11 +207,11 @@
         <div id="s-setup" hidden>
           <div id="s-setup-card">
             <h2>STREAMED AUDIO</h2>
-            <p>The disc carries 1158 streamed tracks &mdash; monkey-phone calls,
-            cutscene voice-over, minigame speech and music &mdash; 341&nbsp;MB of
-            <code>sound/stream</code> data. The first visit starts extraction
-            automatically when this tab opens; files stay in private browser storage.</p>
-            <button id="s-extract">extract streams (341 MB)</button>
+            <p>Extract monkey-phone calls, cutscene voice-over, minigame speech
+            and music from loose <code>sound/stream</code> files and localized
+            <code>sound/stream.bin</code> archives. The first visit starts extraction
+            automatically; every source stays distinct in private browser storage.</p>
+            <button id="s-extract">extract streams</button>
             <label id="s-iso-pick" hidden>
               <input id="s-iso" type="file" accept=".iso" />
               <span>this session was resumed without the disc image &mdash;
@@ -263,12 +275,11 @@
         <div id="se-setup" hidden>
           <div id="se-setup-card">
             <h2>SEQUENCED SOUND EFFECTS</h2>
-            <p>The disc carries 101 embedded sound banks: 2,699 assembled
-            requests built from shared PS-ADPCM waveforms, positional programs,
-            and the game's 480&nbsp;Hz <code>seseq</code> bytecode. The first
-            visit extracts the 20&nbsp;MB bank set automatically when this tab
-            opens, into private browser storage.</p>
-            <button id="se-extract">extract SE banks (20 MB)</button>
+            <p>Explore requests built from shared PS-ADPCM waveforms, positional
+            programs, and the game's 480&nbsp;Hz <code>seseq</code> bytecode.
+            The first visit extracts the available sound banks automatically
+            into private browser storage, preserving every language directory.</p>
+            <button id="se-extract">extract SE banks</button>
             <label id="se-iso-pick" hidden>
               <input id="se-iso" type="file" accept=".iso" />
               <span>this session was resumed without the disc image &mdash;
@@ -293,6 +304,14 @@
               <canvas id="fmv-canvas" aria-label="Selected movie picture"></canvas>
               <div id="fmv-caption" hidden aria-live="off"></div>
               <div id="fmv-picture-controls">
+                <label id="fmv-audio-language-control" class="fmv-language-control" hidden>
+                  Audio
+                  <select id="fmv-audio-language"></select>
+                </label>
+                <label id="fmv-caption-language-control" class="fmv-language-control" hidden>
+                  Captions
+                  <select id="fmv-caption-language"></select>
+                </label>
                 <button id="fmv-cc" type="button" aria-label="Toggle captions"
                   aria-pressed="true" disabled>CC</button>
                 <button id="fmv-fullscreen" type="button" aria-label="Toggle full screen">FULL</button>
@@ -481,9 +500,9 @@
           <div id="stage-preview-setup-card">
             <span class="stage-preview-kicker">LAZY / LOCAL / SOURCE-PRESERVING</span>
             <h2>STAGE PREVIEW ARCHIVE</h2>
-            <p>Asset Lab reads <code>etc/warpgate/str/stages.bin</code> only when
-              this tool opens. The original archive is cached as one private
-              object; IPC stills and TIM2 title art are decoded locally.</p>
+            <p>Asset Lab finds every localized <code>etc/warpgate/str/stages.bin</code>
+              when this tool opens. Each original archive is cached separately;
+              IPC stills and TIM2 title art are decoded locally.</p>
             <p id="stage-preview-setup-status" aria-live="polite">Opening stage archive…</p>
             <progress id="stage-preview-progress" max="1"></progress>
             <label id="stage-preview-iso-pick" hidden>
@@ -578,7 +597,7 @@
         </div>
         <div id="model-setup">
           <div id="model-setup-card">
-            <span class="model-kicker">7,345 MODELS / RETAIL DISC</span>
+            <span class="model-kicker">LOCAL / SOURCE-PRESERVING</span>
             <h2>BUILD THE 3D ARCHIVE</h2>
             <p>Scan every I3D model, skeletal animation, and collision mesh in
               <code>DATA.BIN</code>. Models are rendered locally with their TIM2 textures,

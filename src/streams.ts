@@ -3,7 +3,7 @@
  *
  * Extraction is a SECOND OPFS phase with its own completeness marker
  * (stream_meta.json, written LAST like the BGM phase's meta.json), run on
- * first STREAMS use -- BGM-only listeners never pay the +341 MB. A session
+ * first STREAMS use -- BGM-only listeners never extract this family. A session
  * resumed from OPFS without streams cached needs the ISO once more
  * (attachIso); the catalog and all grouping derive from the user's own
  * extraction, in code -- this site ships no game data.
@@ -12,20 +12,21 @@
  * worker over the SDK's AE3Exst (public/synth/stream.mjs, the module the
  * private corpus gate drives under Node). */
 
-import { OpfsCache, openDisc, BlobSource,
-         type Vfi, type VfiEntry } from "./vendor/extract/index.ts";
+import { OpfsCache, openDisc, BlobSource, SubSource, Vfi,
+         type VfiEntry } from "./vendor/extract/index.ts";
 import {
     assertAttachedDiscIdentity,
     assertCacheSourceIdentity,
 } from "./disc-identity.ts";
 import { technicalReason } from "./errors.ts";
+import { assertZipEntryPath } from "./zip.ts";
 
 const META = "stream_meta.json";
 
 export type ProgressFn = (done: number, total: number, name: string) => void;
 
 export interface StreamEntry {
-    name: string;        /* basename, e.g. "phone_001.x" */
+    name: string;        /* source-qualified path, including stream.bin for nested VFI */
     channels: number;
     rate: number;
     sectors: number;     /* actual payload sectors, (size - 0x78) >> 11 */
@@ -33,7 +34,7 @@ export interface StreamEntry {
 }
 
 export interface StreamCatalog {
-    readonly v: 2;
+    readonly v: 3;
     readonly sourceKey: string;
     readonly entries: readonly StreamEntry[];
 }
@@ -64,7 +65,7 @@ export function groupStreams(entries: readonly StreamEntry[]):
     const buckets = { music: new Map<string, StreamEntry[]>(),
                       voice: new Map<string, StreamEntry[]>() };
     for (const e of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
-        const stem = e.name.replace(/\.x$/, "");
+        const stem = e.name.slice(e.name.lastIndexOf("/") + 1).replace(/\.x$/i, "");
         const key = stem.includes("_") ? stem.slice(0, stem.indexOf("_")) : stem;
         const m = e.channels === 2 ? buckets.music : buckets.voice;
         (m.get(key) ?? m.set(key, []).get(key)!).push(e);
@@ -76,7 +77,20 @@ export function groupStreams(entries: readonly StreamEntry[]):
     return { music: order(buckets.music), voice: order(buckets.voice) };
 }
 
-const STREAM_NAME = /^[^/\\\u0000-\u001f\u007f-\u009f]+\.x$/i;
+function isStreamPath(value: string): boolean {
+    if (!/(^|\/)sound\/(?:stream|stream\.bin)\/.+\.x$/i.test(value)) return false;
+    try {
+        assertZipEntryPath(value);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+interface StreamSource {
+    vfi: Vfi;
+    entry: VfiEntry;
+}
 
 function isSafeInteger(value: unknown, minimum = 0): value is number {
     return typeof value === "number"
@@ -88,7 +102,7 @@ function isStreamCatalog(value: unknown,
                          expectedSourceKey: string): value is StreamCatalog {
     if (value === null || typeof value !== "object") return false;
     const catalog = value as Record<string, unknown>;
-    if (catalog.v !== 2 || catalog.sourceKey !== expectedSourceKey
+    if (catalog.v !== 3 || catalog.sourceKey !== expectedSourceKey
             || !Array.isArray(catalog.entries)
             || catalog.entries.length === 0)
         return false;
@@ -97,7 +111,7 @@ function isStreamCatalog(value: unknown,
         if (value === null || typeof value !== "object") return false;
         const entry = value as Record<string, unknown>;
         if (typeof entry.name !== "string"
-                || !STREAM_NAME.test(entry.name)
+                || !isStreamPath(entry.name)
                 || names.has(entry.name)
                 || !isSafeInteger(entry.channels, 1) || entry.channels > 8
                 || !isSafeInteger(entry.rate, 1)
@@ -115,7 +129,8 @@ export class StreamStore {
     private cache: OpfsCache | null;
     private vfi: Vfi | null;
     private readonly cacheKey: string;
-    private byName = new Map<string, VfiEntry>();
+    private byName = new Map<string, StreamSource>();
+    private locatePending: Promise<Map<string, StreamSource>> | null = null;
     private catalog: StreamCatalog | null = null;   /* in-memory (no-OPFS runs) */
     private cacheWarning: string | null = null;
 
@@ -151,17 +166,20 @@ export class StreamStore {
         try {
             parsed = JSON.parse(new TextDecoder().decode(raw));
         } catch (error) {
-            this.useAttachedIsoAfterCacheFailure(
-                error,
-                "the cached Streams index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
-            );
+            const message = "the cached Streams index is damaged -- reconnect the same disc to rebuild it";
+            if (!this.vfi) throw new Error(message, { cause: error });
+            this.cacheWarning = `${message}; rebuilding from the attached ISO`;
+            return null;
+        }
+        if (parsed !== null && typeof parsed === "object"
+                && "v" in parsed && (parsed.v === 1 || parsed.v === 2)) {
+            this.cacheWarning = "the cached Streams index is obsolete -- reconnect the same disc to rebuild it";
             return null;
         }
         if (!isStreamCatalog(parsed, this.cacheKey)) {
-            this.useAttachedIsoAfterCacheFailure(
-                new Error("the cached Streams index has an invalid schema"),
-                "the cached Streams index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
-            );
+            const message = "the cached Streams index is damaged -- reconnect the same disc to rebuild it";
+            if (!this.vfi) throw new Error(message);
+            this.cacheWarning = `${message}; rebuilding from the attached ISO`;
             return null;
         }
         this.catalog = parsed;
@@ -175,6 +193,7 @@ export class StreamStore {
         assertAttachedDiscIdentity(this.cacheKey, disc.cacheKey);
         this.vfi = disc.vfi;
         this.byName.clear();
+        this.locatePending = null;
     }
 
     private useAttachedIsoAfterCacheFailure(error: unknown, message: string): void {
@@ -186,44 +205,64 @@ export class StreamStore {
         this.byName.clear();
     }
 
-    private locate(): Map<string, VfiEntry> {
+    private async locate(): Promise<Map<string, StreamSource>> {
         if (this.byName.size || !this.vfi) return this.byName;
-        /* region-tolerant like locateBgmAssets: best-populated stream dir */
-        const all = this.vfi.entries.filter(e =>
-            /(^|\/)sound\/stream\/[^/]+\.x$/.test(e.path));
-        const byDir = new Map<string, VfiEntry[]>();
-        for (const e of all) {
-            const dir = e.path.slice(0, e.path.lastIndexOf("/"));
-            (byDir.get(dir) ?? byDir.set(dir, []).get(dir)!).push(e);
+        if (this.locatePending) return this.locatePending;
+        const root = this.vfi;
+        const pending = (async () => {
+            const sources = new Map<string, StreamSource>();
+            const add = (name: string, vfi: Vfi, entry: VfiEntry): void => {
+                if (!isStreamPath(name))
+                    throw new Error(`invalid stream source ${name}`);
+                if (sources.has(name))
+                    throw new Error(`duplicate stream source ${name}`);
+                sources.set(name, { vfi, entry });
+            };
+            for (const entry of root.entries) {
+                if (/(^|\/)sound\/stream\/.+\.x$/i.test(entry.path)) {
+                    add(entry.path, root, entry);
+                } else if (/(^|\/)sound\/stream\.bin$/i.test(entry.path)) {
+                    const nested = await Vfi.open(new SubSource(
+                        root.src, root.byteOffset(entry), entry.size,
+                    ));
+                    for (const member of nested.entries) {
+                        if (/\.x$/i.test(member.path))
+                            add(`${entry.path}/${member.path}`, nested, member);
+                    }
+                }
+            }
+            this.byName = sources;
+            return sources;
+        })();
+        this.locatePending = pending;
+        try {
+            return await pending;
+        } finally {
+            if (this.locatePending === pending) this.locatePending = null;
         }
-        const best = [...byDir.values()]
-            .sort((a, b) => b.length - a.length)[0] ?? [];
-        for (const e of best)
-            this.byName.set(e.path.slice(e.path.lastIndexOf("/") + 1), e);
-        return this.byName;
     }
 
-    /** The streams phase: copy every .x into OPFS (has()-skip resumable),
+    /** The streams phase: copy every loose/nested .x into source-qualified OPFS,
      *  build the catalog from windowed header reads, write the marker LAST.
      *  Cache-less sessions build the catalog only (payloads read from the
      *  ISO on demand, this visit only). */
     async extract(progress: ProgressFn): Promise<StreamCatalog> {
         if (!this.vfi)
             throw new Error("no ISO attached -- choose your disc image first");
-        const entries = [...this.locate().entries()]
+        const entries = [...(await this.locate()).entries()]
             .sort((a, b) => a[0].localeCompare(b[0]));
         if (entries.length === 0)
             throw new Error("no sound/stream assets found in DATA.BIN");
         const rows: StreamEntry[] = [];
         let cache = this.cache;
         for (let i = 0; i < entries.length; i++) {
-            const [name, e] = entries[i]!;
+            const [name, { vfi, entry: e }] = entries[i]!;
             progress(i, entries.length, name);
-            const hdr = await this.vfi.src.read(this.vfi.byteOffset(e), 0x78);
+            const hdr = await vfi.src.read(vfi.byteOffset(e), Math.min(0x78, e.size));
             rows.push({ name, ...xHeader(hdr, e.size, name) });
             if (!cache) continue;
             try {
-                if (await cache.has(`stream/${name}`)) continue;
+                if (await cache.size(`stream-v3/${name}`) === e.size) continue;
             } catch (error) {
                 this.useAttachedIsoAfterCacheFailure(
                     error,
@@ -232,9 +271,9 @@ export class StreamStore {
                 cache = null;
                 continue;
             }
-            const data = await this.vfi.read(e);        /* hard failure */
+            const data = await vfi.read(e);        /* hard failure */
             try {
-                await cache.write(`stream/${name}`, data);
+                await cache.write(`stream-v3/${name}`, data);
             } catch (error) {
                 this.useAttachedIsoAfterCacheFailure(
                     error,
@@ -244,7 +283,7 @@ export class StreamStore {
             }
         }
         const catalog: StreamCatalog = {
-            v: 2,
+            v: 3,
             sourceKey: this.cacheKey,
             entries: rows,
         };
@@ -262,17 +301,22 @@ export class StreamStore {
             }
         }
         this.catalog = catalog;
+        if (cache) this.cacheWarning = null;
         progress(entries.length, entries.length, "done");
         return catalog;
     }
 
-    /** One stream's bytes: OPFS first, ISO fallback when in hand. */
+    /** Read only the requested source, never another language's basename. */
     async read(name: string): Promise<Uint8Array | null> {
-        if (!STREAM_NAME.test(name))
-            throw new Error("the stream name is invalid");
+        if (!isStreamPath(name))
+            throw new Error("the stream source path is invalid");
+        if (this.vfi) {
+            const source = (await this.locate()).get(name);
+            return source ? source.vfi.read(source.entry) : null;
+        }
         if (this.cache) {
             try {
-                const bytes = await this.cache.read(`stream/${name}`);
+                const bytes = await this.cache.read(`stream-v3/${name}`);
                 if (bytes) return bytes;
             } catch (error) {
                 this.useAttachedIsoAfterCacheFailure(
@@ -281,8 +325,7 @@ export class StreamStore {
                 );
             }
         }
-        const entry = this.locate().get(name);
-        return entry && this.vfi ? this.vfi.read(entry) : null;
+        return null;
     }
 }
 

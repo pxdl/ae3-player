@@ -23,7 +23,7 @@ const META = "se_meta.json";
 export type SeProgress = (done: number, total: number, name: string) => void;
 
 export interface SeBankEntry {
-    readonly name: string;
+    readonly name: string;       /* full source path without .hd/.bd */
     readonly hd: string;
     readonly bd: string;
     readonly bytes: number;
@@ -31,7 +31,7 @@ export interface SeBankEntry {
     readonly bdFingerprint: ContentFingerprint;
 }
 export interface SeCatalog {
-    readonly v: 2;
+    readonly v: 3;
     readonly sourceKey: string;
     readonly entries: readonly SeBankEntry[];
 }
@@ -120,7 +120,7 @@ function isZipEntryName(value: string): boolean {
 function isSeCatalog(value: unknown, expectedSourceKey: string): value is SeCatalog {
     if (value === null || typeof value !== "object") return false;
     const catalog = value as Record<string, unknown>;
-    if (catalog.v !== 2 || catalog.sourceKey !== expectedSourceKey
+    if (catalog.v !== 3 || catalog.sourceKey !== expectedSourceKey
             || !Array.isArray(catalog.entries)
             || catalog.entries.length === 0)
         return false;
@@ -132,6 +132,7 @@ function isSeCatalog(value: unknown, expectedSourceKey: string): value is SeCata
                 || names.has(entry.name)
                 || entry.hd !== `${entry.name}.hd`
                 || entry.bd !== `${entry.name}.bd`
+                || !/(^|\/)sound\/se\/.+\.hd$/.test(entry.hd as string)
                 || !isZipEntryName(entry.hd as string)
                 || !isZipEntryName(entry.bd as string)
                 || !Number.isSafeInteger(entry.bytes)
@@ -182,17 +183,20 @@ export class SeStore {
         try {
             parsed = JSON.parse(new TextDecoder().decode(raw));
         } catch (error) {
-            this.useIsoAfterCacheFailure(
-                error,
-                "the cached Effects index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
-            );
+            const message = "the cached Effects index is damaged -- reconnect the same disc to rebuild it";
+            if (!this.vfi) throw new Error(message, { cause: error });
+            this.cacheWarning = `${message}; rebuilding from the attached ISO`;
+            return null;
+        }
+        if (parsed !== null && typeof parsed === "object"
+                && "v" in parsed && (parsed.v === 1 || parsed.v === 2)) {
+            this.cacheWarning = "the cached Effects index is obsolete -- reconnect the same disc to rebuild it";
             return null;
         }
         if (!isSeCatalog(parsed, this.cacheKey)) {
-            this.useIsoAfterCacheFailure(
-                new Error("the cached Effects index has an invalid schema"),
-                "the cached Effects index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
-            );
+            const message = "the cached Effects index is damaged -- reconnect the same disc to rebuild it";
+            if (!this.vfi) throw new Error(message);
+            this.cacheWarning = `${message}; rebuilding from the attached ISO`;
             return null;
         }
         this.catalog = parsed;
@@ -217,24 +221,15 @@ export class SeStore {
 
     private locate(): Map<string, VfiEntry> {
         if (this.byName.size || !this.vfi) return this.byName;
-        const all = this.vfi.entries.filter((entry) =>
-            /(^|\/)sound\/se\/[^/]+\.(hd|bd)$/.test(entry.path));
-        const byDir = new Map<string, VfiEntry[]>();
-        for (const entry of all) {
-            const dir = entry.path.slice(0, entry.path.lastIndexOf("/"));
-            let entries = byDir.get(dir);
-            if (!entries) {
-                entries = [];
-                byDir.set(dir, entries);
-            }
-            entries.push(entry);
+        const sources = new Map<string, VfiEntry>();
+        for (const entry of this.vfi.entries) {
+            if (!/(^|\/)sound\/se\/.+\.(hd|bd)$/.test(entry.path)) continue;
+            assertZipEntryPath(entry.path);
+            if (sources.has(entry.path))
+                throw new Error(`duplicate Effects source ${entry.path}`);
+            sources.set(entry.path, entry);
         }
-        let best: VfiEntry[] = [];
-        for (const entries of byDir.values()) {
-            if (entries.length > best.length) best = entries;
-        }
-        for (const entry of best)
-            this.byName.set(entry.path.slice(entry.path.lastIndexOf("/") + 1), entry);
+        this.byName = sources;
         return this.byName;
     }
 
@@ -276,7 +271,7 @@ export class SeStore {
                 fingerprints.push(await fingerprintBytes(data));
                 if (!cache) continue;
                 try {
-                    await cache.write(`se/${name}`, data);
+                    await cache.write(`se-v3/${name}`, data);
                 } catch (error) {
                     this.useIsoAfterCacheFailure(
                         error,
@@ -292,7 +287,7 @@ export class SeStore {
             });
         }
         const catalog: SeCatalog = {
-            v: 2,
+            v: 3,
             sourceKey: this.cacheKey,
             entries,
         };
@@ -305,15 +300,16 @@ export class SeStore {
                     error,
                     "cached Effects storage is unavailable",
                 );
+                cache = null;
             }
         }
         this.catalog = catalog;
+        if (cache) this.cacheWarning = null;
         progress(total, total, "done");
         return catalog;
     }
 
     private contentMismatch(message: string): never {
-        this.cache = null;
         this.catalog = null;
         throw new Error(message);
     }
@@ -335,7 +331,7 @@ export class SeStore {
         if (!this.cache) return null;
         let data: Uint8Array | null;
         try {
-            data = await this.cache.read(`se/${name}`);
+            data = await this.cache.read(`se-v3/${name}`);
         } catch (error) {
             throw new Error(
                 "cached Effects data is unavailable -- reconnect the same disc or forget the disc cache",

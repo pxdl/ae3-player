@@ -6,17 +6,16 @@ import {
     memberBytes,
     openDisc,
     OpfsCache,
-    pckFileNames,
-    typeOf,
     unpackPck,
     scanImageTextures,
     type ImageRole,
     type ImageRoleEvidence,
     type ImageTexture,
     type Vfi,
-    type VfiEntry,
 } from "./vendor/extract/index.ts";
 import type { ImageFormat } from "./vendor/extract/image-format.ts";
+import type { ImageScanSkippedMember } from "./vendor/extract/images.ts";
+import type { PckMember } from "./vendor/extract/pck.ts";
 import {
     assertAttachedDiscIdentity,
     assertCacheSourceIdentity,
@@ -44,14 +43,7 @@ export interface ImageCatalogIssue {
     readonly reason: string;
 }
 
-export interface ImageCatalogSkippedMember {
-    readonly entryOffset: number;
-    readonly sourcePath: string;
-    readonly memberIndex: number;
-    readonly fileName: string;
-    readonly byteLength: number;
-    readonly reason: "missing-tim2-magic";
-}
+export type ImageCatalogSkippedMember = ImageScanSkippedMember;
 
 export interface ImageCatalog {
     readonly v: 5;
@@ -150,19 +142,24 @@ export async function imagePng(data: Uint8Array, pictureIndex: number): Promise<
     const canvas = document.createElement("canvas");
     canvas.width = image.width;
     canvas.height = image.height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("2D canvas is unavailable");
-    context.putImageData(
-        new ImageData(new Uint8ClampedArray(image.rgba), image.width, image.height),
-        0,
-        0,
-    );
-    const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob(value => value
-            ? resolve(value)
-            : reject(new Error("PNG encoding failed")), "image/png");
-    });
-    return new Uint8Array(await blob.arrayBuffer());
+    try {
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("2D canvas is unavailable");
+        context.putImageData(
+            new ImageData(new Uint8ClampedArray(image.rgba.buffer as ArrayBuffer,
+                image.rgba.byteOffset, image.rgba.byteLength), image.width, image.height),
+            0,
+            0,
+        );
+        const blob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob(value => value
+                ? resolve(value)
+                : reject(new Error("PNG encoding failed")), "image/png");
+        });
+        return new Uint8Array(await blob.arrayBuffer());
+    } finally {
+        canvas.width = canvas.height = 1;
+    }
 }
 
 function isImageRoleEvidence(value: unknown): value is ImageRoleEvidence {
@@ -212,45 +209,6 @@ function isImageFormat(value: unknown): value is ImageFormat {
     return value === "TIM2" || value === "PCK" || value === "SZ";
 }
 
-function hasTim2Magic(data: Uint8Array): boolean {
-    return data.length >= 4
-        && data[0] === 0x54
-        && data[1] === 0x49
-        && data[2] === 0x4d
-        && data[3] === 0x32;
-}
-
-async function skippedDeclaredTim2Members(
-    entry: VfiEntry,
-    stored: Uint8Array,
-): Promise<ImageCatalogSkippedMember[]> {
-    if (/\.tm2$/i.test(entry.path)) return [];
-    try {
-        const pck = /\.sz$/i.test(entry.path)
-            ? await inflateSz(stored, "image package")
-            : stored;
-        const members = unpackPck(pck, "image package");
-        if (!members) return [];
-        const names = pckFileNames(members);
-        return members.flatMap(member => {
-            const bytes = memberBytes(pck, member);
-            if (typeOf(member.attrs).toLowerCase() !== "tm2"
-                    || hasTim2Magic(bytes))
-                return [];
-            return [{
-                entryOffset: entry.entryOff,
-                sourcePath: entry.path,
-                memberIndex: member.index,
-                fileName: names[member.index]!,
-                byteLength: bytes.length,
-                reason: "missing-tim2-magic" as const,
-            }];
-        });
-    } catch {
-        /* Let the canonical scan below own parsing and error classification. */
-        return [];
-    }
-}
 
 function isImageCatalogSkippedMember(
     value: unknown,
@@ -382,12 +340,17 @@ function isImageCatalog(value: unknown, expectedSourceKey: string): value is Ima
     return usedSources.size === sources.size;
 }
 
+interface ImageContainer {
+    bytes: Uint8Array;
+    members: PckMember[] | null;
+}
+
 export class ImageStore {
     private cache: OpfsCache | null;
     private vfi: Vfi | null;
     private readonly cacheKey: string;
     private catalog: ImageCatalog | null = null;
-    private containerCache = new Map<string, Promise<Uint8Array | null>>();
+    private containerCache = new Map<string, Promise<ImageContainer | null>>();
     private cacheWarning: string | null = null;
 
     constructor(cache: OpfsCache | null, vfi: Vfi | null,
@@ -419,18 +382,12 @@ export class ImageStore {
         try {
             parsed = JSON.parse(new TextDecoder().decode(raw));
         } catch (error) {
-            this.useIsoAfterCacheFailure(
-                error,
-                "the cached image index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
-            );
-            return null;
+            return this.rebuildInvalidCatalog(error);
         }
         if (!isImageCatalog(parsed, this.cacheKey)) {
-            this.useIsoAfterCacheFailure(
-                new Error("the cached image index has an invalid schema"),
-                "the cached image index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+            return this.rebuildInvalidCatalog(
+                new Error("the cached image index has an invalid or obsolete schema"),
             );
-            return null;
         }
         this.catalog = parsed;
         return parsed;
@@ -441,6 +398,17 @@ export class ImageStore {
         assertAttachedDiscIdentity(this.cacheKey, disc.cacheKey);
         this.vfi = disc.vfi;
         this.containerCache.clear();
+    }
+
+    private rebuildInvalidCatalog(error: unknown): null {
+        const message = "the cached image index is damaged or obsolete -- "
+            + "reconnect the same disc to rebuild it or forget the disc cache";
+        if (!this.vfi) throw new Error(message, { cause: error });
+        this.catalog = null;
+        this.containerCache.clear();
+        this.cacheWarning = `rebuilding the image index from the attached ISO `
+            + `(${technicalReason(error)})`;
+        return null;
     }
 
     private useIsoAfterCacheFailure(error: unknown, message: string): void {
@@ -459,16 +427,7 @@ export class ImageStore {
             throw new Error("no ISO attached -- choose your disc image first");
         let cache = this.cache;
         const sources: ImageSourceIdentity[] = [];
-        const skipped: ImageCatalogSkippedMember[] = [];
-        const reportingVfi = {
-            entries: vfi.entries,
-            read: async (entry: VfiEntry): Promise<Uint8Array> => {
-                const stored = await vfi.read(entry);
-                skipped.push(...await skippedDeclaredTim2Members(entry, stored));
-                return stored;
-            },
-        } as Vfi;
-        const scan = await scanImageTextures(reportingVfi, {
+        const scan = await scanImageTextures(vfi, {
             progress,
             container: async (entry, bytes) => {
                 const identity = await fingerprintBytes(bytes);
@@ -491,6 +450,7 @@ export class ImageStore {
             },
         });
         sources.sort((left, right) => left.entryOffset - right.entryOffset);
+        const skipped = scan.skipped;
         skipped.sort((left, right) => {
             const source = IMAGE_NAME_COLLATOR.compare(
                 left.sourcePath,
@@ -515,6 +475,7 @@ export class ImageStore {
             try {
                 await cache.write(META,
                     new TextEncoder().encode(JSON.stringify(catalog)));
+                this.cacheWarning = null;
             } catch (error) {
                 this.useIsoAfterCacheFailure(
                     error,
@@ -540,7 +501,7 @@ export class ImageStore {
 
     private async loadContainer(texture: ImageTexture,
                                 locator: ImageTextureLocator,
-                                expected: ImageSourceIdentity): Promise<Uint8Array | null> {
+                                expected: ImageSourceIdentity): Promise<ImageContainer | null> {
         let stored: Uint8Array | null;
         if (this.vfi) {
             const entry = this.vfi.entries.find(candidate =>
@@ -573,14 +534,18 @@ export class ImageStore {
                 + "reconnect the same disc or forget the disc cache",
             );
         }
-        return /\.sz$/i.test(texture.sourcePath)
-            ? inflateSz(stored, "image source")
+        const bytes = /\.sz$/i.test(texture.sourcePath)
+            ? await inflateSz(stored, "image source")
             : stored;
+        return {
+            bytes,
+            members: locator.memberIndex === null ? null : unpackPck(bytes, "image source"),
+        };
     }
 
     private async readContainer(texture: ImageTexture,
                                 locator: ImageTextureLocator,
-                                expected: ImageSourceIdentity): Promise<Uint8Array | null> {
+                                expected: ImageSourceIdentity): Promise<ImageContainer | null> {
         const id = `${locator.containerId}:${expected.sha256}`;
         let pending = this.containerCache.get(id);
         if (pending) {
@@ -596,10 +561,11 @@ export class ImageStore {
         }
         try {
             const container = await pending;
-            if (!container) this.containerCache.delete(id);
+            if (!container && this.containerCache.get(id) === pending)
+                this.containerCache.delete(id);
             return container;
         } catch (error) {
-            this.containerCache.delete(id);
+            if (this.containerCache.get(id) === pending) this.containerCache.delete(id);
             throw error;
         }
     }
@@ -615,14 +581,13 @@ export class ImageStore {
         if (!container) return null;
 
         if (locator.memberIndex === null) {
-            inspectTim2(container, "image source");
-            return container;
+            inspectTim2(container.bytes, "image source");
+            return container.bytes;
         }
-        const members = unpackPck(container, "image source");
-        const member = members?.[locator.memberIndex];
+        const member = container.members?.[locator.memberIndex];
         if (!member || member.name !== texture.memberName)
             throw new Error("the image member does not match this catalog");
-        const bytes = memberBytes(container, member);
+        const bytes = memberBytes(container.bytes, member);
         inspectTim2(bytes, "image member");
         return bytes;
     }

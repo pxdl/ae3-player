@@ -16,17 +16,17 @@ export function movieGroupLabel(entry: MovieEntry): string {
 }
 
 export function movieScanLabel(entry: MovieEntry, detailed: boolean): string {
+    const rate = entry.video.frameRate;
+    const format = (value: number): string => Number(value.toFixed(2)).toString();
     if (entry.video.fieldOrder === "progressive")
-        return detailed ? "Progressive · 29.97 fps" : "29.97p";
+        return detailed ? `Progressive · ${format(rate)} fps` : `${format(rate)}p`;
     const topFieldFirst = entry.video.fieldOrder === "tt";
     if (detailed)
-        return `${topFieldFirst ? "Top" : "Bottom"} field first · bobbed to 59.94 fps`;
-    return `59.94p · source ${topFieldFirst ? "TFF" : "BFF"}`;
+        return `${topFieldFirst ? "Top" : "Bottom"} field first · bobbed to ${format(rate * 2)} fps`;
+    return `${format(rate * 2)}p · source ${topFieldFirst ? "TFF" : "BFF"}`;
 }
 
 export function movieSourceComplete(entry: MovieEntry, cache: MovieCacheInfo): boolean {
-    const sourceBytes = entry.movie.size
-        + (entry.subtitleBin?.size ?? 0)
-        + (entry.subtitleSbt?.size ?? 0);
+    const sourceBytes = entry.movie.size + entry.subtitleBytes;
     return cache.sourceBytes >= sourceBytes;
 }

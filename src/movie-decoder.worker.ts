@@ -13,7 +13,6 @@ import type {
     SeekDecoderRequest,
 } from "./movie-decoder-protocol.ts";
 import {
-    MPEG_FRAME_DURATION,
     movieFrameByteLength,
     movieOutputFrameDuration,
 } from "./movie-decoder-protocol.ts";
@@ -93,6 +92,7 @@ interface DecoderSource {
     sourceFrames: number;
     outputFrames: number;
     frameDuration: number;
+    frameRate: number;
     fieldOrder: MovieFieldOrder;
     seekPoints: readonly Mpeg2SeekPoint[];
 }
@@ -198,7 +198,7 @@ async function initialize(request: InitializeDecoderRequest): Promise<void> {
     }
     assertCurrent(request.generation);
 
-    const frameDuration = movieOutputFrameDuration(request.fieldOrder);
+    const frameDuration = movieOutputFrameDuration(request.fieldOrder, request.frameRate);
     const outputMultiplier = request.fieldOrder === "progressive" ? 1 : 2;
     source = {
         blob: new Blob([request.video]),
@@ -208,6 +208,7 @@ async function initialize(request: InitializeDecoderRequest): Promise<void> {
         sourceFrames: request.sourceFrames,
         outputFrames: request.sourceFrames * outputMultiplier,
         frameDuration,
+        frameRate: request.frameRate,
         fieldOrder: request.fieldOrder,
         seekPoints: request.seekPoints,
     };
@@ -290,7 +291,7 @@ async function seek(request: SeekDecoderRequest): Promise<void> {
     if (!Number.isFinite(request.target))
         throw new StageError("protocol", "seek target must be finite");
     const target = Math.min(Math.max(request.target, 0), movie.duration);
-    const sourceFrame = Math.floor(target / MPEG_FRAME_DURATION + TIMESTAMP_EPSILON);
+    const sourceFrame = Math.floor(target * movie.frameRate + TIMESTAMP_EPSILON);
     let pointIndex = 0;
     for (let index = 0; index < movie.seekPoints.length; index++) {
         const candidate = movie.seekPoints[index]!;
@@ -361,7 +362,7 @@ async function openAt(point: Mpeg2SeekPoint, generation: number): Promise<void> 
             {
                 type: av.AVMEDIA_TYPE_VIDEO,
                 time_base: [stream.time_base_num, stream.time_base_den],
-                frame_rate: 30000 / 1001,
+                frame_rate: movie.frameRate,
                 pix_fmt: av.AV_PIX_FMT_YUV420P,
                 width: movie.width,
                 height: movie.height,
@@ -531,6 +532,7 @@ function parseRequest(value: unknown): MovieDecoderRequest {
                 || !("width" in value) || typeof value.width !== "number"
                 || !("height" in value) || typeof value.height !== "number"
                 || !("fieldOrder" in value) || !isFieldOrder(value.fieldOrder)
+                || !("frameRate" in value) || typeof value.frameRate !== "number"
                 || !("duration" in value) || typeof value.duration !== "number"
                 || !("sourceFrames" in value) || typeof value.sourceFrames !== "number"
                 || !("seekPoints" in value))
@@ -544,6 +546,7 @@ function parseRequest(value: unknown): MovieDecoderRequest {
             width: value.width,
             height: value.height,
             fieldOrder: value.fieldOrder,
+            frameRate: value.frameRate,
             duration: value.duration,
             sourceFrames: value.sourceFrames,
             seekPoints: parseSeekPoints(value.seekPoints),
@@ -591,6 +594,8 @@ function parseSeekPoints(value: unknown): Mpeg2SeekPoint[] {
 
 function validateInitialize(request: InitializeDecoderRequest): void {
     movieFrameByteLength(request.width, request.height);
+    if (request.frameRate !== 25 && request.frameRate !== 30000 / 1001)
+        throw new StageError("protocol", "unsupported MPEG-2 source frame rate");
     if (!(request.video instanceof ArrayBuffer) || request.video.byteLength === 0)
         throw new StageError("protocol", "decoder source must be a non-empty ArrayBuffer");
     if (!Number.isFinite(request.duration) || request.duration <= 0)

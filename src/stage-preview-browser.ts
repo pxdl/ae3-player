@@ -4,6 +4,7 @@ import {
     StagePreviewDecoder,
 } from "./stage-preview-decoder.ts";
 import type {
+    StagePreviewArchive,
     StagePreviewCatalog,
     StagePreviewEntry,
     StagePreviewFrame,
@@ -88,6 +89,7 @@ export class StagePreviewBrowser {
     readonly #hooks: StagePreviewBrowserHooks;
     #store: StagePreviewStore | null = null;
     #catalog: StagePreviewCatalog | null = null;
+    #archive: StagePreviewArchive | null = null;
     #selected: StagePreviewEntry | null = null;
     #frame = 0;
     #decoder: StagePreviewDecoder | null = null;
@@ -104,8 +106,8 @@ export class StagePreviewBrowser {
         $("stage-preview-list").addEventListener("click", event => {
             const button = (event.target as Element)
                 .closest<HTMLButtonElement>("[data-stage-preview-key]");
-            const stage = this.#catalog?.stages.find(candidate =>
-                candidate.key === button?.dataset.stagePreviewKey);
+            const stage = this.#archive?.stages.find(candidate =>
+                candidate.id === button?.dataset.stagePreviewKey);
             if (stage) void this.#select(stage, 0);
         });
         $("stage-preview-frames").addEventListener("click", event => {
@@ -115,6 +117,9 @@ export class StagePreviewBrowser {
             if (this.#selected && Number.isInteger(frame) && frame >= 0 && frame < 8)
                 void this.#select(this.#selected, frame);
         });
+        $<HTMLSelectElement>("stage-preview-source").onchange = event => {
+            this.#selectArchive((event.currentTarget as HTMLSelectElement).value);
+        };
         $("stage-preview-export-png").onclick = () => void this.#export("png");
         $("stage-preview-export-title-png").onclick = () => void this.#export("titlePng");
         $("stage-preview-export-composite-png").onclick = () =>
@@ -137,6 +142,7 @@ export class StagePreviewBrowser {
         this.#selectionGeneration++;
         this.#store = store;
         this.#catalog = null;
+        this.#archive = null;
         this.#selected = null;
         this.#decoded = null;
         this.#catalogPending = null;
@@ -167,7 +173,8 @@ export class StagePreviewBrowser {
     snapshot(): object {
         return {
             catalog: this.#catalog,
-            selected: this.#selected?.key ?? null,
+            selected: this.#selected?.id ?? null,
+            sourcePath: this.#archive?.sourcePath ?? null,
             frame: this.#frame,
             decoded: this.#decoded !== null,
             titleVisible: this.#titleVisible,
@@ -176,10 +183,10 @@ export class StagePreviewBrowser {
     }
 
     handleKey(event: KeyboardEvent): boolean {
-        const stages = this.#catalog?.stages;
+        const stages = this.#archive?.stages;
         if (!stages?.length) return false;
         const selected = Math.max(0, stages.findIndex(stage =>
-            stage.key === this.#selected?.key));
+            stage.id === this.#selected?.id));
         switch (event.key) {
             case "ArrowUp":
             case "ArrowDown": {
@@ -188,7 +195,7 @@ export class StagePreviewBrowser {
                 void this.#select(stages[index]!, 0);
                 requestAnimationFrame(() => {
                     $("stage-preview-list")
-                        .querySelector(`[data-stage-preview-key="${CSS.escape(stages[index]!.key)}"]`)
+                        .querySelector(`[data-stage-preview-key="${CSS.escape(stages[index]!.id)}"]`)
                         ?.scrollIntoView({ block: "nearest" });
                 });
                 return true;
@@ -273,21 +280,34 @@ export class StagePreviewBrowser {
         this.#catalog = catalog;
         $("stage-preview-setup").hidden = true;
         $("stage-preview-workspace").hidden = false;
-        $("stage-preview-count").textContent = `${catalog.stages.length} SLOTS`;
+        const source = $<HTMLSelectElement>("stage-preview-source");
+        source.replaceChildren(...catalog.archives.map(archive =>
+            new Option(archive.sourcePath, archive.sourcePath)));
+        $("stage-preview-source-filter").hidden = catalog.archives.length < 2;
+        this.#selectArchive(catalog.archives[0]!.sourcePath);
+    }
+
+    #selectArchive(sourcePath: string): void {
+        const archive = this.#catalog?.archives.find(candidate => candidate.sourcePath === sourcePath);
+        if (!archive) return;
+        this.#archive = archive;
+        $<HTMLSelectElement>("stage-preview-source").value = sourcePath;
+        $("stage-preview-count").textContent = `${archive.stages.length} SLOTS`;
+        const stage = archive.stages.find(candidate => candidate.key === this.#selected?.key)
+            ?? archive.stages[0];
         this.#renderList();
         this.#updateActions();
-        this.#hooks.status(`${catalog.stages.length} stage previews · choose _00 through _07`);
-        const stage = catalog.stages[0];
-        if (stage) void this.#select(stage, 0);
+        this.#hooks.status(`${archive.sourcePath} · ${archive.stages.length} stage previews · choose _00 through _07`);
+        if (stage) void this.#select(stage, this.#frame);
     }
 
     #renderList(): void {
         const list = $("stage-preview-list");
-        const stages = this.#catalog?.stages ?? [];
+        const stages = this.#archive?.stages ?? [];
         list.innerHTML = stages.map(stage =>
-            `<li class="stage-preview-row${stage.key === this.#selected?.key ? " selected" : ""}">
-                <button type="button" data-stage-preview-key="${escapeMarkup(stage.key)}"
-                    aria-current="${stage.key === this.#selected?.key ? "true" : "false"}">
+            `<li class="stage-preview-row${stage.id === this.#selected?.id ? " selected" : ""}">
+                <button type="button" data-stage-preview-key="${escapeMarkup(stage.id)}"
+                    aria-current="${stage.id === this.#selected?.id ? "true" : "false"}">
                     <strong>${escapeMarkup(stage.key)}</strong>
                     <span>SLOT ${stage.slotIndex.toString().padStart(2, "0")}</span>
                 </button>
@@ -332,10 +352,10 @@ export class StagePreviewBrowser {
             this.#titleAvailable = true;
             this.#syncTitleVisibility();
             composite.hidden = false;
-            this.#decoded = { key: stage.key, frame: frameIndex, image };
+            this.#decoded = { key: stage.id, frame: frameIndex, image };
             this.#setPreviewState("");
             this.#updateActions();
-            this.#hooks.status(`${frame.member.name}.ipc · 256×256 · IPU control ${hex(frame.ipc.control, 4)}`);
+            this.#hooks.status(`${stage.sourcePath} · ${frame.member.name}.ipc · 256×256 · IPU control ${hex(frame.ipc.control, 4)}`);
         } catch (cause) {
             if (generation !== this.#selectionGeneration
                 || cause instanceof StagePreviewDecodeCancelledError)
@@ -358,7 +378,7 @@ export class StagePreviewBrowser {
     }
 
     #renderInspector(stage: StagePreviewEntry, frame: StagePreviewFrame): void {
-        const catalog = this.#catalog;
+        const catalog = this.#archive;
         if (!catalog) return;
         $("stage-preview-inspector").innerHTML = [
             metadataSection("ARCHIVE", [
@@ -418,7 +438,7 @@ export class StagePreviewBrowser {
 
     #updateActions(): void {
         const selected = this.#selected !== null;
-        const decoded = this.#decoded?.key === this.#selected?.key
+        const decoded = selected && this.#decoded?.key === this.#selected?.id
             && this.#decoded?.frame === this.#frame;
         const decodedTitle = decoded && this.#titleAvailable;
         $<HTMLButtonElement>("stage-preview-export-png").disabled =
@@ -432,7 +452,7 @@ export class StagePreviewBrowser {
         $<HTMLButtonElement>("stage-preview-export-tm2").disabled =
             this.#exporting || !selected;
         $<HTMLButtonElement>("stage-preview-export-archive").disabled =
-            this.#exporting || !this.#catalog;
+            this.#exporting || !this.#archive;
     }
 
     async #export(kind: "png" | "titlePng" | "compositePng"
@@ -440,9 +460,10 @@ export class StagePreviewBrowser {
         const store = this.#store;
         const stage = this.#selected;
         const frame = stage?.frames[this.#frame];
-        if (!store || this.#exporting) return;
+        const archiveInfo = this.#archive;
+        if (!store || !archiveInfo || this.#exporting) return;
         if (kind !== "archive" && (!stage || !frame)) return;
-        const decoded = this.#decoded?.key === stage?.key
+        const decoded = stage !== null && this.#decoded?.key === stage.id
             && this.#decoded?.frame === this.#frame;
         const derivedPng = kind === "png" || kind === "titlePng"
             || kind === "compositePng";
@@ -451,21 +472,24 @@ export class StagePreviewBrowser {
             && !this.#titleAvailable)
             return;
 
+        const sourcePrefix = this.#catalog!.archives.length > 1
+            ? `${encodeURIComponent(archiveInfo.sourcePath)}_` : "";
         this.#exporting = true;
         this.#updateActions();
         try {
             let filename: string;
             if (kind === "archive") {
-                filename = "stages.bin";
-                const archive = await store.readArchive();
+                filename = this.#catalog!.archives.length > 1
+                    ? encodeURIComponent(archiveInfo.sourcePath) : "stages.bin";
+                const archive = await store.readArchive(archiveInfo.sourcePath);
                 if (!archive) throw new Error("stage-preview archive is unavailable");
                 download(archive, filename, "application/octet-stream");
             } else if (kind === "ipc") {
-                filename = `${frame!.member.name}.ipc`;
+                filename = `${sourcePrefix}${frame!.member.name}.ipc`;
                 download(await store.readFrame(frame!), filename,
                     "application/octet-stream");
             } else if (kind === "tm2") {
-                filename = `${stage!.title.member.name}.tm2`;
+                filename = `${sourcePrefix}${stage!.title.member.name}.tm2`;
                 download(await store.readTitle(stage!.title), filename,
                     "application/octet-stream");
             } else {
@@ -473,13 +497,13 @@ export class StagePreviewBrowser {
                 const titleCanvas = $<HTMLCanvasElement>("stage-preview-title");
                 let blob: Blob;
                 if (kind === "titlePng") {
-                    filename = `${stage!.title.member.name}.png`;
+                    filename = `${sourcePrefix}${stage!.title.member.name}.png`;
                     blob = await pngBlob(titleCanvas);
                 } else if (kind === "compositePng") {
-                    filename = `${frame!.member.name}_composite.png`;
+                    filename = `${sourcePrefix}${frame!.member.name}_composite.png`;
                     blob = await compositePngBlob(previewCanvas, titleCanvas);
                 } else {
-                    filename = `${frame!.member.name}.png`;
+                    filename = `${sourcePrefix}${frame!.member.name}.png`;
                     blob = await pngBlob(previewCanvas);
                 }
                 download(blob, filename, "image/png");

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+import { deflateSync } from "node:zlib";
 
 import {
     discSupportWarning,
     friendlyError,
     LAST_DISC_KEY,
+    openIso,
     resumeSession,
     type DiscSession,
 } from "../src/disc.ts";
@@ -29,10 +31,10 @@ import {
 } from "../src/movies.ts";
 import { SeInspector, SeStore } from "../src/se.ts";
 import { StreamDecoder, StreamPlayer } from "../src/streams.ts";
+import { Vfi } from "../src/vendor/extract/vfi.ts";
 import {
     OpfsCache,
     type ImageTexture,
-    type Vfi,
     type VfiEntry,
 } from "../src/vendor/extract/index.ts";
 async function commitDiscWhenCurrent<T>(
@@ -553,6 +555,169 @@ function installHistoryState(state: unknown): () => void {
     };
 }
 
+function openingDiscFixture(volumeId = "DEMO TEST"): { file: File; vfi: Vfi } {
+    const database = new Uint8Array(256 + 2 * 164);
+    database.fill(0x55, 0, 256);
+    database.set(encoder.encode(
+        "EDB\nstn:BgmDesc:6:2\ns:0:name\ns:32:midi\ns:64:vh\n"
+        + "s:96:vb\ns:128:reverb\nf:160:volume_scale\nsizest:164\nb:256\n"));
+    for (const [index, name] of ["available", "missing"].entries()) {
+        const base = 256 + index * 164;
+        for (const [field, value] of [
+            name, `${name}.mid`, `${name}.hd`, `${name}.bd`, "system",
+        ].entries())
+            database.set(encoder.encode(value), base + field * 32);
+        new DataView(database.buffer).setFloat32(base + 160, 0.5, true);
+    }
+    const pck = makePck([{ name: "bgm_desc.exdb", attrs: "", data: database }]);
+    const compressed = deflateSync(pck).subarray(2);
+    const sz = new Uint8Array(4 + compressed.length);
+    setU32(sz, 0, pck.length);
+    sz.set(compressed, 4);
+    const payloads = new Map([
+        ["debug/demo/sound/bgm/available.hd", Uint8Array.of(1, 2, 3)],
+        ["debug/demo/sound/bgm/available.bd", Uint8Array.of(4, 5, 6)],
+        ["debug/demo/sound/bgm/available.mid", Uint8Array.of(7, 8, 9)],
+        ["debug/demo/sound/bgm/missing.mid", Uint8Array.of(10)],
+        ["debug/demo/static/exdb_sound.pck.sz", sz],
+    ]);
+    const entries = [...payloads].map(([path, data], index): VfiEntry => ({
+        entryOff: 32 + index * 32, entrySize: 32, parentOff: 0,
+        sector: index + 1, size: data.length,
+        name: path.slice(path.lastIndexOf("/") + 1), path,
+    }));
+    const vfi = {
+        entries, dataOff: 1,
+        async read(entry: VfiEntry): Promise<Uint8Array> {
+            return payloads.get(entry.path)!.slice();
+        },
+    } as unknown as Vfi;
+
+    const iso = new Uint8Array(22 * 2048);
+    const directoryRecord = (name: string, lba: number, size: number,
+                             directory: boolean): Uint8Array => {
+        const id = encoder.encode(name);
+        const record = new Uint8Array((33 + id.length + 1) & ~1);
+        const view = new DataView(record.buffer);
+        record[0] = record.length;
+        view.setUint32(2, lba, true);
+        view.setUint32(6, lba, false);
+        view.setUint32(10, size, true);
+        view.setUint32(14, size, false);
+        record[25] = directory ? 2 : 0;
+        view.setUint16(28, 1, true);
+        view.setUint16(30, 1, false);
+        record[32] = id.length;
+        record.set(id, 33);
+        return record;
+    };
+    const cnf = encoder.encode("BOOT2=cdrom0:\\SCUS_975.48;1\n");
+    const pvd = 16 * 2048;
+    iso[pvd] = 1;
+    iso.set(encoder.encode("CD001"), pvd + 1);
+    iso[pvd + 6] = 1;
+    iso.set(encoder.encode(volumeId.padEnd(32)), pvd + 40);
+    new DataView(iso.buffer).setUint16(pvd + 128, 2048, true);
+    iso.set(directoryRecord("\0", 18, 2048, true), pvd + 156);
+    const rootRecords = [
+        directoryRecord("\0", 18, 2048, true),
+        directoryRecord("\u0001", 18, 2048, true),
+        directoryRecord("SYSTEM.CNF;1", 20, cnf.length, false),
+        directoryRecord("GAME", 19, 2048, true),
+    ];
+    let offset = 18 * 2048;
+    for (const record of rootRecords) {
+        iso.set(record, offset);
+        offset += record.length;
+    }
+    iso.set(directoryRecord("DATA.BIN;1", 21, 64, false), 19 * 2048);
+    iso.set(cnf, 20 * 2048);
+    iso.set([0x56, 0x46, 0x49, 0], 21 * 2048);
+    return { file: new File([iso], "demo.iso"), vfi };
+}
+
+function installOpeningCache(context: TestContext,
+                             files: Map<string, Uint8Array>): () => void {
+    const pointers = new Map<string, string>();
+    const restore = installLocalStorage({
+        getItem: (key: string) => pointers.get(key) ?? null,
+        setItem: (key: string, value: string) => { pointers.set(key, value); },
+        removeItem: (key: string) => { pointers.delete(key); },
+    } as Storage);
+    context.mock.method(OpfsCache, "supported", () => true);
+    context.mock.method(OpfsCache, "open", async (key: string) =>
+        cacheDouble({
+            key,
+            async read(name) { return files.get(name)?.slice() ?? null; },
+            async has(name) { return files.has(name); },
+            async size(name) { return files.get(name)?.length ?? null; },
+            async write(name, data) { files.set(name, data.slice()); },
+            async remove(name) { files.delete(name); },
+        }));
+    return restore;
+}
+
+test("nested demo archives expose only complete cues and resume their source audio", async context => {
+    const fixture = openingDiscFixture();
+    context.mock.method(Vfi, "open", async () => fixture.vfi);
+    const restore = installOpeningCache(context, new Map());
+    try {
+        const opened = await openIso(fixture.file, () => {});
+        assert.deepEqual(opened.songs.map(song => song.name), ["available"]);
+        const resumed = await resumeSession();
+        assert.ok(resumed);
+        assert.deepEqual(resumed.songs.map(song => song.name), ["available"]);
+        assert.deepEqual((await resumed.songAssets(resumed.songs[0]!)).hd,
+            Uint8Array.of(1, 2, 3));
+    } finally { restore(); }
+});
+
+test("blank ISO volume labels remain resumable", async context => {
+    const fixture = openingDiscFixture("");
+    context.mock.method(Vfi, "open", async () => fixture.vfi);
+    const restore = installOpeningCache(context, new Map());
+    try {
+        await openIso(fixture.file, () => {});
+        const resumed = await resumeSession();
+        assert.ok(resumed);
+        assert.equal(resumed.volumeId, "");
+        assert.deepEqual(resumed.songs.map(song => song.name), ["available"]);
+    } finally { restore(); }
+});
+
+test("reopening an ISO rebuilds interrupted metadata without disabling persistence", async context => {
+    const fixture = openingDiscFixture();
+    context.mock.method(Vfi, "open", async () => fixture.vfi);
+    context.mock.method(console, "warn", () => {});
+    const restore = installOpeningCache(context,
+        new Map([["meta.json", new Uint8Array()]]));
+    try {
+        const opened = await openIso(fixture.file, () => {});
+        assert.equal(opened.cached, true);
+        assert.equal(opened.persistenceWarning, null);
+        const resumed = await resumeSession();
+        assert.ok(resumed);
+        assert.deepEqual((await resumed.songAssets(resumed.songs[0]!)).mid,
+            Uint8Array.of(7, 8, 9));
+    } finally { restore(); }
+});
+
+test("reopening repairs same-size corrupted payloads before publishing a resumable cache", async context => {
+    const fixture = openingDiscFixture();
+    context.mock.method(Vfi, "open", async () => fixture.vfi);
+    const files = new Map<string, Uint8Array>();
+    const restore = installOpeningCache(context, files);
+    try {
+        await openIso(fixture.file, () => {});
+        files.set("bgm/available.bd", Uint8Array.of(4, 0, 6));
+        await openIso(fixture.file, () => {});
+        const resumed = await resumeSession();
+        assert.ok(resumed);
+        assert.deepEqual((await resumed.songAssets(resumed.songs[0]!)).bd,
+            Uint8Array.of(4, 5, 6));
+    } finally { restore(); }
+});
+
 class SeWorkerDouble {
     static readonly instances: SeWorkerDouble[] = [];
     onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -833,18 +998,18 @@ test("failed attached movie scan offers source reattachment", async context => {
 
 test("movie scan preserves valid assets beside an unsupported container", async () => {
     const catalog = await scanMovieCatalog(mixedMovieVfi(), "disc");
-    assert.deepEqual(catalog.entries.map(entry => entry.name), ["new_play01"],
-                     JSON.stringify(catalog.issues));
+    assert.deepEqual(catalog.entries.map(entry => entry.name),
+        ["regional/private/movie/new_play01"], JSON.stringify(catalog.issues));
     assert.equal(catalog.issues.length, 1);
-    assert.equal(catalog.issues[0]?.name, "broken");
+    assert.equal(catalog.issues[0]?.name, "regional/private/movie/broken");
     assert.match(catalog.issues[0]?.reason ?? "", /bad str magic/);
     assert.doesNotMatch(catalog.issues[0]?.reason ?? "", /regional|private|movie\//i);
 });
 
 test("incomplete subtitle discovery isolates one movie and keeps neighbors", async () => {
     const catalog = await scanMovieCatalog(incompleteSubtitleVfi(), "disc");
-    assert.deepEqual(catalog.entries.map(entry => entry.name), ["new_play01"]);
-    assert.deepEqual(catalog.issues.map(issue => issue.name), ["new_scene01"]);
+    assert.deepEqual(catalog.entries.map(entry => entry.name), ["debug/test/movie/new_play01"]);
+    assert.deepEqual(catalog.issues.map(issue => issue.name), ["debug/test/movie/new_scene01"]);
     assert.match(catalog.issues[0]!.reason, /incomplete subtitle pair/);
     assert.doesNotMatch(catalog.issues[0]!.reason, /debug[\\/]test|scene01\.bin/i);
 });
@@ -922,7 +1087,7 @@ test("operational movie-cache reads fall back to the attached disc", async conte
     );
 });
 
-test("attached movie playback survives cache accounting and cleanup failures", async context => {
+test("attached movie playback survives cache accounting failures", async context => {
     context.mock.method(console, "warn", () => {});
     const catalog = await scanMovieCatalog(mixedMovieVfi(), "disc");
     const measured = new MovieStore(cacheDouble({
@@ -930,35 +1095,15 @@ test("attached movie playback survives cache accounting and cleanup failures", a
             throw new Error("OPFS size denied");
         },
     }), mixedMovieVfi(), "disc", catalog);
-    assert.deepEqual(await measured.cacheInfo("new_play01"), {
+    assert.deepEqual(await measured.cacheInfo(catalog.entries[0]!.name), {
         sourceBytes: 0,
         exportBytes: 0,
         totalBytes: 0,
     });
     assert.match(measured.persistenceWarning ?? "", /using the attached ISO/i);
 
-    const corrupted = new MovieStore(cacheDouble({
-        async read(name: string): Promise<Uint8Array | null> {
-            return name.endsWith("/source_meta.json")
-                ? encoder.encode("{")
-                : null;
-        },
-    }), mixedMovieVfi(), "disc", catalog);
-    assert.deepEqual(await corrupted.cacheInfo("new_play01"), {
-        sourceBytes: 0,
-        exportBytes: 0,
-        totalBytes: 0,
-    });
-    assert.match(corrupted.persistenceWarning ?? "", /using the attached ISO/i);
-
-    const cleanup = new MovieStore(cacheDouble({
-        async remove(): Promise<void> {
-            throw new Error("OPFS remove denied");
-        },
-    }), mixedMovieVfi(), "disc", catalog);
-    const prepared = await cleanup.prepare("new_play01", () => {});
-    assert.ok(prepared.video.byteLength > 0);
-    assert.match(cleanup.persistenceWarning ?? "", /playback remains available/i);
+    const prepared = await measured.prepare(catalog.entries[0]!.name, () => {});
+    assert.deepEqual(prepared.video, makeInspectableFmv().slice(-32, -2));
 });
 test("movie cache rejects incomplete, impossible, and intersecting metadata", async () => {
     const catalog = await scanMovieCatalog(mixedMovieVfi(), "disc");
@@ -966,7 +1111,7 @@ test("movie cache rejects incomplete, impossible, and intersecting metadata", as
     const issue = catalog.issues[0]!;
     const incomplete = {
 
-        v: 1,
+        ...catalog,
         entries: [{
             ...entry,
             video: { ...entry.video, frameRate: undefined },
@@ -974,12 +1119,12 @@ test("movie cache rejects incomplete, impossible, and intersecting metadata", as
         issues: [],
     };
     const duplicate = {
-        v: 1,
+        ...catalog,
         entries: [entry, entry],
         issues: [],
     };
     const zeroSized = {
-        v: 1,
+        ...catalog,
         entries: [{
             ...entry,
             movie: { ...entry.movie, size: 0 },
@@ -988,7 +1133,7 @@ test("movie cache rejects incomplete, impossible, and intersecting metadata", as
         issues: [],
     };
     const entryIssueIntersection = {
-        v: 1,
+        ...catalog,
         entries: [entry],
         issues: [{ ...issue, name: entry.name }],
     };
@@ -1013,8 +1158,29 @@ test("complete persisted movie metadata remains reusable without an ISO", async 
         async read(): Promise<Uint8Array> { return raw; },
     }), null, "disc");
     const cached = await store.catalog();
-    assert.deepEqual(cached?.entries.map(entry => entry.name), ["new_play01"]);
-    assert.deepEqual(cached?.issues.map(issue => issue.name), ["broken"]);
+    assert.deepEqual(cached?.entries.map(entry => entry.name), ["regional/private/movie/new_play01"]);
+    assert.deepEqual(cached?.issues.map(issue => issue.name), ["regional/private/movie/broken"]);
+});
+
+test("damaged movie source metadata rebuilds into a cache usable without the ISO", async () => {
+    const catalog = await scanMovieCatalog(mixedMovieVfi(), "disc");
+    const files = new Map<string, Uint8Array>();
+    const cache = cacheDouble({
+        async read(name) {
+            return files.get(name)?.slice()
+                ?? (name.endsWith("/source_meta.json") ? encoder.encode("{") : null);
+        },
+        async write(name, bytes) { files.set(name, bytes.slice()); },
+        async size(name) { return files.get(name)?.byteLength ?? null; },
+        async remove(name) {
+            for (const key of files.keys())
+                if (key === name || key.startsWith(`${name}/`)) files.delete(key);
+        },
+    });
+    const entry = catalog.entries[0]!;
+    await new MovieStore(cache, mixedMovieVfi(), "disc", catalog).prepare(entry.name, () => {});
+    const resumed = await new MovieStore(cache, null, "disc", catalog).prepare(entry.name, () => {});
+    assert.deepEqual(resumed.video, makeInspectableFmv().slice(-32, -2));
 });
 
 test("movie source requirement stays conservative while cache state resolves", async () => {
@@ -1112,7 +1278,7 @@ test("cache-only Images and Effects failures remain actionable", async () => {
     );
     const malformed = cacheDouble({
         async read(): Promise<Uint8Array> {
-            return encoder.encode("{\"v\":1,\"entries\":[{}]}");
+            return encoder.encode("{");
         },
     });
     await assert.rejects(
@@ -1169,7 +1335,9 @@ test("Images and Effects reject impossible persisted catalogs", async () => {
         );
     }
 
-    const emptyEffects = encoder.encode(JSON.stringify({ v: 1, entries: [] }));
+    const emptyEffects = encoder.encode(JSON.stringify({
+        v: 3, sourceKey: "disc", entries: [],
+    }));
     await assert.rejects(
         new SeStore(cacheDouble({
             async read(): Promise<Uint8Array> { return emptyEffects; },
@@ -1396,11 +1564,12 @@ test("Effects survive data and metadata cache-write failures", async context => 
     const metadataStore = new SeStore(cacheDouble({
         async has(): Promise<boolean> { return true; },
         async write(name: string): Promise<void> {
-            assert.equal(name, "se_meta.json");
-            throw new Error("metadata write denied");
+            if (name === "se_meta.json")
+                throw new Error("metadata write denied");
         },
     }), metadataFixture.vfi, "disc");
     const metadataCatalog = await metadataStore.extract(() => {});
+    assert.match(metadataStore.persistenceWarning ?? "", /metadata write denied/);
     assert.equal(metadataCatalog.entries.length, 1);
     assert.deepEqual(await metadataStore.bank(metadataCatalog.entries[0]!), {
         hd: metadataFixture.hd,

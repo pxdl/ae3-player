@@ -10,6 +10,7 @@ import {
     memberBytes,
     type DecodedAnimation,
     type DecodedCollision,
+    type DecodedMaterialState,
     type DecodedModel,
     type ModelAsset,
     type ModelAssetKind,
@@ -81,31 +82,30 @@ function commonPrefixLength(left: string, right: string): number {
     return length;
 }
 
-function materialColor(name: string): THREE.Color {
-    let hash = 0x811c9dc5;
-    for (const character of name || "material") {
-        hash ^= character.charCodeAt(0);
-        hash = Math.imul(hash, 0x01000193);
-    }
-    return new THREE.Color().setHSL((hash >>> 0) / 0xffff_ffff, 0.28, 0.58);
-}
 
 function matrixFrom(values: Float32Array, offset = 0): THREE.Matrix4 {
     return new THREE.Matrix4().fromArray(values, offset);
 }
 
 function disposeObject(root: THREE.Object3D): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    const skeletons = new Set<THREE.Skeleton>();
     root.traverse(object => {
-        if (object instanceof THREE.Mesh) {
-            object.geometry.dispose();
-            const materials = Array.isArray(object.material) ? object.material : [object.material];
-            for (const material of materials) {
-                if ("map" in material && material.map instanceof THREE.Texture)
-                    material.map.dispose();
-                material.dispose();
-            }
+        if (!(object instanceof THREE.Mesh)) return;
+        geometries.add(object.geometry);
+        if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton);
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            materials.add(material);
+            if ("map" in material && material.map instanceof THREE.Texture)
+                textures.add(material.map);
         }
     });
+    for (const skeleton of skeletons) skeleton.dispose();
+    for (const geometry of geometries) geometry.dispose();
+    for (const texture of textures) texture.dispose();
+    for (const material of materials) material.dispose();
 }
 
 function clipFrom(animation: DecodedAnimation, name: string,
@@ -128,7 +128,8 @@ function textureFor(packageData: ModelPackage | null, name: string): THREE.DataT
     if (!member) return null;
     const image = decodeTim2(memberBytes(packageData.data, member), 0);
     const texture = new THREE.DataTexture(
-        new Uint8Array(image.rgba), image.width, image.height,
+        new Uint8Array(image.rgba.buffer, image.rgba.byteOffset, image.rgba.byteLength),
+        image.width, image.height,
         THREE.RGBAFormat, THREE.UnsignedByteType,
     );
     texture.name = name;
@@ -144,37 +145,58 @@ function textureFor(packageData: ModelPackage | null, name: string): THREE.DataT
 
 type ModelMaterial = THREE.MeshLambertMaterial | THREE.MeshBasicMaterial;
 
-function materialFor(name: string, packageData: ModelPackage | null,
+const GS_ALPHA_TEST = [1, 0, 1, 4, 7, 2, 3, 6, 5] as const;
+
+function applyBlendState(material: ModelMaterial, mode: number): void {
+    const modes: Record<number, [THREE.BlendingEquation, THREE.BlendingDstFactor]> = {
+        0x10: [THREE.AddEquation, THREE.OneMinusSrcAlphaFactor],
+        0x11: [THREE.AddEquation, THREE.OneFactor],
+        0x12: [THREE.ReverseSubtractEquation, THREE.OneFactor],
+        0x20: [THREE.AddEquation, THREE.OneMinusDstAlphaFactor],
+        0x21: [THREE.AddEquation, THREE.OneFactor],
+        0x22: [THREE.ReverseSubtractEquation, THREE.OneFactor],
+    };
+    const decoded = modes[mode];
+    if (!decoded) return;
+    material.transparent = true;
+    material.blending = THREE.CustomBlending;
+    material.blendEquation = decoded[0];
+    material.blendSrc = mode >= 0x20 ? THREE.DstAlphaFactor : THREE.SrcAlphaFactor;
+    material.blendDst = decoded[1];
+}
+
+function alphaTestFor(state: DecodedMaterialState): number {
+    const test = GS_ALPHA_TEST[state.alphaTestMode] ?? 1;
+    if (test === 6) return state.alphaReference;
+    if (test === 5) return Math.max(0, state.alphaReference - 1 / 255);
+    return 0;
+}
+
+function writesDepth(state: DecodedMaterialState): boolean {
+    const test = state.alphaTestMode === 0 ? 1 : (GS_ALPHA_TEST[state.alphaTestMode] ?? 1);
+    if (test !== 0) return true;
+    return state.alphaFailMode === 0x0f;
+}
+
+function materialFor(state: DecodedMaterialState, packageData: ModelPackage | null,
                      textureNames: string[], lit: boolean): ModelMaterial {
-    const map = textureFor(packageData, name);
-    let zeroAlpha = 0;
-    let partialAlpha = 0;
-    let pixelCount = 0;
-    if (map?.image?.data instanceof Uint8Array) {
-        const rgba = map.image.data;
-        pixelCount = rgba.length / 4;
-        for (let index = 3; index < rgba.length; index += 4) {
-            const alpha = rgba[index]!;
-            if (alpha === 0) zeroAlpha++;
-            else if (alpha < 250) partialAlpha++;
-        }
-    }
-    const visiblePixels = pixelCount - zeroAlpha;
-    const usesMask = zeroAlpha > 0 && visiblePixels > 0;
-    const usesBlending = partialAlpha / Math.max(pixelCount, 1) >= 0.05;
-    if (map) textureNames.push(name);
+    const map = textureFor(packageData, state.name);
+    if (map) textureNames.push(state.name);
     const options = {
-        name: name || "unnamed",
-        color: map ? 0xffffff : materialColor(name),
+        name: state.name || "unnamed",
+        color: 0xffffff,
+        vertexColors: true,
         map,
         side: THREE.FrontSide,
-        transparent: usesBlending,
-        alphaTest: usesMask ? (usesBlending ? 0.01 : 0.5) : 0,
-        depthWrite: !usesBlending,
+        alphaTest: alphaTestFor(state),
+        depthWrite: writesDepth(state),
     };
-    return lit
+    const material = lit
         ? new THREE.MeshLambertMaterial(options)
         : new THREE.MeshBasicMaterial(options);
+    applyBlendState(material, state.alphaBlendMode);
+    material.userData.ae3MaterialState = state;
+    return material;
 }
 
 function buildModel(decoded: DecodedModel, packageData: ModelPackage | null): {
@@ -204,13 +226,22 @@ function buildModel(decoded: DecodedModel, packageData: ModelPackage | null): {
     for (const source of decoded.meshes) {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.BufferAttribute(source.positions, 3));
+        // Keep all four authored lanes, including overbright RGB. Three's native
+        // vertex-alpha path multiplies texture alpha without changing the GS blend selector.
+        geometry.setAttribute("color", new THREE.BufferAttribute(source.vertexFactors, 4));
         geometry.setAttribute("uv", new THREE.BufferAttribute(source.uvs, 2));
         geometry.setIndex(new THREE.BufferAttribute(source.indices, 1));
-        const lit = source.normals.length === source.positions.length;
+        const state = decoded.materialStates[source.materialIndex] ?? {
+            name: source.material, alphaBlendMode: 0, alphaFailMode: 0,
+            alphaTestMode: 0, alphaReference: 0, depthTestMode: 0,
+            destinationAlphaMode: 0, alphaTestOverride: false,
+            lightingMode: 0, ambientEnabled: false,
+        };
+        const lit = source.normals.length === source.positions.length && state.lightingMode !== 0;
         if (lit) geometry.setAttribute("normal", new THREE.BufferAttribute(source.normals, 3));
-        const materialKey = `${lit ? "lit" : "unlit"}\0${source.material}`;
+        const materialKey = `${lit ? "lit" : "unlit"}\0${source.materialIndex}`;
         const material = materials.get(materialKey)
-            ?? materialFor(source.material, packageData, textureNames, lit);
+            ?? materialFor(state, packageData, textureNames, lit);
         materials.set(materialKey, material);
         if (source.jointBones.length === 0) {
             const mesh = new THREE.Mesh(geometry, material);
@@ -276,6 +307,8 @@ export class ModelBrowser {
     private action: THREE.AnimationAction | null = null;
     private skeleton: THREE.SkeletonHelper | null = null;
     private resizeObserver: ResizeObserver | null = null;
+    private frameId: number | null = null;
+    private active = false;
     private lastFrame = performance.now();
     private sceneRadius = 0;
     private rotationEnabled = false;
@@ -288,29 +321,79 @@ export class ModelBrowser {
     }
 
     setStore(store: ModelStore | null): void {
+        if (this.store === store) return;
+        this.loadToken++;
+        this.busy = false;
+        this.store?.clearMemoryCache();
+        this.clearScene();
+        this.disposeRenderer();
         this.store = store;
         this.catalog = null;
         this.assets = [];
         this.filtered = [];
         this.selected = null;
         this.selectedBytes = null;
-        this.clearScene();
         this.renderList();
+        element<HTMLElement>("model-loading").hidden = true;
+        element<HTMLProgressElement>("model-progress").hidden = true;
+        this.updateActions();
     }
 
     async open(): Promise<void> {
+        const store = this.store;
+        if (!store) return;
+        const token = this.loadToken;
+        this.active = true;
         this.ensureRenderer();
-        if (!this.store) return;
+        this.resize();
+        this.startRendering();
+        if (this.action) this.action.paused = !this.playing;
         if (this.catalog) {
             this.showSetup(false);
             return;
         }
-        const catalog = await this.store.cached();
-        if (catalog) this.install(catalog);
-        else this.showSetup(true);
+        if (this.busy) return;
+        this.busy = true;
+        this.updateActions();
+        const progress = element<HTMLProgressElement>("model-progress");
+        const text = element<HTMLElement>("model-setup-status");
+        try {
+            const catalog = await store.cached((done, total, path) => {
+                if (token !== this.loadToken) return;
+                if (progress.hidden) {
+                    this.showSetup(true);
+                    progress.hidden = false;
+                }
+                progress.max = Math.max(1, total);
+                progress.value = done;
+                text.textContent = `REBUILDING 3D CATALOG ${done.toLocaleString()} / ${total.toLocaleString()} · ${path}`;
+            });
+            if (token !== this.loadToken) return;
+            if (catalog) this.install(catalog);
+            else {
+                this.showSetup(true);
+                if (!store.hasIso())
+                    text.textContent = "Reconnect the same ISO to build the 3D catalog.";
+            }
+        } catch (error) {
+            if (token !== this.loadToken) return;
+            this.showSetup(true);
+            const message = error instanceof Error ? error.message : String(error);
+            text.textContent = message;
+            this.status(`3D CATALOG FAILED: ${message}`, true);
+        } finally {
+            if (token === this.loadToken) {
+                this.busy = false;
+                progress.hidden = true;
+                this.updateActions();
+            }
+        }
     }
 
     close(): void {
+        this.active = false;
+        if (this.frameId !== null) cancelAnimationFrame(this.frameId);
+        this.frameId = null;
         if (this.action) this.action.paused = true;
     }
 
@@ -428,20 +511,43 @@ export class ModelBrowser {
         this.resizeObserver = new ResizeObserver(() => this.resize());
         this.resizeObserver.observe(viewport);
         this.resize();
+    }
+
+    private startRendering(): void {
+        if (!this.active || !this.renderer || this.frameId !== null) return;
         this.lastFrame = performance.now();
-        const animate = (now: number): void => {
-            requestAnimationFrame(animate);
-            const delta = Math.min(0.1, (now - this.lastFrame) / 1000);
-            this.lastFrame = now;
-            if (!element<HTMLElement>("model-main").hidden) {
-                if (this.playing) this.mixer?.update(delta);
-                this.controls?.update();
-                this.updateAnimationUi();
-                this.updateCameraRange();
-                this.renderer?.render(this.scene!, this.camera!);
-            }
-        };
-        requestAnimationFrame(animate);
+        this.frameId = requestAnimationFrame(this.animate);
+    }
+
+    private readonly animate = (now: number): void => {
+        this.frameId = null;
+        if (!this.active || !this.renderer || !this.scene || !this.camera) return;
+        const delta = Math.min(0.1, (now - this.lastFrame) / 1000);
+        this.lastFrame = now;
+        if (!element<HTMLElement>("model-main").hidden) {
+            if (this.playing) this.mixer?.update(delta);
+            this.controls?.update();
+            this.updateAnimationUi();
+            this.updateCameraRange();
+            this.renderer.render(this.scene, this.camera);
+        }
+        this.frameId = requestAnimationFrame(this.animate);
+    };
+
+    private disposeRenderer(): void {
+        this.close();
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = null;
+        this.rotationControls?.dispose();
+        this.rotationControls = null;
+        this.controls?.dispose();
+        this.controls = null;
+        const grid = this.scene?.getObjectByName("MODEL_GRID");
+        if (grid instanceof THREE.GridHelper) grid.dispose();
+        this.renderer?.dispose();
+        this.renderer = null;
+        this.scene = null;
+        this.camera = null;
     }
 
     private resize(): void {
@@ -505,7 +611,9 @@ export class ModelBrowser {
 
     private async extract(): Promise<void> {
         if (!this.store || this.busy) return;
-        if (!this.store.hasIso()) {
+        const store = this.store;
+        const token = this.loadToken;
+        if (!store.hasIso()) {
             this.showSetup(true);
             return;
         }
@@ -514,35 +622,44 @@ export class ModelBrowser {
         const text = element<HTMLElement>("model-setup-status");
         progress.hidden = false;
         try {
-            const catalog = await this.store.extract((done, total, path) => {
+            const catalog = await store.extract((done, total, path) => {
+                if (token !== this.loadToken) return;
                 progress.max = Math.max(1, total);
                 progress.value = done;
                 text.textContent = `SCANNING ${done.toLocaleString()} / ${total.toLocaleString()} · ${path}`;
             });
+            if (token !== this.loadToken) return;
             this.install(catalog);
         } catch (error) {
+            if (token !== this.loadToken) return;
             const message = error instanceof Error ? error.message : String(error);
             text.textContent = message;
             this.status(`3D SCAN FAILED: ${message}`, true);
         } finally {
-            this.busy = false;
-            progress.hidden = true;
+            if (token === this.loadToken) {
+                this.busy = false;
+                progress.hidden = true;
+            }
         }
     }
 
     private async attachAndExtract(file: File): Promise<void> {
         if (!this.store || this.busy) return;
+        const store = this.store;
+        const token = this.loadToken;
         this.busy = true;
         try {
             element<HTMLElement>("model-setup-status").textContent = "OPENING DISC…";
-            await this.store.attachIso(file);
+            await store.attachIso(file);
         } catch (error) {
+            if (token !== this.loadToken) return;
             const message = error instanceof Error ? error.message : String(error);
             element<HTMLElement>("model-setup-status").textContent = message;
             this.status(`DISC OPEN FAILED: ${message}`, true);
             this.busy = false;
             return;
         }
+        if (token !== this.loadToken) return;
         this.busy = false;
         if (this.catalog) {
             this.showSetup(false);
@@ -555,12 +672,15 @@ export class ModelBrowser {
 
     private async select(asset: ModelAsset): Promise<void> {
         if (!this.store || this.busy) return;
+        const store = this.store;
         const token = ++this.loadToken;
         this.selected = asset;
         this.selectedBytes = null;
-        this.renderList();
-        element<HTMLUListElement>("modellist").querySelector(`[data-id="${asset.id}"]`)
-            ?.scrollIntoView({ block: "nearest" });
+        const list = element<HTMLUListElement>("modellist");
+        list.querySelector(".model-list-item.selected")?.classList.remove("selected");
+        const item = list.querySelector(`[data-id="${CSS.escape(asset.id)}"]`);
+        item?.classList.add("selected");
+        item?.scrollIntoView({ block: "nearest" });
         this.updateActions();
         this.busy = true;
         element<HTMLElement>("model-loading").hidden = false;
@@ -568,7 +688,7 @@ export class ModelBrowser {
         this.status(`LOADING ${asset.fileName}…`);
         try {
             const [bytes, packageData] = await Promise.all([
-                this.store.read(asset), this.store.package(asset),
+                store.read(asset), store.package(asset),
             ]);
             if (!bytes) throw new Error("reconnect the same ISO to load this uncached asset");
             if (token !== this.loadToken) return;
@@ -581,13 +701,14 @@ export class ModelBrowser {
             this.present(asset, loaded);
             this.status(`VIEWING ${asset.fileName}`);
         } catch (error) {
+            if (token !== this.loadToken) return;
             const message = error instanceof Error ? error.message : String(error);
             this.clearScene();
             element<HTMLElement>("model-empty").hidden = false;
             element<HTMLElement>("model-empty").textContent = `Cannot preview ${asset.fileName}: ${message}`;
             this.renderInspector(asset, null, message);
             this.status(`3D PREVIEW FAILED: ${message}`, true);
-            if (!this.store.hasIso()) {
+            if (!store.hasIso()) {
                 element<HTMLElement>("model-setup-status").textContent =
                     "Reconnect the same disc to load this package.";
                 this.showSetup(true);
@@ -613,8 +734,8 @@ export class ModelBrowser {
         }
         if (asset.kind === "model") {
             const model = decodeI3dModel(bytes, asset.fileName);
-            const built = buildModel(model, packageData);
             const animations = this.compatibleAnimations(asset, model, packageData);
+            const built = buildModel(model, packageData);
             return {
                 root: built.root,
                 clips: animations.map(item => item.clip),
@@ -637,8 +758,8 @@ export class ModelBrowser {
             };
         }
         const model = decodeI3dModel(companion.bytes, companion.asset.fileName);
-        const built = buildModel(model, companion.packageData);
         const clip = clipFrom(animation, modelAssetStem(asset), new Set(model.bones.map(bone => bone.name)));
+        const built = buildModel(model, companion.packageData);
         return {
             root: built.root, clips: [clip], clipAssets: [asset], model,
             collision: null, animation, textureNames: built.textureNames,
@@ -766,6 +887,7 @@ export class ModelBrowser {
         this.action?.stop();
         this.action = null;
         this.mixer?.stopAllAction();
+        if (this.loaded) this.mixer?.uncacheRoot(this.loaded.root);
         this.mixer = null;
         this.rotationControls?.detach();
         if (this.controls) this.controls.enabled = true;
@@ -776,12 +898,15 @@ export class ModelBrowser {
         element<HTMLButtonElement>("model-rotation-toggle").disabled = true;
         element<HTMLButtonElement>("model-skeleton").disabled = true;
         this.updateRotationHint(null);
-        if (this.skeleton && this.scene) this.scene.remove(this.skeleton);
+        this.skeleton?.removeFromParent();
+        this.skeleton?.dispose();
         this.skeleton = null;
-        if (this.viewRoot && this.scene) this.scene.remove(this.viewRoot);
+        this.viewRoot?.removeFromParent();
         if (this.loaded) disposeObject(this.loaded.root);
         this.viewRoot = null;
         this.loaded = null;
+        // A hidden/empty view may not render again to release the last draw list.
+        this.renderer?.renderLists.dispose();
         this.sceneRadius = 0;
         this.populateAnimations(null);
     }
@@ -949,7 +1074,8 @@ export class ModelBrowser {
         ];
         if (loaded?.model) {
             const litPieces = loaded.model.meshes.filter(mesh =>
-                mesh.normals.length === mesh.positions.length).length;
+                mesh.normals.length === mesh.positions.length &&
+                (loaded.model!.materialStates[mesh.materialIndex]?.lightingMode ?? 0) !== 0).length;
             rows.push(
                 ["MESH PIECES", loaded.model.meshes.length.toLocaleString()],
                 ["VERTICES", loaded.model.vertexCount.toLocaleString()],
@@ -958,8 +1084,8 @@ export class ModelBrowser {
                 ["MATERIALS", loaded.model.materials.filter(Boolean).join(", ") || "untextured"],
                 ["TEXTURES", loaded.textureNames.join(", ") || "none resolved in package"],
                 ["SHADING", litPieces > 0
-                    ? `GAME FALLBACK LIGHTS · ${litPieces.toLocaleString()} / ${loaded.model.meshes.length.toLocaleString()} PIECES WITH AUTHORED NORMALS`
-                    : "UNLIT · NO AUTHORED NORMALS"],
+                    ? `APPROXIMATE LAMBERT · GAME FALLBACK LIGHTS · ${litPieces.toLocaleString()} / ${loaded.model.meshes.length.toLocaleString()} MATERIAL-LIT PIECES`
+                    : "UNLIT · MATERIAL LIGHTING DISABLED OR NO AUTHORED NORMALS"],
                 ["ANIMATIONS", loaded.clips.length.toLocaleString()],
             );
         }
@@ -980,7 +1106,7 @@ export class ModelBrowser {
             <span class="model-inspector-kicker">${KIND_LABEL[asset.kind]}</span>
             <h2>${escapeMarkup(modelAssetStem(asset))}</h2>
             <dl>${rows.map(([key, value]) => `<div><dt>${escapeMarkup(key)}</dt><dd>${escapeMarkup(value)}</dd></div>`).join("")}</dl>
-            <p class="model-method-note">Geometry, skinning, TIM2 textures, authored normals, and I3M rotations are decoded locally. Lit pieces use the retail fallback ambient and two-sun rig; pieces without normals stay unlit. Stage light regions and fog are scene state and are not embedded in an isolated I3D model. Animation pairing uses exact bone-track names.</p>`;
+            <p class="model-method-note">Geometry, skinning, TIM2 textures, authored normals, per-index RGBA factors, and I3M rotations are decoded locally. Authored RGBA modulates both textured and untextured pieces; material selectors, not texture or vertex alpha, choose blending and depth writes. Lit pieces still use APPROXIMATE LAMBERT · GAME FALLBACK LIGHTS, not exact VU1 color arithmetic, clamping, or GS rasterization. Pieces without normals stay unlit. Stage light regions and fog are scene state and are not embedded in an isolated I3D model. Animation pairing uses exact bone-track names.</p>`;
     }
 
     private updateActions(): void {
@@ -997,28 +1123,35 @@ export class ModelBrowser {
 
     private async exportGlb(): Promise<void> {
         if (!this.selected || !this.loaded || this.busy) return;
+        const selected = this.selected;
+        const loaded = this.loaded;
+        const token = this.loadToken;
         this.busy = true;
         this.updateActions();
         try {
             const exporter = new GLTFExporter();
-            const result = await exporter.parseAsync(this.loaded.root, {
+            const result = await exporter.parseAsync(loaded.root, {
                 binary: true,
                 onlyVisible: false,
-                animations: this.loaded.clips,
+                animations: loaded.clips,
             });
+            if (token !== this.loadToken) return;
             if (!(result instanceof ArrayBuffer)) throw new Error("GLB exporter returned JSON instead of binary data");
-            const file = `${modelAssetStem(this.selected)}.glb`;
+            const file = `${modelAssetStem(selected)}.glb`;
             download(result, file, "model/gltf-binary");
-            const animationCount = this.loaded.clips.length;
+            const animationCount = loaded.clips.length;
             this.status(`EXPORTED ${file}${animationCount
                 ? ` WITH ${animationCount} ANIMATION${animationCount === 1 ? "" : "S"}`
                 : ""}`);
         } catch (error) {
+            if (token !== this.loadToken) return;
             const message = error instanceof Error ? error.message : String(error);
             this.status(`GLB EXPORT FAILED: ${message}`, true);
         } finally {
-            this.busy = false;
-            this.updateActions();
+            if (token === this.loadToken) {
+                this.busy = false;
+                this.updateActions();
+            }
         }
     }
 }

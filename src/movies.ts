@@ -1,5 +1,5 @@
 import {
-    BlobSource, OpfsCache, openDisc, locateFmvAssets, inspectFmvPrefix, demuxFmv,
+    BlobSource, OpfsCache, openDisc, locateFmvAssets, demuxFmv,
     indexMpeg2SeekPoints, parseFmvSubtitles, subtitlesToSrt, subtitlesToVtt,
     type FmvAsset, type FmvDemux, type FmvHeader, type FmvVideoInfo,
     type Mpeg2SeekIndex, type SubtitleCue, type Vfi, type VfiEntry,
@@ -10,7 +10,10 @@ import {
     assertCacheSourceIdentity,
 } from "./disc-identity.ts";
 import { technicalReason } from "./errors.ts";
-import { FmvFormatError, type FmvDiscovery } from "./vendor/extract/fmv.ts";
+import {
+    FmvFormatError, inspectFmv, fmvLanguage, FMV_PAL_AUDIO_LANGUAGES,
+    type FmvDiscovery, type FmvSubtitleAsset,
+} from "./vendor/extract/fmv.ts";
 import {
     contentFingerprintMatches,
     fingerprintBytes,
@@ -19,7 +22,7 @@ import {
 } from "./content-identity.ts";
 
 const META = "movie_meta.json";
-const CACHE_VERSION = "v1-ffmpeg-0.12.10-mediabunny-1.50.9";
+const CACHE_VERSION = "v2-source-lanes-mpeg-cadence";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const MOVIE_LABELS: Readonly<Record<string, string>> = {
@@ -28,7 +31,6 @@ const MOVIE_LABELS: Readonly<Record<string, string>> = {
     new_million: "Million Monkeys",
     new_rc4: "RC4",
 };
-const LEGACY_OUTPUT_FORMATS = ["mkv", "mp4", "webm"] as const;
 
 export type MovieGroup = "opening" | "story" | "gameplay";
 
@@ -36,13 +38,29 @@ export interface MovieSourceFileIdentity extends ContentFingerprint {
     readonly name: string;
 }
 
+export interface MovieAudioTrack {
+    readonly index: number;
+    readonly language: string | null;
+    readonly label: string;
+}
+
+export interface MovieSubtitleTrack extends FmvSubtitleAsset {
+    readonly cues: number;
+    readonly end: number | null;
+}
+
+export interface MovieSelection {
+    readonly audioTrack: number;
+    readonly subtitleId: string | null;
+}
+
 export interface MovieEntry {
     readonly name: string;
     readonly label: string;
     readonly group: MovieGroup;
     readonly movie: VfiEntry;
-    readonly subtitleBin: VfiEntry | null;
-    readonly subtitleSbt: VfiEntry | null;
+    readonly audioTracks: readonly MovieAudioTrack[];
+    readonly subtitleTracks: readonly MovieSubtitleTrack[];
     readonly sourceBytes: number;
     readonly subtitleBytes: number;
     readonly subtitleCues: number;
@@ -62,7 +80,7 @@ export interface MovieCatalogIssue {
 }
 
 export interface MovieCatalog {
-    readonly v: 3;
+    readonly v: 4;
     readonly sourceKey: string;
     readonly entries: readonly MovieEntry[];
     readonly issues: readonly MovieCatalogIssue[];
@@ -74,17 +92,14 @@ export interface MovieCacheInfo {
     totalBytes: number;
 }
 
-interface SubtitleBundle {
-    bin: Uint8Array | null;
-    sbt: Uint8Array | null;
+interface SubtitleTrackData {
+    asset: FmvSubtitleAsset;
+    bin: Uint8Array;
+    sbt: Uint8Array;
     cues: readonly SubtitleCue[];
 }
 
-const EMPTY_SUBTITLES: SubtitleBundle = {
-    bin: null,
-    sbt: null,
-    cues: [],
-};
+type SubtitleBundle = readonly SubtitleTrackData[];
 
 export type MovieExportKind = "original" | "masters" | "mkv" | "mp4";
 
@@ -98,7 +113,8 @@ export interface MoviePlaybackSource {
     name: string;
     video: Uint8Array;
     wav: Uint8Array;
-    cues: readonly SubtitleCue[];
+    subtitleTracks: readonly { id: string; cues: readonly SubtitleCue[] }[];
+    subtitleId: string | null;
     videoInfo: FmvVideoInfo;
     seekIndex: Mpeg2SeekIndex;
     duration: number;
@@ -106,6 +122,23 @@ export interface MoviePlaybackSource {
 }
 
 export type MovieProgress = (progress: number, stage: string) => void;
+
+export function defaultMovieSelection(entry: MovieEntry): MovieSelection {
+    const audio = entry.audioTracks[0]!;
+    return {
+        audioTrack: audio.index,
+        subtitleId: (entry.subtitleTracks.find(track => track.language === audio.language)
+            ?? entry.subtitleTracks[0])?.id ?? null,
+    };
+}
+
+function checkedSelection(entry: MovieEntry, selection = defaultMovieSelection(entry)): MovieSelection {
+    if (!entry.audioTracks.some(track => track.index === selection.audioTrack)
+            || (selection.subtitleId !== null
+                && !entry.subtitleTracks.some(track => track.id === selection.subtitleId)))
+        throw new Error("movie language selection is not available in this source");
+    return selection;
+}
 
 function title(name: string): string {
     const scene = /^new_scene(\d\d)$/i.exec(name);
@@ -190,31 +223,43 @@ function isFmvVideoInfo(value: unknown): value is FmvVideoInfo {
         && isPositivePair(video.displayAspect);
 }
 
-function isMovieSourceFingerprints(value: unknown,
-                                   movie: VfiEntry,
-                                   subtitleBin: VfiEntry | null,
-                                   subtitleSbt: VfiEntry | null):
+function isMovieSourceFingerprints(value: unknown, movie: VfiEntry,
+                                   subtitles: readonly FmvSubtitleAsset[]):
         value is readonly MovieSourceFileIdentity[] {
     if (!Array.isArray(value)) return false;
-    const expected = new Map<string, number>([
-        [movie.name, movie.size],
-        ...(subtitleBin ? [[subtitleBin.name, subtitleBin.size] as const] : []),
-        ...(subtitleSbt ? [[subtitleSbt.name, subtitleSbt.size] as const] : []),
-    ]);
+    const expected = new Map<string, number>([[movie.name, movie.size]]);
+    for (const track of subtitles) {
+        if (expected.has(track.bin.name) || expected.has(track.sbt.name)) return false;
+        expected.set(track.bin.name, track.bin.size);
+        expected.set(track.sbt.name, track.sbt.size);
+    }
     if (value.length !== expected.size) return false;
     const names = new Set<string>();
     for (const item of value) {
         const candidate = objectValue(item);
-        if (!candidate
-                || typeof candidate.name !== "string"
-                || !isZipEntryName(candidate.name)
-                || names.has(candidate.name)
+        if (!candidate || typeof candidate.name !== "string"
+                || !isZipEntryName(candidate.name) || names.has(candidate.name)
                 || !isContentFingerprint(candidate)
                 || candidate.bytes !== expected.get(candidate.name))
             return false;
         names.add(candidate.name);
     }
     return names.size === expected.size;
+}
+
+function isLanguage(value: unknown): value is string | null {
+    return value === null || (typeof value === "string" && /^[a-z]{3}$/.test(value));
+}
+
+function isSubtitleTrack(value: unknown): value is MovieSubtitleTrack {
+    const track = objectValue(value);
+    return track !== null && typeof track.id === "string" && isZipEntryName(track.id)
+        && isLanguage(track.language) && typeof track.label === "string" && track.label.length > 0
+        && isVfiEntry(track.bin) && isZipEntryName(track.bin.name)
+        && isVfiEntry(track.sbt) && isZipEntryName(track.sbt.name)
+        && isSafeInteger(track.cues)
+        && (track.end === null || (typeof track.end === "number"
+            && Number.isFinite(track.end) && track.end >= 0));
 }
 
 function isMovieEntry(value: unknown): value is MovieEntry {
@@ -236,26 +281,25 @@ function isMovieEntry(value: unknown): value is MovieEntry {
             || !isFmvVideoInfo(entry.video)
             || !isPositiveNumber(entry.duration))
         return false;
-    if (entry.subtitleBin === null && entry.subtitleSbt === null) {
-        return entry.subtitleBytes === 0
-            && isMovieSourceFingerprints(
-                entry.sourceFingerprints,
-                entry.movie,
-                null,
-                null,
-            );
-    }
-    if (!isVfiEntry(entry.subtitleBin) || !isVfiEntry(entry.subtitleSbt)
-            || !isZipEntryName(entry.subtitleBin.name)
-            || !isZipEntryName(entry.subtitleSbt.name)
-            || !isMovieSourceFingerprints(
-                entry.sourceFingerprints,
-                entry.movie,
-                entry.subtitleBin,
-                entry.subtitleSbt,
-            ))
+    if (!Array.isArray(entry.subtitleTracks) || !entry.subtitleTracks.every(isSubtitleTrack)
+            || !Array.isArray(entry.audioTracks)
+            || (entry.audioTracks.length !== 1 && entry.audioTracks.length !== 5))
         return false;
-    return entry.subtitleBytes === entry.subtitleBin.size + entry.subtitleSbt.size;
+    for (let index = 0; index < entry.audioTracks.length; index++) {
+        const track = objectValue(entry.audioTracks[index]);
+        if (!track || track.index !== index || !isLanguage(track.language)
+                || typeof track.label !== "string" || track.label.length === 0)
+            return false;
+    }
+    const subtitles = entry.subtitleTracks;
+    const directory = entry.movie.path.slice(0, entry.movie.path.lastIndexOf("/") + 1);
+    return entry.name === entry.movie.path.replace(/\.str$/i, "")
+        && new Set(subtitles.map(track => track.id)).size === subtitles.length
+        && subtitles.every(track => track.bin.path === directory + track.bin.name
+            && track.sbt.path === directory + track.sbt.name)
+        && entry.subtitleBytes === subtitles.reduce((sum, track) => sum + track.bin.size + track.sbt.size, 0)
+        && entry.subtitleCues === subtitles.reduce((sum, track) => sum + track.cues, 0)
+        && isMovieSourceFingerprints(entry.sourceFingerprints, entry.movie, subtitles);
 }
 
 function isMovieCatalogIssue(value: unknown): value is MovieCatalogIssue {
@@ -274,7 +318,7 @@ function isMovieCatalogIssue(value: unknown): value is MovieCatalogIssue {
 function parseCatalog(value: unknown,
                       expectedSourceKey: string): MovieCatalog | null {
     const candidate = objectValue(value);
-    if (candidate === null || candidate.v !== 3
+    if (candidate === null || candidate.v !== 4
             || candidate.sourceKey !== expectedSourceKey
             || !Array.isArray(candidate.entries)
             || !candidate.entries.every(isMovieEntry)
@@ -288,7 +332,7 @@ function parseCatalog(value: unknown,
     if (new Set(names).size !== names.length)
         return null;
     return {
-        v: 3,
+        v: 4,
         sourceKey: expectedSourceKey,
         entries: candidate.entries,
         issues: candidate.issues,
@@ -297,21 +341,14 @@ function parseCatalog(value: unknown,
 
 async function subtitleData(vfi: Vfi, asset: FmvAsset,
                             signal?: AbortSignal): Promise<SubtitleBundle> {
-    signal?.throwIfAborted();
-    if (!asset.subtitleBin || !asset.subtitleSbt)
-        return EMPTY_SUBTITLES;
-    const [bin, sbt] = await Promise.all([
-        vfi.read(asset.subtitleBin), vfi.read(asset.subtitleSbt),
-    ]);
-    if (bin.byteLength !== asset.subtitleBin.size
-            || sbt.byteLength !== asset.subtitleSbt.size)
-        throw new Error("subtitle source short read");
-    signal?.throwIfAborted();
-    return {
-        cues: parseFmvSubtitles(bin, sbt, asset.name),
-        bin,
-        sbt,
-    };
+    return Promise.all(asset.subtitles.map(async track => {
+        signal?.throwIfAborted();
+        const [bin, sbt] = await Promise.all([vfi.read(track.bin), vfi.read(track.sbt)]);
+        if (bin.byteLength !== track.bin.size || sbt.byteLength !== track.sbt.size)
+            throw new Error("subtitle source short read");
+        signal?.throwIfAborted();
+        return { asset: track, bin, sbt, cues: parseFmvSubtitles(bin, sbt, track.bin.path) };
+    }));
 }
 
 function movieCatalogIssue(asset: FmvDiscovery, label: string,
@@ -338,8 +375,9 @@ export async function scanMovieCatalog(
     for (let index = 0; index < assets.length; index++) {
         signal?.throwIfAborted();
         const asset = assets[index]!;
-        const label = title(asset.name);
-        const movieGroup = group(asset.name);
+        const basename = asset.movie.name.replace(/\.str$/i, "");
+        const label = title(basename);
+        const movieGroup = group(basename);
         progress?.(index / assets.length, `scanning ${asset.name}`);
         if ("formatError" in asset) {
             issues.push(movieCatalogIssue(
@@ -351,17 +389,16 @@ export async function scanMovieCatalog(
             if (movieBytes.byteLength !== asset.movie.size)
                 throw new Error("movie source short read");
             signal?.throwIfAborted();
-            const { header, videoInfo } =
-                inspectFmvPrefix(movieBytes, `movie ${asset.name}`);
+            const { header, videoInfo, audioTracks, duration } =
+                inspectFmv(movieBytes, `movie ${asset.name}`);
             const subtitles = await subtitleData(vfi, asset, signal);
             signal?.throwIfAborted();
             const sourceFiles: Array<[string, Uint8Array]> = [
                 [asset.movie.name, movieBytes],
             ];
-            if (asset.subtitleBin && subtitles.bin)
-                sourceFiles.push([asset.subtitleBin.name, subtitles.bin]);
-            if (asset.subtitleSbt && subtitles.sbt)
-                sourceFiles.push([asset.subtitleSbt.name, subtitles.sbt]);
+            for (const track of subtitles) {
+                sourceFiles.push([track.asset.bin.name, track.bin], [track.asset.sbt.name, track.sbt]);
+            }
             const sourceFingerprints = await Promise.all(
                 sourceFiles.map(async ([name, bytes]) => ({
                     name,
@@ -374,16 +411,20 @@ export async function scanMovieCatalog(
                 label,
                 group: movieGroup,
                 movie: asset.movie,
-                subtitleBin: asset.subtitleBin,
-                subtitleSbt: asset.subtitleSbt,
+                audioTracks: audioTracks === 5
+                    ? FMV_PAL_AUDIO_LANGUAGES.map((locale, index) => ({ index, ...fmvLanguage(locale) }))
+                    : [{ index: 0, language: null, label: "Original audio" }],
+                subtitleTracks: subtitles.map(track => ({
+                    ...track.asset, cues: track.cues.length, end: track.cues.at(-1)?.end ?? null,
+                })),
                 sourceBytes: asset.movie.size,
-                subtitleBytes: (asset.subtitleBin?.size ?? 0)
-                    + (asset.subtitleSbt?.size ?? 0),
-                subtitleCues: subtitles.cues.length,
-                subtitleEnd: subtitles.cues.at(-1)?.end ?? null,
+                subtitleBytes: subtitles.reduce((sum, track) => sum + track.bin.length + track.sbt.length, 0),
+                subtitleCues: subtitles.reduce((sum, track) => sum + track.cues.length, 0),
+                subtitleEnd: subtitles.length
+                    ? Math.max(...subtitles.map(track => track.cues.at(-1)?.end ?? 0)) : null,
                 header,
                 video: videoInfo,
-                duration: header.fields / header.fieldRate,
+                duration,
                 sourceFingerprints,
             });
         } catch (cause) {
@@ -395,23 +436,16 @@ export async function scanMovieCatalog(
     }
     signal?.throwIfAborted();
     progress?.(1, "movie catalog ready");
-    return { v: 3, sourceKey, entries, issues };
+    return { v: 4, sourceKey, entries, issues };
 }
 
 function movieRoot(name: string): string {
     return `movies/${CACHE_VERSION}/${name}`;
 }
 
-function directMp4Key(name: string, captions: boolean): string {
-    return `${movieRoot(name)}/export-direct-mp4-v1-${captions ? "captions" : "plain"}.mp4`;
-}
-function directMkvKey(name: string, captions: boolean): string {
-    return `${movieRoot(name)}/export-lossless-mkv-v1-${captions ? "captions" : "plain"}.mkv`;
-}
-
-
-function legacyExportKey(name: string, format: string, captions: boolean): string {
-    return `${movieRoot(name)}/export-${format}-${captions ? "captions" : "plain"}.${format}`;
+function directExportKey(name: string, format: "mp4" | "mkv", selection: MovieSelection): string {
+    const subtitle = selection.subtitleId === null ? "none" : `track-${encodeURIComponent(selection.subtitleId)}`;
+    return `${movieRoot(name)}/export-${format}-lane-${selection.audioTrack}-sub-${subtitle}.${format}`;
 }
 
 
@@ -552,11 +586,11 @@ export class MovieStore {
         signal?.throwIfAborted();
         if (!this.vfi) {
             throw new Error(
-                "the cached movie index is damaged -- reconnect the same disc to rebuild it or forget the disc cache",
+                "the cached movie index is damaged or obsolete -- reconnect the same disc to rebuild it or forget the disc cache",
                 { cause: error },
             );
         }
-        console.warn("Cached movie index is damaged; rebuilding it from the attached ISO", error);
+        console.warn("Cached movie index is damaged or obsolete; rebuilding it from the attached ISO", error);
         this.catalogValue = await scanMovieCatalog(
             this.vfi, this.cacheKey, undefined, signal);
         signal?.throwIfAborted();
@@ -682,17 +716,17 @@ export class MovieStore {
         try {
             value = JSON.parse(textDecoder.decode(raw));
         } catch (error) {
-            this.useAttachedIsoAfterCacheFailure(
-                error,
+            if (!this.vfi) throw new Error(
                 "the cached movie source metadata is damaged -- reconnect the same disc or remove this movie cache",
+                { cause: error },
             );
             return null;
         }
         const identity = parseSourceIdentity(value, entry, this.cacheKey);
         if (!identity) {
-            this.useAttachedIsoAfterCacheFailure(
-                new Error("the cached movie source metadata has an invalid schema"),
+            if (!this.vfi) throw new Error(
                 "the cached movie source metadata is damaged -- reconnect the same disc or remove this movie cache",
+                { cause: new Error("invalid movie source schema") },
             );
             return null;
         }
@@ -751,44 +785,18 @@ export class MovieStore {
     private async subtitles(entry: MovieEntry,
                             signal?: AbortSignal): Promise<SubtitleBundle> {
         signal?.throwIfAborted();
-        if (!entry.subtitleBin || !entry.subtitleSbt)
-            return EMPTY_SUBTITLES;
+        if (entry.subtitleTracks.length === 0) return [];
         const root = movieRoot(entry.name);
-        let bin: Uint8Array;
-        let sbt: Uint8Array;
-        if (this.vfi) {
-            const expected = catalogSourceFingerprints(entry);
-            [bin, sbt] = await Promise.all([
-                this.readDiscEntry(
-                    entry.subtitleBin,
-                    expected.get(entry.subtitleBin.name),
-                    signal,
-                ),
-                this.readDiscEntry(
-                    entry.subtitleSbt,
-                    expected.get(entry.subtitleSbt.name),
-                    signal,
-                ),
-            ]);
-        } else {
-            const identities = await this.sourceIdentity(entry, signal);
-            [bin, sbt] = await Promise.all([
-                this.verifiedCachedSource(
-                    `${root}/${entry.subtitleBin.name}`,
-                    identities.get(entry.subtitleBin.name),
-                    signal,
-                ),
-                this.verifiedCachedSource(
-                    `${root}/${entry.subtitleSbt.name}`,
-                    identities.get(entry.subtitleSbt.name),
-                    signal,
-                ),
-            ]);
-        }
-        signal?.throwIfAborted();
-        const cues = parseFmvSubtitles(bin, sbt, entry.name);
-        signal?.throwIfAborted();
-        return { bin, sbt, cues };
+        const identities = this.vfi ? catalogSourceFingerprints(entry)
+            : await this.sourceIdentity(entry, signal);
+        return Promise.all(entry.subtitleTracks.map(async asset => {
+            const readFile = (file: VfiEntry): Promise<Uint8Array> => this.vfi
+                ? this.readDiscEntry(file, identities.get(file.name), signal)
+                : this.verifiedCachedSource(`${root}/${file.name}`, identities.get(file.name), signal);
+            const [bin, sbt] = await Promise.all([readFile(asset.bin), readFile(asset.sbt)]);
+            signal?.throwIfAborted();
+            return { asset, bin, sbt, cues: parseFmvSubtitles(bin, sbt, asset.bin.path) };
+        }));
     }
 
     private sourceFiles(
@@ -797,10 +805,8 @@ export class MovieStore {
         subtitles: SubtitleBundle,
     ): Array<[string, Uint8Array]> {
         const files: Array<[string, Uint8Array]> = [[entry.movie.name, source]];
-        if (entry.subtitleBin && subtitles.bin)
-            files.push([entry.subtitleBin.name, subtitles.bin]);
-        if (entry.subtitleSbt && subtitles.sbt)
-            files.push([entry.subtitleSbt.name, subtitles.sbt]);
+        for (const track of subtitles)
+            files.push([track.asset.bin.name, track.bin], [track.asset.sbt.name, track.sbt]);
         return files;
     }
 
@@ -860,7 +866,7 @@ export class MovieStore {
         return persistent && metadataStored;
     }
 
-    private async demux(entry: MovieEntry, progress: MovieProgress,
+    private async demux(entry: MovieEntry, selection: MovieSelection, progress: MovieProgress,
                         signal?: AbortSignal): Promise<{
         demuxed: FmvDemux; subtitles: SubtitleBundle; sourcePersistent: boolean;
     }> {
@@ -871,7 +877,7 @@ export class MovieStore {
         ]);
         signal?.throwIfAborted();
         progress(0.08, "validating and demuxing");
-        const demuxed = demuxFmv(source, entry.name);
+        const demuxed = demuxFmv(source, entry.name, selection.audioTrack);
         signal?.throwIfAborted();
         const sourcePersistent = await this.persistSources(
             entry, source, subtitles, signal);
@@ -880,39 +886,12 @@ export class MovieStore {
         return { demuxed, subtitles, sourcePersistent };
     }
 
-    private async removeLegacyArtifacts(name: string, signal?: AbortSignal): Promise<void> {
-        const keys = [`${movieRoot(name)}/playback.mp4`];
-        for (const format of LEGACY_OUTPUT_FORMATS) {
-            keys.push(
-                legacyExportKey(name, format, false),
-                legacyExportKey(name, format, true),
-            );
-        }
-        for (const key of keys) {
-            signal?.throwIfAborted();
-            this.memory.delete(key);
-            if (!this.cache) continue;
-            try {
-                await this.cache.remove(key);
-            } catch (error) {
-                signal?.throwIfAborted();
-                this.cacheWarning = `obsolete movie cache data could not be removed `
-                    + `(${technicalReason(error)}); playback remains available`;
-                console.warn("Obsolete movie cache cleanup failed", error);
-                this.cache = null;
-            }
-        }
-        signal?.throwIfAborted();
-    }
-
     private async exportDirect(entry: MovieEntry, format: "mkv" | "mp4",
-                               captions: boolean, progress: MovieProgress,
+                               selection: MovieSelection, progress: MovieProgress,
                                signal?: AbortSignal): Promise<Uint8Array> {
         signal?.throwIfAborted();
         const label = format === "mkv" ? "Lossless MKV" : "Fast MP4";
-        const key = format === "mkv"
-            ? directMkvKey(entry.name, captions)
-            : directMp4Key(entry.name, captions);
+        const key = directExportKey(entry.name, format, selection);
         progress(0.02, `reading ${label} source`);
         const [source, subtitles] = await Promise.all([
             this.source(entry, signal),
@@ -942,8 +921,9 @@ export class MovieStore {
         if (!sourcePersistent)
             progress(0.14, "original source ready; cache is session-only");
 
-        const vtt = captions && subtitles.cues.length > 0
-            ? subtitlesToVtt(subtitles.cues)
+        const captionTrack = subtitles.find(track => track.asset.id === selection.subtitleId);
+        const vtt = captionTrack && captionTrack.cues.length > 0
+            ? subtitlesToVtt(captionTrack.cues)
             : undefined;
         progress(0.16, `loading ${label} worker`);
         signal?.throwIfAborted();
@@ -956,6 +936,9 @@ export class MovieStore {
         const converted = await convert({
             name: entry.name,
             fmv: source,
+            audioTrack: selection.audioTrack,
+            audioLanguage: entry.audioTracks[selection.audioTrack]!.language,
+            subtitleLanguage: captionTrack?.asset.language ?? null,
             ...(vtt === undefined ? {} : { vtt }),
             cooperativeCopy: !sourcePersistent,
             expectations: {
@@ -963,6 +946,7 @@ export class MovieStore {
                 width: entry.video.width,
                 height: entry.video.height,
                 fieldOrder: entry.video.fieldOrder,
+                frameRate: entry.video.frameRate,
                 sampleAspect: entry.video.sampleAspect,
                 displayAspect: entry.video.displayAspect,
                 channels: entry.header.channels,
@@ -982,17 +966,16 @@ export class MovieStore {
     }
 
     async prepare(name: string, progress: MovieProgress,
-                  signal?: AbortSignal): Promise<MoviePlaybackSource> {
+                  signal?: AbortSignal, selection?: MovieSelection): Promise<MoviePlaybackSource> {
         signal?.throwIfAborted();
         const entry = await this.entry(name, signal);
+        const selected = checkedSelection(entry, selection);
         signal?.throwIfAborted();
         const { demuxed, subtitles, sourcePersistent } = await this.demux(
-            entry, progress, signal);
+            entry, selected, progress, signal);
         progress(0.7, "indexing MPEG-2 video");
         const seekIndex = indexMpeg2SeekPoints(
             demuxed.video, `${entry.name} MPEG-2 video`);
-        signal?.throwIfAborted();
-        await this.removeLegacyArtifacts(entry.name, signal);
         signal?.throwIfAborted();
         progress(0.9, "reading movie cache");
         const cache = await this.cacheInfo(name, signal);
@@ -1004,10 +987,11 @@ export class MovieStore {
             name: entry.name,
             video: demuxed.video,
             wav: demuxed.wav,
-            cues: subtitles.cues,
+            subtitleTracks: subtitles.map(track => ({ id: track.asset.id, cues: track.cues })),
+            subtitleId: selected.subtitleId,
             videoInfo: demuxed.videoInfo,
             seekIndex,
-            duration: entry.duration,
+            duration: demuxed.duration,
             cache,
         };
     }
@@ -1017,18 +1001,20 @@ export class MovieStore {
         const root = movieRoot(name);
         const entry = await this.entry(name, signal);
         const sourceKeys = [`${root}/${entry.movie.name}`];
-        if (entry.subtitleBin) sourceKeys.push(`${root}/${entry.subtitleBin.name}`);
-        if (entry.subtitleSbt) sourceKeys.push(`${root}/${entry.subtitleSbt.name}`);
+        for (const track of entry.subtitleTracks)
+            sourceKeys.push(`${root}/${track.bin.name}`, `${root}/${track.sbt.name}`);
         const identity = await this.readSourceIdentity(entry, signal);
         const sourceBytes = identity
             ? await this.totalSize(sourceKeys, signal)
             : 0;
-        const exportKeys = [
-            directMp4Key(name, false),
-            directMp4Key(name, true),
-            directMkvKey(name, false),
-            directMkvKey(name, true),
-        ];
+        const exportKeys: string[] = [];
+        for (const audio of entry.audioTracks) {
+            for (const subtitleId of [null, ...entry.subtitleTracks.map(track => track.id)]) {
+                const selection = { audioTrack: audio.index, subtitleId };
+                exportKeys.push(directExportKey(name, "mp4", selection),
+                    directExportKey(name, "mkv", selection));
+            }
+        }
         const exportBytes = await this.totalSize(exportKeys, signal);
         signal?.throwIfAborted();
         return {
@@ -1073,9 +1059,14 @@ export class MovieStore {
     }
 
     async export(name: string, kind: MovieExportKind, captions: boolean,
-                 progress: MovieProgress, signal?: AbortSignal): Promise<MovieExport> {
+                 progress: MovieProgress, signal?: AbortSignal, selection?: MovieSelection): Promise<MovieExport> {
         signal?.throwIfAborted();
         const entry = await this.entry(name, signal);
+        const selected = checkedSelection(entry, selection);
+        const filename = encodeURIComponent(name);
+        const basename = entry.movie.name.replace(/\.str$/i, "");
+        const variant = entry.audioTracks.length > 1
+            ? `-lane-${selected.audioTrack}-${entry.audioTracks[selected.audioTrack]!.language ?? "und"}` : "";
         signal?.throwIfAborted();
         if (kind === "original") {
             signal?.throwIfAborted();
@@ -1083,39 +1074,40 @@ export class MovieStore {
                 this.source(entry, signal), this.subtitles(entry, signal),
             ]);
             signal?.throwIfAborted();
-            const files: Array<[string, Uint8Array]> = [[entry.movie.name, source]];
-            if (entry.subtitleBin && subtitles.bin) files.push([entry.subtitleBin.name, subtitles.bin]);
-            if (entry.subtitleSbt && subtitles.sbt) files.push([entry.subtitleSbt.name, subtitles.sbt]);
+            const files = this.sourceFiles(entry, source, subtitles);
             signal?.throwIfAborted();
             const bytes = storeZip(files);
             signal?.throwIfAborted();
             progress(1, "original archive ready");
-            return { filename: `${name}-original.zip`, bytes, mime: "application/zip" };
+            return { filename: `${filename}-original.zip`, bytes, mime: "application/zip" };
         }
         if (kind === "masters") {
             signal?.throwIfAborted();
             const { demuxed, subtitles, sourcePersistent } = await this.demux(
-                entry, progress, signal);
+                entry, selected, progress, signal);
             signal?.throwIfAborted();
             const files: Array<[string, Uint8Array]> = [
-                [`${name}.m2v`, demuxed.video], [`${name}.wav`, demuxed.wav],
+                [`${basename}.m2v`, demuxed.video], [`${basename}${variant}.wav`, demuxed.wav],
             ];
-            if (subtitles.cues.length)
-                files.push([`${name}.srt`, subtitlesToSrt(subtitles.cues)]);
+            for (const track of subtitles) {
+                const suffix = track.asset.id.slice(basename.replace(/^new_/i, "").length);
+                files.push([`${basename}${suffix}.srt`, subtitlesToSrt(track.cues)]);
+            }
             signal?.throwIfAborted();
             const bytes = storeZip(files);
             signal?.throwIfAborted();
             progress(1, sourcePersistent
                 ? "master archive ready"
                 : "master archive ready; source cache is session-only");
-            return { filename: `${name}-masters.zip`, bytes, mime: "application/zip" };
+            return { filename: `${filename}${variant}-masters.zip`, bytes, mime: "application/zip" };
         }
         signal?.throwIfAborted();
         const converted = await this.exportDirect(
-            entry, kind, captions, progress, signal);
+            entry, kind, captions ? selected : { ...selected, subtitleId: null }, progress, signal);
         signal?.throwIfAborted();
         return {
-            filename: `${name}.${kind}`,
+            filename: `${filename}${variant}${captions && selected.subtitleId
+                ? `-sub-${encodeURIComponent(selected.subtitleId)}` : ""}.${kind}`,
             bytes: converted,
             mime: kind === "mkv" ? "video/x-matroska" : "video/mp4",
         };

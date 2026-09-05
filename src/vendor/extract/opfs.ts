@@ -56,8 +56,14 @@ export class OpfsCache {
     async write(name: string, data: Uint8Array): Promise<void> {
         const fh = await this.fileHandle(name, true);
         const w = await fh.createWritable();
-        await w.write(data as unknown as BufferSource);
-        await w.close();
+        try {
+            await w.write(data as unknown as BufferSource);
+            await w.close();
+        } catch (error) {
+            /* Release the staging writer without replacing committed bytes. */
+            try { await w.abort(error); } catch { /* preserve the write failure */ }
+            throw error;
+        }
     }
 
     async read(name: string): Promise<Uint8Array | null> {

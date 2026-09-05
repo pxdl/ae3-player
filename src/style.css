@@ -150,6 +150,30 @@ body.resizing-sidebar {
     font-variant-numeric: tabular-nums;
 }
 #songlist li.sel .dur { color: var(--dim); }
+
+.source-filter {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 14px 8px;
+}
+.source-filter[hidden] { display: none; }
+.source-filter .search-label { margin: 0; }
+.source-filter select {
+    min-width: 0;
+    width: 100%;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--panel-hi);
+    border-radius: 3px;
+    padding: 4px 8px;
+}
+.source-filter select:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+}
 /* ---- streams sidebar list ----------------------------------------------- */
 #streamview {
     display: flex;
@@ -1024,6 +1048,32 @@ button.ex-row:disabled {
     right: 8px;
     display: flex;
     gap: 6px;
+    max-width: calc(100% - 16px);
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: end;
+}
+.fmv-language-control {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    color: var(--text);
+}
+.fmv-language-control[hidden] { display: none; }
+.fmv-language-control select {
+    max-width: 150px;
+    min-height: 28px;
+    font: inherit;
+    color: var(--text);
+    background: #101116ed;
+    border: 1px solid #ffffff2b;
+    border-radius: 3px;
+    padding: 3px 6px;
+}
+.fmv-language-control select:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
 }
 #fmv-picture-controls button,
 .fmv-transport-buttons button {

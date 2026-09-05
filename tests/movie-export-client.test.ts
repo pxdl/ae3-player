@@ -59,11 +59,15 @@ function input(source = new Uint8Array([1, 2, 3, 4])) {
     return {
         name: "new_advertise",
         fmv: source,
+        audioTrack: 0,
+        audioLanguage: null,
+        subtitleLanguage: null,
         expectations: {
             duration: 1,
             width: 512,
             height: 320,
             fieldOrder: "progressive" as const,
+            frameRate: 30000 / 1001,
             sampleAspect: [7, 6] as const,
             displayAspect: [28, 15] as const,
             channels: 2,

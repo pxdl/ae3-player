@@ -31,6 +31,7 @@ export function createMovieDecoderSource(media: MovieDecoderMedia): MovieDecoder
         width: media.videoInfo.width,
         height: media.videoInfo.height,
         fieldOrder: media.videoInfo.fieldOrder,
+        frameRate: media.videoInfo.frameRate,
         duration: media.duration,
         sourceFrames: media.seekIndex.frames,
         seekPoints: media.seekIndex.points,

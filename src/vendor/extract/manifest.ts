@@ -4,12 +4,12 @@
  * suffix and the result reports what was actually found. */
 
 import { type ByteSource, BytesSource, SubSource } from "./source.ts";
-import { Iso9660, systemCnfSerial } from "./iso9660.ts";
-import { Vfi, type VfiEntry, VFI_SECTOR } from "./vfi.ts";
+import { Iso9660, systemCnfSerial, type IsoDirent } from "./iso9660.ts";
+import { Vfi, type VfiEntry, VFI_MAGIC, VFI_SECTOR } from "./vfi.ts";
 import { inflateSz } from "./sz.ts";
 import { unpackPck, memberBytes } from "./pck.ts";
 import { parseExdb, bgmSongTable, type Exdb, type BgmSong } from "./exdb.ts";
-import { ascii } from "./bytes.ts";
+import { ascii, u32 } from "./bytes.ts";
 
 export interface BgmAssetSet {
     bgmDir: string;                    // e.g. "debug/us/sound/bgm"
@@ -106,6 +106,36 @@ export interface Ae3Disc {
     cacheKey: string;          // serial + DATA.BIN size + table-region hash
 }
 
+/** Demo launchers can place the game below a directory instead of at root. */
+export async function locateDataBin(iso: Iso9660): Promise<IsoDirent> {
+    const root = await iso.findRoot("DATA.BIN");
+    if (root && !root.isDir) return root;
+
+    const pending = [{ directory: iso.root, path: "" }];
+    const visited = new Set<number>();
+    const matches: { entry: IsoDirent; path: string }[] = [];
+    for (const { directory, path } of pending) {
+        if (visited.has(directory.lba)) continue;
+        visited.add(directory.lba);
+        for (const entry of await iso.readDir(directory)) {
+            const entryPath = `${path}${entry.name}`;
+            if (entry.isDir) {
+                pending.push({ directory: entry, path: `${entryPath}/` });
+            } else if (entry.name.toUpperCase() === "DATA.BIN" && entry.size >= 0x20) {
+                const magic = await iso.window(entry).read(0, 4);
+                if (magic.length === 4 && u32(magic, 0) === VFI_MAGIC)
+                    matches.push({ entry, path: entryPath });
+            }
+        }
+    }
+    if (!matches.length)
+        throw new Error("DATA.BIN not found on this disc (not Ape Escape 3?)");
+    if (matches.length > 1)
+        throw new Error(`multiple VFI DATA.BIN archives found: ${
+            matches.map(match => match.path).join(", ")}`);
+    return matches[0]!.entry;
+}
+
 /** ISO -> ISO9660 -> DATA.BIN -> VFI -> located assets + parsed BgmDesc.
  *  Everything runs on the caller's machine; nothing is uploaded anywhere. */
 export async function openDisc(src: ByteSource): Promise<Ae3Disc> {
@@ -115,14 +145,19 @@ export async function openDisc(src: ByteSource): Promise<Ae3Disc> {
     const cnf = await iso.findRoot("SYSTEM.CNF");
     if (cnf) serial = systemCnfSerial(ascii(await iso.window(cnf).read(0, cnf.size)));
 
-    const ent = await iso.findRoot("DATA.BIN");
-    if (!ent)
-        throw new Error("DATA.BIN not found on this disc (not Ape Escape 3?)");
+    const ent = await locateDataBin(iso);
     const dataBin = iso.window(ent);
 
     const vfi = await Vfi.open(dataBin);
     const assets = locateBgmAssets(vfi);
     const bgmDesc = await loadBgmDesc(vfi, assets);
+
+    /* Demo databases retain retail cues whose payloads are not on the disc. */
+    const availableBgm = new Set(
+        [...assets.hd, ...assets.bd, ...assets.mid].map(entry => entry.name));
+    const songs = bgmSongTable(bgmDesc).filter(song =>
+        availableBgm.has(song.hd) && availableBgm.has(song.bd)
+        && availableBgm.has(song.mid));
 
     /* cache key: identifies the disc without hashing 2.1 GB -- the VFI table
      * region (all entry names/offsets/sizes, 129 KB) stands in for content */
@@ -134,7 +169,7 @@ export async function openDisc(src: ByteSource): Promise<Ae3Disc> {
     const cacheKey = `${serial ?? "unknown"}-${dataBin.size}-${hex}`;
 
     return { iso, serial, volumeId: iso.volumeId, dataBin, vfi, assets,
-             bgmDesc, songs: bgmSongTable(bgmDesc), cacheKey };
+             bgmDesc, songs, cacheKey };
 }
 
 /* re-exported so a consumer holding an Ae3Disc can window raw entries */

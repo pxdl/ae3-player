@@ -30,11 +30,36 @@ export interface DecodedBone {
     worldMatrix: Float32Array;
 }
 
+export interface DecodedMaterialState {
+    name: string;
+    /** Raw I3D alpha-blend selector at payload +0x24. */
+    alphaBlendMode: number;
+    /** Raw I3D alpha-fail selector at payload +0x2c. */
+    alphaFailMode: number;
+    /** Raw I3D alpha-test selector at payload +0x2d. */
+    alphaTestMode: number;
+    /** Alpha reference authored as a float at payload +0x10. */
+    alphaReference: number;
+    /** Raw I3D depth-test selector at payload +0x2f. */
+    depthTestMode: number;
+    /** Raw destination-alpha test selector at payload +0x35. */
+    destinationAlphaMode: number;
+    /** Nonzero selects a separate alpha-test setup path at payload +0x33. */
+    alphaTestOverride: boolean;
+    /** 0 disables normal lighting; 1 and 2 select distinct VU1 paths. */
+    lightingMode: number;
+    /** Whether the light-manager ambient value participates in lighting. */
+    ambientEnabled: boolean;
+}
+
 export interface DecodedMesh {
     name: string;
     material: string;
+    materialIndex: number;
     positions: Float32Array;
     normals: Float32Array;
+    /** Authored per-index RGBA multiplier consumed by the retail VU1 output paths. */
+    vertexFactors: Float32Array;
     uvs: Float32Array;
     indices: Uint32Array;
     skinIndices: Uint16Array;
@@ -47,6 +72,7 @@ export interface DecodedMesh {
 export interface DecodedModel {
     kind: "model";
     materials: string[];
+    materialStates: DecodedMaterialState[];
     bones: DecodedBone[];
     meshes: DecodedMesh[];
     vertexCount: number;
@@ -96,6 +122,11 @@ const IDENTITY = new Float32Array([
     0, 0, 1, 0,
     0, 0, 0, 1,
 ]);
+const DEFAULT_MATERIAL_STATE: DecodedMaterialState = {
+    name: "", alphaBlendMode: 0, alphaFailMode: 0, alphaTestMode: 0,
+    alphaReference: 0, depthTestMode: 0, destinationAlphaMode: 0,
+    alphaTestOverride: false, lightingMode: 0, ambientEnabled: false,
+};
 const ASCII = new TextDecoder("ascii");
 
 interface Node {
@@ -110,7 +141,7 @@ interface ParsedModel {
     data: Uint8Array;
     root: Node;
     nodes: Node[];
-    materials: string[];
+    materialStates: DecodedMaterialState[];
     bones: Node[];
     boneNames: string[];
     boneParents: number[];
@@ -346,11 +377,23 @@ function parseModel(data: Uint8Array, label: string): ParsedModel {
     const root = parseNode(data, BASE, 0, new Set(), nodes, label);
     if (root.type !== 0x52) throw new Error(`${label}: root node is not type 0x52`);
 
-    const materials = byType(root, 0x25).map(node => {
+    const materialStates = byType(root, 0x25).map((node): DecodedMaterialState => {
         const target = node.children[0]?.children[0];
-        if (!target || target.data === 0) return "";
+        if (!target || target.data === 0) return { ...DEFAULT_MATERIAL_STATE };
         const payload = BASE + target.data;
-        return cstr(data, payload + u32(data, payload + 0x18, label), label);
+        requireRange(data, payload, 0x38, label);
+        return {
+            name: cstr(data, payload + u32(data, payload + 0x18, label), label),
+            alphaBlendMode: u32(data, payload + 0x24, label),
+            alphaFailMode: u8(data, payload + 0x2c, label),
+            alphaTestMode: u8(data, payload + 0x2d, label),
+            alphaReference: f32(data, payload + 0x10, label),
+            depthTestMode: u8(data, payload + 0x2f, label),
+            destinationAlphaMode: u8(data, payload + 0x35, label),
+            alphaTestOverride: u8(data, payload + 0x33, label) !== 0,
+            lightingMode: u8(data, payload + 0x32, label),
+            ambientEnabled: u8(data, payload + 0x36, label) !== 0,
+        };
     });
     const bones = byType(root, 0x2a);
     const rootPayload = BASE + root.data;
@@ -375,13 +418,13 @@ function parseModel(data: Uint8Array, label: string): ParsedModel {
             nameOffset += name.length + 1;
         }
     }
-    return { data, root, nodes, materials, bones, boneNames, boneParents, boneWorld };
+    return { data, root, nodes, materialStates, bones, boneNames, boneParents, boneWorld };
 }
 
 export function inspectI3dModel(data: Uint8Array, label = "I3D model"): ModelInspection {
     const parsed = parseModel(data, label);
     return {
-        materials: parsed.materials,
+        materials: parsed.materialStates.map(material => material.name),
         boneNames: parsed.boneNames,
         boneParents: parsed.boneParents,
         nodeCount: parsed.nodes.length,
@@ -390,19 +433,20 @@ export function inspectI3dModel(data: Uint8Array, label = "I3D model"): ModelIns
 
 function parseVif(data: Uint8Array, start: number, label: string): Float32Array {
     requireRange(data, start, 0x10, label);
-    const memory = new Float32Array(0x1000 * 4);
+    const memory = new Uint32Array(0x1000 * 4);
     const packetEnd = start + u8(data, start + 4, label) * 0x10 + 0x10;
     requireRange(data, start, packetEnd - start, label);
     let offset = start + 0x10;
-    let row = [0, 0, 0, 0];
-    let column = [1, 1, 1, 1];
+    let row = new Uint32Array(4);
+    let column = new Uint32Array([0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000]);
     let cycleLength = 1;
     let writeLength = 1;
-    let mask = new Array<number>(16).fill(0);
+    let unpackMode = 0;
+    let mask = new Uint8Array(16);
 
     while (offset < packetEnd) {
         const immediate = u16(data, offset, label);
-        const count = u8(data, offset + 2, label);
+        const rawCount = u8(data, offset + 2, label);
         const command = u8(data, offset + 3, label) & 0x7f;
         offset += 4;
         if (command === 0) continue;
@@ -411,8 +455,14 @@ function parseVif(data: Uint8Array, start: number, label: string): Float32Array 
             writeLength = (immediate >>> 8) & 0xff;
             continue;
         }
+        if (command === 0x05) {
+            unpackMode = immediate & 3;
+            continue;
+        }
         if (command === 0x30 || command === 0x31) {
-            const values = [0, 1, 2, 3].map(index => f32(data, offset + index * 4, label));
+            requireRange(data, offset, 0x10, label);
+            const values = Uint32Array.from(
+                [0, 1, 2, 3], index => u32(data, offset + index * 4, label));
             if (command === 0x30) row = values;
             else column = values;
             offset += 0x10;
@@ -420,7 +470,8 @@ function parseVif(data: Uint8Array, start: number, label: string): Float32Array 
         }
         if (command === 0x20) {
             const bits = u32(data, offset, label);
-            mask = Array.from({ length: 16 }, (_, index) => (bits >>> (index * 2)) & 3);
+            mask = Uint8Array.from(
+                { length: 16 }, (_, index) => (bits >>> (index * 2)) & 3);
             offset += 4;
             continue;
         }
@@ -429,32 +480,97 @@ function parseVif(data: Uint8Array, start: number, label: string): Float32Array 
 
         const address = immediate & 0x3ff;
         const format = command & 0x0f;
-        const width = new Map([[0x0, 4], [0x4, 8], [0x8, 12], [0xc, 16]]).get(format);
-        if (!width) throw new Error(`${label}: unsupported VIF UNPACK format 0x${format.toString(16)}`);
-        const components = width / 4;
+        const vectorSize = (format >>> 2) + 1;
+        const elementFormat = format & 3;
+        if (elementFormat === 3 && format !== 0x0f)
+            throw new Error(`${label}: unsupported VIF UNPACK format 0x${format.toString(16)}`);
+        const elementBytes = elementFormat === 0 ? 4 : elementFormat === 1 ? 2 : 1;
+        const inputBytes = format === 0x0f ? 2 : vectorSize * elementBytes;
+        const count = rawCount || 256;
         const useMask = (command & 0x10) !== 0;
-        let sourceIndex = 0;
-        for (let index = 0; index < count; index++) {
-            const values = [0, 0, 0, 0];
-            if (cycleLength >= writeLength || index % writeLength < cycleLength) {
-                for (let component = 0; component < components; component++)
-                    values[component] = f32(data, offset + sourceIndex * width + component * 4, label);
-                sourceIndex++;
+        const unsigned = (immediate & 0x4000) !== 0;
+        const effectiveWriteLength = writeLength || 256;
+        const filling = cycleLength < effectiveWriteLength;
+        let sourceBytes = 0;
+        let destination = address;
+        let cycle = 0;
+
+        const inputValue = (component: number): number => {
+            const source = offset + sourceBytes + component * elementBytes;
+            if (elementFormat === 0) return u32(data, source, label);
+            if (elementFormat === 1) {
+                const value = u16(data, source, label);
+                return unsigned || value < 0x8000 ? value : (value | 0xffff0000) >>> 0;
             }
-            const destination = cycleLength >= writeLength
-                ? cycleLength * Math.floor(index / writeLength) + index % writeLength : 0;
-            if (address + destination >= 0x1000)
+            const value = u8(data, source, label);
+            return unsigned || value < 0x80 ? value : (value | 0xffffff00) >>> 0;
+        };
+
+        for (let index = 0; index < count; index++) {
+            if (destination >= 0x1000)
                 throw new Error(`${label}: VIF write exceeds VU memory`);
+            const hasInput = !filling || cycle < cycleLength;
+            let values: number[];
+            if (!hasInput) {
+                values = [0, 0, 0, 0];
+            } else if (format === 0x0f) {
+                const packed = u16(data, offset + sourceBytes, label);
+                values = [
+                    (packed & 0x001f) << 3,
+                    (packed & 0x03e0) >>> 2,
+                    (packed & 0x7c00) >>> 7,
+                    (packed & 0x8000) >>> 8,
+                ];
+            } else if (vectorSize === 1) {
+                const value = inputValue(0);
+                values = [value, value, value, value];
+            } else if (vectorSize === 2) {
+                const x = inputValue(0);
+                const y = inputValue(1);
+                values = [x, y, x, y];
+            } else {
+                values = [0, 1, 2, 3].map(inputValue);
+            }
+
             for (let component = 0; component < 4; component++) {
-                const mode = useMask ? mask[component + Math.min(index, 3) * 4]! : 0;
-                memory[(address + destination) * 4 + component] = mode === 0
-                    ? values[component]! : mode === 1 ? row[component]!
-                    : mode === 2 ? column[Math.min(3, index)]! : 0;
+                const destinationIndex = destination * 4 + component;
+                const maskMode = useMask ? mask[Math.min(cycle, 3) * 4 + component]! : 0;
+                if (maskMode === 3) continue;
+                if (maskMode === 1) {
+                    memory[destinationIndex] = row[component]!;
+                    continue;
+                }
+                if (maskMode === 2) {
+                    memory[destinationIndex] = column[Math.min(cycle, 3)]!;
+                    continue;
+                }
+                const value = values[component]!;
+                if (format === 0x0f || unpackMode === 0) memory[destinationIndex] = value;
+                else if (unpackMode === 1)
+                    memory[destinationIndex] = (value + row[component]!) >>> 0;
+                else {
+                    row[component] = unpackMode === 2
+                        ? (value + row[component]!) >>> 0 : value;
+                    memory[destinationIndex] = row[component]!;
+                }
+            }
+
+            destination++;
+            cycle++;
+            if (filling) {
+                if (cycle <= cycleLength) sourceBytes += inputBytes;
+                if (cycle === effectiveWriteLength) cycle = 0;
+            } else {
+                sourceBytes += inputBytes;
+                if (cycle >= effectiveWriteLength) {
+                    destination += cycleLength - effectiveWriteLength;
+                    cycle = 0;
+                }
             }
         }
-        offset += sourceIndex * width;
+        offset += (sourceBytes + 3) & ~3;
     }
-    return memory;
+    return new Float32Array(memory.buffer);
 }
 
 function readVec4Buffer(data: Uint8Array, payload: number, count: number,
@@ -473,8 +589,8 @@ function readVec4Buffer(data: Uint8Array, payload: number, count: number,
 interface TriangleCorner { vertex: number; uv: number }
 
 function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
-                     material: string, rigidBone: number, boneList: number[],
-                     bindOffset: number, label: string): DecodedMesh {
+                     material: string, materialIndex: number, rigidBone: number,
+                     boneList: number[], bindOffset: number, label: string): DecodedMesh {
     const { data } = parsed;
     const vertexNode = pieceNode.children[4]?.children[0];
     if (!vertexNode) throw new Error(`${label}: ${name} has no vertex node`);
@@ -511,17 +627,31 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
         }
     }
 
+    const sourceFactors: number[] = [];
     const sourceUvs: number[] = [];
     const indexRecords: Array<[number, number, number, number]> = [];
     for (const indexNode of byType(pieceNode, 0x47)) {
         const payload = BASE + indexNode.data;
         const count = u8(data, payload + 5, label);
+        const factorNode = indexNode.children[0]?.children[0];
+        if (factorNode) {
+            const factorPayload = BASE + factorNode.data;
+            const factorCount = u8(data, factorPayload + 6, label);
+            if (factorCount !== count)
+                throw new Error(`${label}: factor count ${factorCount} does not match index count ${count}`);
+            sourceFactors.push(...readVec4Buffer(data, factorPayload, factorCount, label));
+        } else {
+            for (let index = 0; index < count; index++) sourceFactors.push(1, 1, 1, 1);
+        }
         const uvNode = indexNode.children[1]?.children[0];
         if (uvNode) {
             const uvPayload = BASE + uvNode.data;
             const uvCount = u8(data, uvPayload + 6, label);
+            if (uvCount !== count)
+                throw new Error(`${label}: UV count ${uvCount} does not match index count ${count}`);
             const uv = readVec4Buffer(data, uvPayload, uvCount, label);
-            for (let index = 0; index < count; index++) sourceUvs.push(uv[index * 4] ?? 0, uv[index * 4 + 1] ?? 0);
+            for (let index = 0; index < count; index++)
+                sourceUvs.push(uv[index * 4] ?? 0, uv[index * 4 + 1] ?? 0);
         } else {
             for (let index = 0; index < count; index++) sourceUvs.push(0, 0);
         }
@@ -546,6 +676,7 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
     const positions: number[] = [];
     const uvs: number[] = [];
     const normals: number[] = [];
+    const vertexFactors: number[] = [];
     const indices: number[] = [];
     const skinIndices: number[] = [];
     const skinWeights: number[] = [];
@@ -564,6 +695,10 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
                     normals.push(sourceNormals[source]!, sourceNormals[source + 1]!,
                                  sourceNormals[source + 2]!);
                 uvs.push(sourceUvs[corner.uv * 2] ?? 0, sourceUvs[corner.uv * 2 + 1] ?? 0);
+                vertexFactors.push(sourceFactors[corner.uv * 4] ?? 1,
+                                   sourceFactors[corner.uv * 4 + 1] ?? 1,
+                                   sourceFactors[corner.uv * 4 + 2] ?? 1,
+                                   sourceFactors[corner.uv * 4 + 3] ?? 1);
                 const weighted: Array<[number, number]> = isSkinned
                     ? [...influences[corner.vertex]!].sort((a, b) => b[1] - a[1]).slice(0, 4)
                     : [[0, 1]];
@@ -583,9 +718,11 @@ function decodePiece(parsed: ParsedModel, pieceNode: Node, name: string,
             ? matrixAt(data, bindOffset + index * 0x40, label) : IDENTITY, index * 16);
     }
     return {
+        materialIndex,
         name, material,
         positions: new Float32Array(positions), normals: new Float32Array(normals),
-        uvs: new Float32Array(uvs), indices: new Uint32Array(indices),
+        vertexFactors: new Float32Array(vertexFactors), uvs: new Float32Array(uvs),
+        indices: new Uint32Array(indices),
         skinIndices: new Uint16Array(skinIndices),
         skinWeights: new Float32Array(skinWeights),
         jointBones: new Uint16Array(jointBones), inverseBindMatrices,
@@ -624,10 +761,10 @@ export function decodeI3dModel(data: Uint8Array, label = "I3D model"): DecodedMo
                 for (const submesh of byType(meshNode, 0x4d)) {
                     const submeshPayload = BASE + submesh.data;
                     const materialIndex = u8(data, submeshPayload + 0x0c, label);
-                    const material = parsed.materials[materialIndex] ?? "";
+                    const material = parsed.materialStates[materialIndex]?.name ?? "";
                     for (const piece of byType(submesh, 0x56)) {
                         const name = `b${boneIndex}_cm${combinedIndex}_m${meshNode.off.toString(16)}_s${submesh.off.toString(16)}_p${piece.off.toString(16)}`;
-                        const decoded = decodePiece(parsed, piece, name, material,
+                        const decoded = decodePiece(parsed, piece, name, material, materialIndex,
                                                     rigidBone, boneList, bindOffset, label);
                         if (decoded.indices.length > 0) meshes.push(decoded);
                     }
@@ -640,7 +777,8 @@ export function decodeI3dModel(data: Uint8Array, label = "I3D model"): DecodedMo
         parent: parsed.boneParents[index]!, worldMatrix: parsed.boneWorld[index]!,
     }));
     return {
-        kind: "model", materials: parsed.materials, bones, meshes,
+        kind: "model", materials: parsed.materialStates.map(material => material.name),
+        materialStates: parsed.materialStates, bones, meshes,
         vertexCount: meshes.reduce((sum, mesh) => sum + mesh.positions.length / 3, 0),
         triangleCount: meshes.reduce((sum, mesh) => sum + mesh.indices.length / 3, 0),
     };

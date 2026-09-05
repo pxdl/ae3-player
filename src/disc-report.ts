@@ -15,7 +15,7 @@ import {
 import { technicalReason } from "./errors.ts";
 
 const REPORT_CACHE = "disc-support-report.json";
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 interface CachedReport {
     readonly v: typeof CACHE_VERSION;
@@ -68,10 +68,11 @@ export class DiscReportStore {
         try {
             const raw = await this.cache.read(REPORT_CACHE);
             if (!raw) return null;
-            const parsed = parseCachedReport(
-                JSON.parse(new TextDecoder().decode(raw)),
-                this.sourceKey,
-            );
+            const value: unknown = JSON.parse(new TextDecoder().decode(raw));
+            if (value !== null && typeof value === "object"
+                    && Reflect.get(value, "v") === 1)
+                return null;
+            const parsed = parseCachedReport(value, this.sourceKey);
             if (!parsed
                     || parsed.report.disc.serial !== this.serial
                     || parsed.report.disc.volumeId !== this.volumeId) {

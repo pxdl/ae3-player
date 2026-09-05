@@ -15,6 +15,7 @@ import {
 
 const META = "model_meta.json";
 const PACKAGE_CACHE_LIMIT = 3;
+const MODEL_ASSET_ID = /^[0-9a-f]{8}-(?:direct|[0-9]+)$/;
 
 export interface ModelCatalog {
     v: 2;
@@ -26,6 +27,38 @@ export type ModelProgress = (done: number, total: number, path: string) => void;
 export interface ModelPackage {
     data: Uint8Array;
     members: PckMember[];
+}
+
+function isModelCatalog(value: unknown): value is ModelCatalog {
+    if (!value || typeof value !== "object") return false;
+    const catalog = value as Partial<ModelCatalog>;
+    if (catalog.v !== 2 || !Array.isArray(catalog.assets)) return false;
+    const ids = new Set<string>();
+    const containers = new Map<string, string>();
+    for (const asset of catalog.assets) {
+        if (!asset || typeof asset !== "object"
+            || (asset.kind !== "model" && asset.kind !== "animation" && asset.kind !== "collision")
+            || typeof asset.id !== "string" || !MODEL_ASSET_ID.test(asset.id)
+            || typeof asset.sourcePath !== "string" || !asset.sourcePath
+            || typeof asset.fileName !== "string" || !asset.fileName
+            || typeof asset.attrs !== "string"
+            || !Number.isSafeInteger(asset.byteLength) || asset.byteLength < 0)
+            return false;
+        if (asset.memberIndex === null) {
+            if (asset.memberName !== null) return false;
+        } else if (!Number.isSafeInteger(asset.memberIndex) || asset.memberIndex < 0
+                   || typeof asset.memberName !== "string") return false;
+        if (asset.id.slice(9) !== String(asset.memberIndex ?? "direct")
+            || ids.has(asset.id)) return false;
+        if (asset.kind === "model" && (!Array.isArray(asset.boneNames)
+            || asset.boneNames.some(name => typeof name !== "string"))) return false;
+        const container = asset.id.slice(0, 8);
+        const source = containers.get(container);
+        if (source !== undefined && source !== asset.sourcePath) return false;
+        containers.set(container, asset.sourcePath);
+        ids.add(asset.id);
+    }
+    return true;
 }
 
 export class ModelStore {
@@ -43,23 +76,50 @@ export class ModelStore {
 
     hasIso(): boolean { return this.vfi !== null; }
 
-    async cached(): Promise<ModelCatalog | null> {
+    /** Release expanded packages when the browser leaves this disc. */
+    clearMemoryCache(): void {
+        this.packageCache.clear();
+    }
+
+    async cached(progress?: ModelProgress): Promise<ModelCatalog | null> {
         if (this.catalog) return this.catalog;
         if (!this.cache) return null;
-        const raw = await this.cache.read(META);
-        if (!raw) return null;
+        let raw: Uint8Array | null;
         try {
-            const catalog = JSON.parse(new TextDecoder().decode(raw)) as ModelCatalog;
-            if (catalog.v !== 2 || !Array.isArray(catalog.assets)
-                || catalog.assets.some(asset =>
-                    !["model", "animation", "collision"].includes(asset.kind)
-                    || (asset.kind === "model" && !Array.isArray(asset.boneNames))))
-                return null;
-            this.catalog = catalog;
-            return catalog;
-        } catch {
-            return null;
+            raw = await this.cache.read(META);
+        } catch (error) {
+            console.warn("OPFS failed while reading the 3D catalog", error);
+            this.cache = null;
+            if (!this.vfi)
+                throw new Error("the 3D cache is unavailable -- reconnect the same ISO to rebuild the catalog",
+                                { cause: error });
+            return this.extract(progress);
         }
+        if (!raw) return null;
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(new TextDecoder().decode(raw));
+        } catch {
+            return this.rebuildCatalog(progress);
+        }
+        if (!isModelCatalog(parsed)) return this.rebuildCatalog(progress);
+        this.catalog = parsed;
+        return parsed;
+    }
+
+    private async rebuildCatalog(progress?: ModelProgress): Promise<ModelCatalog> {
+        this.clearMemoryCache();
+        if (this.cache) {
+            try {
+                await this.cache.remove(META);
+            } catch (error) {
+                console.warn("OPFS failed while removing the obsolete 3D catalog", error);
+                this.cache = null;
+            }
+        }
+        if (!this.vfi)
+            throw new Error("the cached 3D catalog is damaged or obsolete -- reconnect the same ISO to rebuild it");
+        return this.extract(progress);
     }
 
     async attachIso(file: File): Promise<void> {
@@ -69,16 +129,16 @@ export class ModelStore {
         this.vfi = disc.vfi;
     }
 
-    async extract(progress: ModelProgress): Promise<ModelCatalog> {
+    async extract(progress?: ModelProgress): Promise<ModelCatalog> {
         if (!this.vfi) throw new Error("no ISO attached -- choose your disc image first");
         const catalog: ModelCatalog = {
             v: 2,
             assets: await scanModelAssets(this.vfi, { progress }),
         };
         if (this.cache) {
+            const metadata = new TextEncoder().encode(JSON.stringify(catalog));
             try {
-                await this.cache.write(META,
-                    new TextEncoder().encode(JSON.stringify(catalog)));
+                await this.cache.write(META, metadata);
             } catch (error) {
                 console.warn("OPFS failed; the 3D catalog remains available for this session", error);
                 this.cache = null;
@@ -133,9 +193,14 @@ export class ModelStore {
             return loaded;
         })();
         this.rememberPackage(key, pending);
-        const result = await pending;
-        if (!result) this.packageCache.delete(key);
-        return result;
+        try {
+            const result = await pending;
+            if (!result && this.packageCache.get(key) === pending) this.packageCache.delete(key);
+            return result;
+        } catch (error) {
+            if (this.packageCache.get(key) === pending) this.packageCache.delete(key);
+            throw error;
+        }
     }
 
     async read(asset: ModelAsset): Promise<Uint8Array | null> {

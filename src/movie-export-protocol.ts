@@ -9,6 +9,7 @@ export interface MovieMp4ExportExpectations {
     width: number;
     height: number;
     fieldOrder: MovieFieldOrder;
+    frameRate: number;
     sampleAspect: MovieAspectRatio;
     displayAspect: MovieAspectRatio;
     channels: number;
@@ -21,6 +22,9 @@ export interface MovieMp4ExportRequest {
     jobId: string;
     name: string;
     fmv: ArrayBuffer;
+    audioTrack: number;
+    audioLanguage: string | null;
+    subtitleLanguage: string | null;
     vtt?: ArrayBuffer;
     expectations: MovieMp4ExportExpectations;
 }
@@ -69,13 +73,19 @@ export type MovieMp4ExportWorkerResponse = MovieMp4ExportProgress
 
 export function isMovieMp4ExportRequest(value: unknown): value is MovieMp4ExportRequest {
     if (!isRecord(value) || value.type !== "export"
-            || !hasExactKeys(value, ["type", "format", "jobId", "name", "fmv", "expectations"], ["vtt"]))
+            || !hasExactKeys(value, [
+                "type", "format", "jobId", "name", "fmv", "expectations",
+                "audioTrack", "audioLanguage", "subtitleLanguage",
+            ], ["vtt"]))
         return false;
     if (value.format !== "mp4" && value.format !== "mkv")
         return false;
     return isNonEmptyString(value.jobId)
         && isNonEmptyString(value.name)
         && value.fmv instanceof ArrayBuffer
+        && Number.isSafeInteger(value.audioTrack)
+        && (value.audioTrack as number) >= 0 && (value.audioTrack as number) < 5
+        && isLanguage(value.audioLanguage) && isLanguage(value.subtitleLanguage)
         && (!("vtt" in value) || value.vtt instanceof ArrayBuffer)
         && isExpectations(value.expectations);
 }
@@ -130,15 +140,21 @@ function isExpectations(value: unknown): value is MovieMp4ExportExpectations {
         && hasExactKeys(value, [
             "duration", "width", "height", "fieldOrder", "sampleAspect",
             "displayAspect", "channels", "sampleRate",
+            "frameRate",
         ])
         && isPositiveFinite(value.duration)
         && isPositiveInteger(value.width)
         && isPositiveInteger(value.height)
         && isFieldOrder(value.fieldOrder)
+        && (value.frameRate === 25 || value.frameRate === 30000 / 1001)
         && isAspectRatio(value.sampleAspect)
         && isAspectRatio(value.displayAspect)
         && isPositiveInteger(value.channels)
         && isPositiveInteger(value.sampleRate);
+}
+
+function isLanguage(value: unknown): value is string | null {
+    return value === null || (typeof value === "string" && /^[a-z]{3}$/.test(value));
 }
 
 function isAspectRatio(value: unknown): value is MovieAspectRatio {

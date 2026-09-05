@@ -33,11 +33,35 @@ const ADPCM_COEFFICIENTS: readonly (readonly [number, number])[] = [
     [0, 0], [60, 0], [115, -52], [98, -55], [122, -60],
 ];
 
+export interface FmvSubtitleAsset {
+    id: string;
+    language: string | null;
+    label: string;
+    bin: VfiEntry;
+    sbt: VfiEntry;
+}
+
+const LANGUAGES: Readonly<Record<string, readonly [string, string]>> = {
+    uk: ["eng", "English (UK)"], us: ["eng", "English (US)"],
+    jp: ["jpn", "Japanese"], de: ["deu", "German"], es: ["spa", "Spanish"],
+    fr: ["fra", "French"], it: ["ita", "Italian"],
+};
+
+// PAL ELF 0x635860 maps language ids 4..8 to uk/de/es/fr/it.
+// 0x24c3b4..0x24c3ec selects the STR lane table at 0x800 + (id - 4)*0x1000.
+// Alternate ids 9..13 use the same order. Both supplied PAL ELFs match.
+export const FMV_PAL_AUDIO_LANGUAGES = ["uk", "de", "es", "fr", "it"] as const;
+
+export function fmvLanguage(source: string): { language: string | null; label: string } {
+    const known = LANGUAGES[source.toLowerCase()];
+    return known ? { language: known[0], label: known[1] }
+        : { language: null, label: source ? `Source ${source}` : "Unspecified" };
+}
+
 export interface FmvAsset {
     name: string;
     movie: VfiEntry;
-    subtitleBin: VfiEntry | null;
-    subtitleSbt: VfiEntry | null;
+    subtitles: readonly FmvSubtitleAsset[];
 }
 
 export class FmvFormatError extends Error {
@@ -105,6 +129,7 @@ export interface FmvDemux {
     wav: Uint8Array;
     groups: readonly FmvGroup[];
     videoInfo: FmvVideoInfo;
+    duration: number;
 }
 
 export interface SubtitleCue {
@@ -131,6 +156,7 @@ interface ContainerLayout {
     audio: ChunkRange[];
     groups: FmvGroup[];
     videoBytes: number;
+    audioTracks: 1 | 5;
 }
 interface WavLayout {
     samplesPerChannel: number;
@@ -214,39 +240,44 @@ export function locateFmvAssets(vfi: Vfi): FmvDiscovery[] {
     const movies = vfi.entries.filter(entry =>
         /(^|\/)movie\/[^/]+\.str$/i.test(entry.path));
     if (movies.length === 0) throw new Error("no movie/*.str assets found in DATA.BIN");
-
-    const byDirectory = new Map<string, VfiEntry[]>();
-    for (const movie of movies) {
-        const directory = movie.path.slice(0, movie.path.lastIndexOf("/"));
-        const entries = byDirectory.get(directory);
-        if (entries) entries.push(movie);
-        else byDirectory.set(directory, [movie]);
+    const movieDirectories = new Set(movies.map(movie =>
+        movie.path.slice(0, movie.path.lastIndexOf("/"))));
+    const directories = new Map<string, Map<string, VfiEntry>>();
+    for (const entry of vfi.entries) {
+        const directory = entry.path.slice(0, entry.path.lastIndexOf("/"));
+        if (!movieDirectories.has(directory)) continue;
+        let files = directories.get(directory);
+        if (!files) directories.set(directory, files = new Map());
+        const key = entry.name.toLowerCase();
+        if (files.has(key)) throw new Error(`duplicate movie directory member ${entry.path}`);
+        files.set(key, entry);
     }
-    const [directory, selected] = [...byDirectory.entries()]
-        .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))[0];
-    const inDirectory = new Map(vfi.entries
-        .filter(entry => entry.path.startsWith(`${directory}/`)
-            && !entry.path.slice(directory.length + 1).includes("/"))
-        .map(entry => [entry.name.toLowerCase(), entry]));
-
-    return selected.map(movie => {
-        const name = movie.name.replace(/\.str$/i, "");
-        const match = /^new_(scene\d\d)$/i.exec(name);
-        if (!match) return { name, movie, subtitleBin: null, subtitleSbt: null };
-        const key = match[1].toLowerCase();
-        const subtitleBin = inDirectory.get(`${key}.bin`) ?? null;
-        const subtitleSbt = inDirectory.get(`${key}.sbt`) ?? null;
-        if ((subtitleBin === null) !== (subtitleSbt === null))
-            return {
-                name,
-                movie,
-                formatError: new FmvFormatError(
-                    movie.path,
-                    0,
-                    `incomplete subtitle pair for ${key}`,
-                ),
+    return movies.map((movie): FmvDiscovery => {
+        const name = movie.path.replace(/\.str$/i, "");
+        const directory = movie.path.slice(0, movie.path.lastIndexOf("/"));
+        const files = directories.get(directory)!;
+        const stem = movie.name.replace(/\.str$/i, "").replace(/^new_/i, "").toLowerCase();
+        const keys = new Set<string>();
+        for (const key of files.keys()) {
+            const base = key.replace(/\.(bin|sbt)$/i, "");
+            if (base !== key && (base === stem || base.startsWith(`${stem}_`)))
+                keys.add(base);
+        }
+        const subtitles: FmvSubtitleAsset[] = [];
+        for (const key of [...keys].sort()) {
+            const bin = files.get(`${key}.bin`);
+            const sbt = files.get(`${key}.sbt`);
+            if (!bin || !sbt) return {
+                name, movie,
+                formatError: new FmvFormatError(movie.path, 0,
+                    `incomplete subtitle pair for ${key}`),
             };
-        return { name, movie, subtitleBin, subtitleSbt };
+            const locale = key === stem
+                ? directory.split("/").at(-2) ?? ""
+                : key.slice(stem.length + 1);
+            subtitles.push({ id: key, ...fmvLanguage(locale), bin, sbt });
+        }
+        return { name, movie, subtitles };
     }).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
@@ -400,12 +431,14 @@ function audioPreloads(bytes: Uint8Array, header: FmvHeader, start: ContainerSta
     return ranges;
 }
 
-function inspectContainer(bytes: Uint8Array, source: string): ContainerLayout {
+function inspectContainer(bytes: Uint8Array, source: string, audioTrack: number): ContainerLayout {
     const header = parseFmvHeader(bytes, source);
     const start = locateContainerStart(bytes, header, source);
+    if (!Number.isSafeInteger(audioTrack) || audioTrack < 0 || audioTrack >= start.audioTracks)
+        fail(source, 0, `audio lane ${audioTrack} is outside 0..${start.audioTracks - 1}`);
     const preloads = audioPreloads(bytes, header, start, source);
     const video: ChunkRange[] = [];
-    const audio: ChunkRange[] = [preloads[0]];
+    const audio: ChunkRange[] = [preloads[audioTrack]];
     const groups: FmvGroup[] = [];
     let offset = start.groupOffset;
     let fieldOffset = 0;
@@ -481,7 +514,10 @@ function inspectContainer(bytes: Uint8Array, source: string): ContainerLayout {
                     size: header.audioBlock,
                 }, header, source, `audio track ${track} block`);
             }
-            audio.push({ start: audioStart, size: header.audioBlock });
+            audio.push({
+                start: audioStart + audioTrack * header.audioBlock,
+                size: header.audioBlock,
+            });
             offset = nextGroup;
         }
     }
@@ -495,7 +531,38 @@ function inspectContainer(bytes: Uint8Array, source: string): ContainerLayout {
     const audioBytes = audio.reduce((sum, range) => sum + range.size, 0);
     if (audioBytes !== header.audioBytes)
         fail(source, 0x34, `walked ${audioBytes} audio bytes, header declares ${header.audioBytes}`);
-    return { header, video, audio, groups, videoBytes };
+    return { header, video, audio, groups, videoBytes, audioTracks: start.audioTracks };
+}
+
+function containerMediaInfo(bytes: Uint8Array, layout: ContainerLayout, source: string):
+        { header: FmvHeader; videoInfo: FmvVideoInfo; audioTracks: 1 | 5; duration: number } {
+    const first = layout.video[0];
+    const videoInfo = parseMpeg2VideoInfo(
+        bytes.subarray(first.start, first.start + first.size), `${source} video`);
+    let code = 0xffffffff;
+    let frames = 0;
+    // Preserve the rolling start code across STR chunk boundaries. The STR field
+    // clock is 59.94 even in PAL files; MPEG picture cadence is independently 25.
+    for (const range of layout.video) {
+        for (let offset = range.start; offset < range.start + range.size; offset++) {
+            code = ((code << 8) | bytes[offset]) >>> 0;
+            if (code === 0x00000100) frames++;
+        }
+    }
+    if (frames === 0) fail(source, first.start, "missing MPEG picture headers");
+    const header = layout.header;
+    const audioDuration = header.audioBytes / header.channels / 16 * 28 / header.sampleRate;
+    return {
+        header, videoInfo, audioTracks: layout.audioTracks,
+        duration: Math.min(frames / videoInfo.frameRate,
+            header.fields / header.fieldRate, audioDuration),
+    };
+}
+
+/** Full container validation and presentation duration, without allocating PCM or video copies. */
+export function inspectFmv(bytes: Uint8Array, source = "FMV"):
+        { header: FmvHeader; videoInfo: FmvVideoInfo; audioTracks: 1 | 5; duration: number } {
+    return containerMediaInfo(bytes, inspectContainer(bytes, source, 0), source);
 }
 
 class BitReader {
@@ -655,7 +722,7 @@ export function parseMpeg2VideoInfo(video: Uint8Array, source = "MPEG-2"): FmvVi
 /** Inspect the header and first video chunk without reading the full movie.
  *  The caller must provide a prefix through that complete chunk. */
 export function inspectFmvPrefix(bytes: Uint8Array, source = "FMV"):
-        { header: FmvHeader; videoInfo: FmvVideoInfo } {
+        { header: FmvHeader; videoInfo: FmvVideoInfo; audioTracks: 1 | 5 } {
     const header = parseFmvHeader(bytes, source);
     const start = locateContainerStart(bytes, header, source);
     audioPreloads(bytes, header, start, source);
@@ -683,6 +750,7 @@ export function inspectFmvPrefix(bytes: Uint8Array, source = "FMV"):
              `first video index is ${video.index} instead of zero`);
     return {
         header,
+        audioTracks: start.audioTracks,
         videoInfo: parseMpeg2VideoInfo(
             bytes.subarray(video.range.start, video.range.start + video.range.size),
             `${source} video`),
@@ -692,7 +760,7 @@ export function inspectFmvPrefix(bytes: Uint8Array, source = "FMV"):
 /** Read only the bounded bytes needed to inspect one movie in a VFI archive. */
 export async function inspectFmvAsset(vfi: Vfi, movie: VfiEntry,
                                      source = movie.path):
-        Promise<{ header: FmvHeader; videoInfo: FmvVideoInfo }> {
+        Promise<{ header: FmvHeader; videoInfo: FmvVideoInfo; audioTracks: 1 | 5 }> {
     const base = vfi.byteOffset(movie);
     const headerBytes = await readFmvAssetRange(
         vfi, movie, base, 0, SECTOR, source, "header sector");
@@ -904,8 +972,8 @@ function decodeAudio(bytes: Uint8Array, ranges: readonly ChunkRange[],
     return wav;
 }
 
-export function demuxFmv(bytes: Uint8Array, source = "FMV"): FmvDemux {
-    const layout = inspectContainer(bytes, source);
+export function demuxFmv(bytes: Uint8Array, source = "FMV", audioTrack = 0): FmvDemux {
+    const layout = inspectContainer(bytes, source, audioTrack);
     const video = new Uint8Array(layout.videoBytes);
     let write = 0;
     for (const range of layout.video) {
@@ -913,11 +981,10 @@ export function demuxFmv(bytes: Uint8Array, source = "FMV"): FmvDemux {
         write += range.size;
     }
     return {
-        header: layout.header,
+        ...containerMediaInfo(bytes, layout, source),
         video,
         wav: decodeAudio(bytes, layout.audio, layout.header, source),
         groups: layout.groups,
-        videoInfo: parseMpeg2VideoInfo(video, `${source} video`),
     };
 }
 
@@ -986,7 +1053,8 @@ function parseSubtitleText(bytes: Uint8Array, source: string): string[] {
         catch { fail(source, start, `string ${i} is not strict UTF-8`); }
         const lines = value!.split("\n").filter(line => line.trim().length > 0);
         const textValue = lines.join("\n");
-        if (textValue.length === 0) fail(source, start, `string ${i} contains no dialogue`);
+        // PAL includes timed U+3000-only records. Keep their slots as blank
+        // intervals; removing a string here would shift all subsequent timings.
         values.push(textValue);
     }
     return values;
@@ -1018,13 +1086,15 @@ function timestamp(seconds: number, separator: "," | "."): string {
 }
 
 export function subtitlesToSrt(cues: readonly SubtitleCue[]): Uint8Array {
-    const text = cues.map(cue => `${cue.index}\n${timestamp(cue.start, ",")} --> `
+    const text = cues.filter(cue => cue.text.length > 0).map(cue =>
+        `${cue.index}\n${timestamp(cue.start, ",")} --> `
         + `${timestamp(cue.end, ",")}\n${cue.text}\n`).join("\n");
     return new TextEncoder().encode(text);
 }
 
 export function subtitlesToVtt(cues: readonly SubtitleCue[]): Uint8Array {
-    const body = cues.map(cue => `${cue.index}\n${timestamp(cue.start, ".")} --> `
+    const body = cues.filter(cue => cue.text.length > 0).map(cue =>
+        `${cue.index}\n${timestamp(cue.start, ".")} --> `
         + `${timestamp(cue.end, ".")}\n${cue.text}\n`).join("\n");
     return new TextEncoder().encode(`WEBVTT\n\n${body}`);
 }

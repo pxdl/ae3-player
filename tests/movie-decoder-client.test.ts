@@ -58,6 +58,7 @@ function source() {
         width: 2,
         height: 2,
         fieldOrder: "progressive" as const,
+        frameRate: 30000 / 1001,
         duration: 1,
         sourceFrames: 1,
         seekPoints: [{ offset: 0, frame: 0 }],
