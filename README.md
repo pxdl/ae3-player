@@ -58,6 +58,11 @@ manually inspected. Generate image, effect-bank, and FMV metadata counts from
 the app's **Report** tab. `Untested` means no claim is made for that family.
 The UI retains a conservative warning for non-US and unknown serials.
 
+Run a scan with **Run report**, then use **Copy table** for a Markdown summary
+or **Copy JSON** for the full result. Expand **Movie metadata** to see each
+movie's dimensions, field order, and frame rate. The scan checks file structure;
+it does not verify movie playback or sound-effect rendering.
+
 The tested PAL beta (2006-02-21) and retail images share `SCES_536.42`.
 A full byte comparison found their 3,919,091,712-byte `DATA.BIN` archives
 identical; the PAL inventory below applies to those two images, not every

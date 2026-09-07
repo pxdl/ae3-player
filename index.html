@@ -18,18 +18,18 @@
         <h1>AE3 ASSET LAB</h1>
         <span class="monkey-tv-disabled" title="Monkey TV is in development.">
           <button id="monkey-tv-link" type="button" disabled
-            aria-label="Monkey TV — in development">Monkey TV</button>
+            aria-label="Monkey TV (in development)">Monkey TV</button>
         </span>
       </div>
       <div id="tabs">
-        <button id="tab-bgm" class="tab on" title="Sequenced music through the SPU2 synth">BGM</button>
-        <button id="tab-streams" class="tab" title="Streamed audio -- phone calls, cutscene voice, minigame music">STREAMS</button>
-        <button id="tab-se" class="tab" title="Embedded sequenced sound effects through the shared SPU2 synth">SE</button>
-        <button id="tab-fmv" class="tab" title="Original FMV movies, source metadata, playback, captions, and exports">FMV</button>
+        <button id="tab-bgm" class="tab on" title="Sequenced music from the SPU2 synth">BGM</button>
+        <button id="tab-streams" class="tab" title="Streamed audio: phone calls, cutscene voice, and minigame music">STREAMS</button>
+        <button id="tab-se" class="tab" title="Sequenced sound effects from the shared SPU2 synth">SE</button>
+        <button id="tab-fmv" class="tab" title="Original FMV files, metadata, playback, captions, and exports">FMV</button>
         <button id="tab-images" class="tab" title="TIM2 textures and sprite sheets from every game package">IMAGES</button>
         <button id="tab-stage-previews" class="tab"
-          title="Warpgate stage-preview stills and title art from stages.bin">STAGES</button>
-        <button id="tab-models" class="tab" title="I3D models, skeletal animation, textures, and collision">3D</button>
+          title="Warpgate stage stills and title art from stages.bin">STAGES</button>
+        <button id="tab-models" class="tab" title="I3D models, skeletal animation, textures, and collision meshes">3D</button>
         <button id="tab-report" class="tab"
           title="Generate a reproducible compatibility report for this disc build">REPORT</button>
       </div>
@@ -81,7 +81,7 @@
       </div>
       <div id="stage-preview-view" hidden>
         <div class="stage-preview-sidebar-head">
-          <span>WARPGATE CATALOG</span>
+          <span>WARPGATE STAGES</span>
           <strong id="stage-preview-count">—</strong>
         </div>
         <div id="stage-preview-source-filter" class="source-filter" hidden>
@@ -91,7 +91,7 @@
         <ul id="stage-preview-list" aria-label="Stage previews"></ul>
       </div>
       <div id="modelview" hidden>
-        <label class="search-label" for="model-search">FILTER 3D ARCHIVE</label>
+        <label class="search-label" for="model-search">FILTER 3D ASSETS</label>
         <input id="model-search" type="search" placeholder="model, animation, package"
           spellcheck="false" autocomplete="off" />
         <select id="model-kind" aria-label="3D asset category">
@@ -105,22 +105,19 @@
       </div>
       <div id="reportview" hidden>
         <div class="report-side-intro">
-          <span>DISC QUALIFICATION</span>
-          <strong id="report-side-state">NOT RUN</strong>
-          <p>Three bounded checks, one shareable result.</p>
+          <span>Scan status</span>
+          <strong id="report-side-state">Not run</strong>
+          <p>Check images, sound effects, and movie metadata.</p>
         </div>
         <ol class="report-side-steps" aria-label="Report checks">
           <li data-report-family="images">
-            <span>01</span>
             <div><strong>Images</strong><small>waiting</small></div>
           </li>
           <li data-report-family="effects">
-            <span>02</span>
-            <div><strong>Effects</strong><small>waiting</small></div>
+            <div><strong>Sound effects</strong><small>waiting</small></div>
           </li>
           <li data-report-family="fmv">
-            <span>03</span>
-            <div><strong>FMV</strong><small>waiting</small></div>
+            <div><strong>Movies</strong><small>waiting</small></div>
           </li>
         </ol>
       </div>
@@ -142,20 +139,20 @@
             <span id="bpm"></span><span id="loopx"></span></div>
         </div>
         <div id="dials">
-          <button class="dial" id="d-vol" title="Song volume (- = keys, A = authored)">VOL 44 AUTH</button>
-          <button class="dial" id="d-loop" title="Loop the song forever, like the console (L)">LOOP</button>
-          <button class="dial" id="d-timing" title="Exact event timing vs the console's 60 Hz tick grid (T)">EXACT</button>
-          <button class="dial" id="d-kernel" title="SPU2 gaussian kernel vs a brighter catmull-rom (G)">GAUSS</button>
-          <button class="dial" id="d-rev" title="Hardware reverb, STUDIO_C -- depth with , and . (R)">REV 30</button>
-          <button class="dial" id="d-duck" title="The game's music duck -- fades to 70% during cutscenes and phone calls, 0.5 s in / 2 s out (D)">DUCK</button>
+          <button class="dial" id="d-vol" title="Song volume. Use - and = to adjust, or A to restore the authored level">VOL 44 AUTH</button>
+          <button class="dial" id="d-loop" title="Loop the song indefinitely, as on the console (L)">LOOP</button>
+          <button class="dial" id="d-timing" title="Use exact event timing instead of the console's 60 Hz tick grid (T)">EXACT</button>
+          <button class="dial" id="d-kernel" title="Use the SPU2 gaussian kernel or brighter Catmull-Rom interpolation (G)">GAUSS</button>
+          <button class="dial" id="d-rev" title="Hardware reverb, STUDIO_C. Press , or . to change depth (R)">REV 30</button>
+          <button class="dial" id="d-duck" title="Lower music to 70% during cutscenes and phone calls. Fade down in 0.5 s and back up in 2 s (D)">DUCK</button>
         </div>
         <div id="export-wrap">
           <button id="exportbtn" title="Render this song to a WAV file (E = current settings)">EXPORT WAV</button>
           <div id="export-menu" hidden>
-            <button class="ex-row" id="ex-current" title="What you hear now (minus the looping)">CURRENT SETTINGS</button>
-            <button class="ex-row" id="ex-authored" title="Authored volume, reverb 30, exact clock, gaussian">AUTHORED ORIGINAL</button>
+            <button class="ex-row" id="ex-current" title="Export the current sound without repeating the loop">CURRENT SETTINGS</button>
+            <button class="ex-row" id="ex-authored" title="Authored volume, reverb 30, exact timing, gaussian resampling">AUTHORED ORIGINAL</button>
             <div class="ex-row" id="ex-loop-row">
-              <button id="ex-loop" title="Current settings, loop body played N times total">LOOP &times;<span id="ex-loopn">2</span></button>
+              <button id="ex-loop" title="Current settings with the loop body played N times total">LOOP &times;<span id="ex-loopn">2</span></button>
               <button id="ex-dec">&minus;</button>
               <button id="ex-inc">+</button>
             </div>
@@ -163,13 +160,13 @@
         </div>
         <button id="midibtn" title="Save this song's MIDI sequence, exactly as it sits on the disc">EXPORT MIDI</button>
         <div id="bank-wrap">
-          <button id="bankbtn" title="Save this song's instrument bank -- raw pair or decoded samples">EXPORT BANK</button>
+          <button id="bankbtn" title="Save this song's instrument bank: raw pair or decoded samples">EXPORT BANK</button>
           <div id="bank-menu" hidden>
             <button class="ex-row" id="bank-raw" title="A zip of the .hd + .bd pair, exactly as it sits on the disc">RAW .HD/.BD PAIR</button>
             <button class="ex-row" id="bank-kit" title="Every waveform decoded to a 44100 Hz WAV, loop points and root key in a smpl chunk">DECODED SAMPLES</button>
           </div>
         </div>
-        <button id="helpbtn" title="About Asset Lab audio playback (H)">?</button>
+        <button id="helpbtn" title="Audio playback help (H)">?</button>
       </header>
       <div id="bar">
         <div id="bar-loop"></div>
@@ -189,10 +186,10 @@
             <div id="s-time"><span id="s-cur">0:00.0</span> / <span id="s-len">0:00.0</span></div>
           </div>
           <div id="dials-s">
-            <button class="dial on" id="s-trim" title="Drop the trailing silent padding the files are authored with -- the median stream carries 6 s of it. Off = the full payload, exactly as streamed on console (T)">TRIM PAD</button>
+            <button class="dial on" id="s-trim" title="Drop trailing silent padding from the files. The median stream has 6 s. Off keeps the full payload, exactly as streamed on the console (T)">TRIM PAD</button>
           </div>
-          <button id="s-exportbtn" title="Save this stream as a WAV -- trimmed per the TRIM PAD dial (E)">EXPORT WAV</button>
-          <button id="s-rawbtn" title="Save this stream's .x file exactly as it sits on the disc -- the raw EXST container (0x78 header + ADPCM sectors), no decode (X)" disabled>EXPORT .X</button>
+          <button id="s-exportbtn" title="Save this stream as a WAV, trimmed according to TRIM PAD (E)">EXPORT WAV</button>
+          <button id="s-rawbtn" title="Save this stream's .x file exactly as it sits on the disc: the raw EXST container (0x78 header + ADPCM sectors), without decoding (X)" disabled>EXPORT .X</button>
         </header>
         <div id="s-bar">
           <div id="s-bar-pad"></div>
@@ -209,13 +206,13 @@
             <h2>STREAMED AUDIO</h2>
             <p>Extract monkey-phone calls, cutscene voice-over, minigame speech
             and music from loose <code>sound/stream</code> files and localized
-            <code>sound/stream.bin</code> archives. The first visit starts extraction
-            automatically; every source stays distinct in private browser storage.</p>
+            <code>sound/stream.bin</code> archives. On your first visit, the page extracts them
+            automatically and keeps each source separate in private browser storage.</p>
             <button id="s-extract">extract streams</button>
             <label id="s-iso-pick" hidden>
               <input id="s-iso" type="file" accept=".iso" />
-              <span>this session was resumed without the disc image &mdash;
-              choose your ISO once more to extract the streams</span>
+              <span>This session resumed without the disc image.
+              Choose the ISO again to extract the streams.</span>
             </label>
             <p id="s-setup-status"></p>
             <progress id="s-progress" max="1" value="0" hidden></progress>
@@ -231,10 +228,10 @@
               <span id="se-coord"></span></div>
           </div>
           <div id="dials-se">
-            <button class="dial" id="se-vol" title="Caller volume, 1–127 (- and =)">VOL 64</button>
-            <button class="dial" id="se-loop" title="Repeat an authored infinite stream jump or execute that stream once. Source loops can sustain independently (L)">LOOP &mdash;</button>
-            <button class="dial on" id="se-timing" title="Exact 480 Hz bytecode timing vs console 60 Hz quantization (T)">EXACT</button>
-            <button class="dial on" id="se-kernel" title="SPU2 gaussian kernel vs brighter interpolation (G)">GAUSS</button>
+            <button class="dial" id="se-vol" title="Caller volume, 1–127. Use - and = to adjust">VOL 64</button>
+            <button class="dial" id="se-loop" title="Repeat an authored infinite stream jump, or run that stream once. Source loops can continue independently (L)">LOOP &mdash;</button>
+            <button class="dial on" id="se-timing" title="Use exact 480 Hz bytecode timing instead of the console's 60 Hz quantization (T)">EXACT</button>
+            <button class="dial on" id="se-kernel" title="Use the SPU2 gaussian kernel or brighter interpolation (G)">GAUSS</button>
             <button class="dial on" id="se-rev" title="Hardware reverb depth 30; cue flags decide whether a voice enters the bus (R)">REV 30</button>
           </div>
           <div id="se-export-wrap">
@@ -252,7 +249,7 @@
           <div id="se-bar-fill"></div>
           <div id="se-bar-head"></div>
         </div>
-        <div id="se-info">Choose a bank, then one bank:request entry.</div>
+        <div id="se-info">Choose a bank, then select a bank:request entry.</div>
         <div id="se-stage" hidden>
           <canvas id="se-null" hidden></canvas>
           <div class="se-viz-panel">
@@ -275,15 +272,15 @@
         <div id="se-setup" hidden>
           <div id="se-setup-card">
             <h2>SEQUENCED SOUND EFFECTS</h2>
-            <p>Explore requests built from shared PS-ADPCM waveforms, positional
-            programs, and the game's 480&nbsp;Hz <code>seseq</code> bytecode.
-            The first visit extracts the available sound banks automatically
-            into private browser storage, preserving every language directory.</p>
+            <p>Browse requests built from shared PS-ADPCM waveforms, positional
+            programs, and the game's 480&nbsp;Hz <code>seseq</code> bytecode. On your
+            first visit, the page extracts the available sound banks into private browser
+            storage and keeps every language directory separate.</p>
             <button id="se-extract">extract SE banks</button>
             <label id="se-iso-pick" hidden>
               <input id="se-iso" type="file" accept=".iso" />
-              <span>this session was resumed without the disc image &mdash;
-              choose your ISO once more to extract the SE banks</span>
+              <span>This session resumed without the disc image.
+              Choose the ISO again to extract the SE banks.</span>
             </label>
             <p id="se-setup-status"></p>
             <progress id="se-progress" max="1" value="0" hidden></progress>
@@ -293,7 +290,7 @@
       <section id="fmv-main" hidden>
         <header id="fmv-head">
           <div>
-            <span class="fmv-kicker">DISC CINEMA / ADVANCED INSPECTION</span>
+            <span class="fmv-kicker">MOVIES / INSPECTION</span>
             <h2 id="fmv-heading">FMV ASSETS</h2>
           </div>
         </header>
@@ -359,8 +356,8 @@
         <section id="fmv-export" aria-labelledby="fmv-export-title">
           <header>
             <div>
-              <span class="fmv-kicker">LOCAL EXPORT LAB</span>
-              <h3 id="fmv-export-title">DERIVATIVES</h3>
+              <span class="fmv-kicker">LOCAL EXPORTS</span>
+              <h3 id="fmv-export-title">EXPORT FORMATS</h3>
             </div>
             <label class="fmv-caption-export">
               <input id="fmv-export-captions" type="checkbox" />
@@ -389,7 +386,7 @@
       <section id="image-main" hidden>
         <header id="image-head">
           <div>
-            <span class="image-kicker">DISC ART / TIM2</span>
+            <span class="image-kicker">IMAGES / TIM2</span>
             <h2>IMAGES &amp; SPRITE SHEETS</h2>
           </div>
           <div id="image-actions">
@@ -423,14 +420,14 @@
         </div>
         <div id="image-setup" hidden>
           <div id="image-setup-card">
-            <h2>IMAGE &amp; SPRITE ARCHIVE</h2>
+            <h2>IMAGE AND SPRITE ARCHIVE</h2>
             <p>Scan every TIM2 texture stored directly in <code>DATA.BIN</code> and
-              inside its compressed PCK packages. Source textures stay in private
-              browser storage; previews and PNG exports are decoded locally.</p>
+              inside its compressed PCK packages. The page keeps source textures in private
+              browser storage and decodes previews and PNG exports locally.</p>
             <button id="image-extract">scan image archive</button>
             <label id="image-iso-pick" hidden>
               <input id="image-iso" type="file" accept=".iso,application/x-iso9660-image" />
-              <span>reconnect the same disc once to scan its image packages</span>
+              <span>Reconnect the same disc to scan its image packages</span>
             </label>
             <p id="image-setup-status"></p>
             <progress id="image-progress" max="1" value="0" hidden></progress>
@@ -440,7 +437,7 @@
       <section id="stage-preview-main" hidden>
         <header id="stage-preview-head">
           <div>
-            <span class="stage-preview-kicker">WARPGATE / IPC STILL LAB</span>
+            <span class="stage-preview-kicker">WARPGATE / IPC STILLS</span>
             <h2>STAGE PREVIEWS</h2>
           </div>
           <div id="stage-preview-actions">
@@ -498,11 +495,11 @@
         </div>
         <div id="stage-preview-setup">
           <div id="stage-preview-setup-card">
-            <span class="stage-preview-kicker">LAZY / LOCAL / SOURCE-PRESERVING</span>
+            <span class="stage-preview-kicker">LOCAL / ORIGINAL FILES</span>
             <h2>STAGE PREVIEW ARCHIVE</h2>
-            <p>Asset Lab finds every localized <code>etc/warpgate/str/stages.bin</code>
-              when this tool opens. Each original archive is cached separately;
-              IPC stills and TIM2 title art are decoded locally.</p>
+            <p>When this tab opens, the page scans each localized <code>etc/warpgate/str/stages.bin</code>
+              archive. It caches each original archive separately and decodes IPC stills
+              and TIM2 title art in the browser.</p>
             <p id="stage-preview-setup-status" aria-live="polite">Opening stage archive…</p>
             <progress id="stage-preview-progress" max="1"></progress>
             <label id="stage-preview-iso-pick" hidden>
@@ -516,8 +513,8 @@
       <section id="model-main" hidden>
         <header id="model-head">
           <div>
-            <span class="model-kicker">SG2 / I3D ASSET STAGE</span>
-            <h2>MODELS &amp; ANIMATION</h2>
+            <span class="model-kicker">SG2 / I3D MODELS</span>
+            <h2>MODELS &amp; ANIMATIONS</h2>
           </div>
           <div id="model-actions">
             <button id="model-export-source" type="button" disabled>EXPORT SOURCE</button>
@@ -525,7 +522,7 @@
           </div>
         </header>
         <div id="model-workspace" hidden>
-          <section id="model-viewport" aria-label="Realtime 3D model preview. Drag the background to orbit. Use the Rotate tool to turn the model freely or around one axis.">
+          <section id="model-viewport" aria-label="Real-time 3D model preview. Drag the background to orbit. Use the Rotate tool to turn the model freely or around one axis.">
             <canvas id="model-canvas"></canvas>
             <div id="model-toolbar" aria-label="3D view options">
               <button id="model-reset-view" type="button" aria-label="Frame model"
@@ -597,10 +594,10 @@
         </div>
         <div id="model-setup">
           <div id="model-setup-card">
-            <span class="model-kicker">LOCAL / SOURCE-PRESERVING</span>
-            <h2>BUILD THE 3D ARCHIVE</h2>
+            <span class="model-kicker">LOCAL / ORIGINAL FILES</span>
+            <h2>3D ASSET ARCHIVE</h2>
             <p>Scan every I3D model, skeletal animation, and collision mesh in
-              <code>DATA.BIN</code>. Models are rendered locally with their TIM2 textures,
+              <code>DATA.BIN</code>. The page renders models locally with their TIM2 textures,
               skinning, and compatible package animations. Nothing leaves this browser.</p>
             <button id="model-extract" type="button">SCAN 3D ARCHIVE</button>
             <label id="model-iso-pick" hidden>
@@ -615,54 +612,47 @@
       <section id="report-main" hidden aria-labelledby="report-title">
         <header id="report-head">
           <div>
-            <span class="report-kicker">DISC / BUILD QUALIFICATION</span>
             <h2 id="report-title">Compatibility report</h2>
-            <p>Run the same bounded catalog checks used by the SDK command,
-              then keep the complete machine-readable result with this disc.</p>
+            <p>Scan images, sound effects, and movie headers for read errors.</p>
           </div>
           <div id="report-actions">
-            <span id="report-state">NOT RUN</span>
-            <button id="report-run" type="button">RUN FULL REPORT</button>
-            <button id="report-copy-markdown" type="button" disabled>COPY TABLE</button>
-            <button id="report-copy-json" type="button" disabled>COPY JSON</button>
+            <span id="report-state" role="status">Not run</span>
+            <button id="report-run" type="button">Run report</button>
+            <button id="report-copy-markdown" type="button" title="Copy a Markdown summary table" disabled>Copy table</button>
+            <button id="report-copy-json" type="button" title="Copy the full report as JSON" disabled>Copy JSON</button>
           </div>
         </header>
 
         <div id="report-content">
           <section id="report-intro" aria-labelledby="report-intro-title">
-            <div class="report-intro-mark" aria-hidden="true">
-              <span>01</span><i></i><span>02</span><i></i><span>03</span>
-            </div>
             <div>
-              <span class="report-kicker">REPRODUCIBLE / LOCAL / DATA-FREE</span>
-              <h3 id="report-intro-title">Qualify the archive, not the filename.</h3>
-              <p>The scan parses image containers and TIM2 metadata, reads every
-                paired effect bank, and inspects the bounded header region of
-                every discovered movie. Nothing leaves this browser.</p>
-              <p class="report-scope-note">A passing catalog report does not claim
-                manual movie playback or sound-effect rendering. Record those
-                observations separately.</p>
+              <h3 id="report-intro-title">What the scan checks</h3>
+              <p>The scan reads image containers and TIM2 metadata, checks paired
+                sound-effect banks, and reads movie headers. It uses the same
+                checks as the SDK command and runs entirely in your browser.</p>
+              <p class="report-scope-note">This checks file structure, not playback.
+                It does not play movies or render sound effects. Keep any playback
+                observations separate from the report.</p>
               <label id="report-iso-pick" hidden>
                 <input id="report-iso" type="file"
                   accept=".iso,application/x-iso9660-image" />
-                <span>Reconnect the same ISO to generate or refresh this report.</span>
+                <span>Choose the same ISO to run the scan.</span>
               </label>
             </div>
           </section>
 
           <section id="report-progress-panel" hidden aria-live="polite">
             <div>
-              <span id="report-progress-family">IMAGES</span>
+              <span id="report-progress-family">Images</span>
               <strong id="report-progress-label">Preparing scan…</strong>
             </div>
-            <progress id="report-progress" max="1" value="0"></progress>
+            <progress id="report-progress" max="1" value="0" aria-label="Current scan progress"></progress>
           </section>
 
           <div id="report-results" hidden>
             <section id="report-identity" aria-labelledby="report-identity-title">
               <header>
-                <span class="report-kicker">SOURCE IDENTITY</span>
-                <h3 id="report-identity-title">Observed disc</h3>
+                <h3 id="report-identity-title">Disc details</h3>
               </header>
               <dl>
                 <div><dt>Serial</dt><dd id="report-serial">—</dd></div>
@@ -675,38 +665,34 @@
 
             <section id="report-family-grid" aria-label="Compatibility checks">
               <article class="report-family-card" data-report-card="images">
-                <header><span>01 / IMAGES</span><strong>NOT RUN</strong></header>
+                <header><span>Images</span><strong>Not run</strong></header>
                 <div class="report-family-value">—</div>
-                <p class="report-family-detail">PCK/SZ and TIM2 inspection</p>
-                <ul><li>PCK/SZ parsing</li><li>TIM2 inspection</li></ul>
+                <p class="report-family-detail">Image containers and TIM2 metadata</p>
               </article>
               <article class="report-family-card" data-report-card="effects">
-                <header><span>02 / EFFECTS</span><strong>NOT RUN</strong></header>
+                <header><span>Sound effects</span><strong>Not run</strong></header>
                 <div class="report-family-value">—</div>
-                <p class="report-family-detail">HD/BD pairing and header reads</p>
-                <ul><li>Complete file reads</li><li>SShd header</li></ul>
+                <p class="report-family-detail">Paired HD/BD files and sound-bank headers</p>
               </article>
               <article class="report-family-card" data-report-card="fmv">
-                <header><span>03 / FMV</span><strong>NOT RUN</strong></header>
+                <header><span>Movies</span><strong>Not run</strong></header>
                 <div class="report-family-value">—</div>
-                <p class="report-family-detail">STR and MPEG metadata inspection</p>
-                <ul><li>Subtitle sidecar pairing</li><li>Bounded STR/MPEG inspection</li></ul>
+                <p class="report-family-detail">STR/MPEG headers and subtitle file pairs</p>
               </article>
             </section>
 
             <section id="report-issues" hidden aria-labelledby="report-issues-title">
               <header>
-                <span class="report-kicker">EXCEPTIONS</span>
                 <h3 id="report-issues-title">Items needing attention</h3>
               </header>
               <ul id="report-issue-list"></ul>
             </section>
 
             <details id="report-movies">
-              <summary>Inspected movie metadata <span id="report-movie-count">0</span></summary>
+              <summary>Movie metadata <span id="report-movie-count">0</span></summary>
               <div class="report-table-wrap">
                 <table>
-                  <thead><tr><th>Name</th><th>Frame</th><th>Order</th><th>Rate</th></tr></thead>
+                  <thead><tr><th>Name</th><th>Dimensions</th><th>Field order</th><th>Frame rate</th></tr></thead>
                   <tbody id="report-movie-rows"></tbody>
                 </table>
               </div>
@@ -732,7 +718,7 @@
       </footer>
       <div id="help" hidden>
         <div id="help-inner">
-          <header><h1>AUDIO PLAYBACK IN ASSET LAB</h1><span>Press H or ESC to close</span></header>
+          <header><h1>AUDIO PLAYBACK HELP</h1><span>Press H or ESC to close</span></header>
           <section>
             <h2>The audio engine</h2>
             <p>Asset Lab reimplements the game's PS2 sound driver. It decodes
@@ -874,20 +860,20 @@
   <div id="picker">
     <div id="picker-card">
       <h1>AE3 Asset Lab</h1>
-      <p>Point this page at your own <em>Ape Escape 3</em> disc image
-        (<code>.iso</code>). Explore music, streams, sound effects, movies, images,
-        stage previews, models, collision, and skeletal animation
-        extracted <strong>in your browser</strong>. Nothing is uploaded, and
-        this site ships no game data.</p>
+      <p>Choose your own <em>Ape Escape 3</em> disc image
+        (<code>.iso</code>) to browse music, streams, sound effects, movies, images,
+        stage previews, models, collision meshes, and skeletal animation. The page
+        extracts these assets <strong>in your browser</strong>. Nothing is uploaded, and
+        this site includes no game data.</p>
       <label id="drop">
         <input id="file" type="file" accept=".iso" />
-        <span id="drop-label">drop the ISO here, or click to choose</span>
+        <span id="drop-label">Drop an ISO here, or click to choose one</span>
       </label>
       <p id="picker-status"></p>
       <progress id="picker-progress" max="1" value="0" hidden></progress>
       <span class="monkey-tv-disabled monkey-tv-picker-disabled" title="Monkey TV is in development.">
         <button id="monkey-tv-picker-link" type="button" disabled
-          aria-label="Open the Monkey TV viewer — in development">open the Monkey TV viewer &rarr;</button>
+          aria-label="Open the Monkey TV viewer (in development)">open the Monkey TV viewer &rarr;</button>
       </span>
     </div>
   </div>

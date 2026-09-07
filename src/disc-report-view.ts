@@ -38,10 +38,10 @@ function bytes(value: number): string {
 
 function statusLabel(status: DiscSupportStatus): string {
     switch (status) {
-        case "passed": return "PASSED";
-        case "partial": return "PARTIAL";
-        case "failed": return "FAILED";
-        case "not-found": return "NOT FOUND";
+        case "passed": return "Passed";
+        case "partial": return "Partial";
+        case "failed": return "Failed";
+        case "not-found": return "Not found";
     }
 }
 
@@ -119,7 +119,7 @@ export class DiscReportView {
         input.value = "";
         const store = this.store;
         if (!file || !store || this.busy) return;
-        this.setBusy(true, "ATTACHING DISC", "Validating source identity…");
+        this.setBusy(true, "Disc", "Checking that this is the same disc…");
         try {
             await store.attachIso(file);
             if (this.store !== store) return;
@@ -146,7 +146,7 @@ export class DiscReportView {
     }
 
     private async generate(store: DiscReportStore, force: boolean): Promise<void> {
-        this.setBusy(true, "PREPARING", "Opening DATA.BIN catalog…");
+        this.setBusy(true, "Preparing", "Opening DATA.BIN…");
         this.resetSideSteps();
         try {
             const report = await store.generate(progress =>
@@ -173,21 +173,26 @@ export class DiscReportView {
         this.busy = busy;
         const panel = $("report-progress-panel");
         panel.hidden = !busy;
-        $<HTMLButtonElement>("report-run").disabled = busy;
+        $<HTMLButtonElement>("report-run").disabled = busy || !this.store;
+        $<HTMLButtonElement>("report-copy-json").disabled = busy || !this.report;
+        $<HTMLButtonElement>("report-copy-markdown").disabled = busy || !this.report;
+        $<HTMLInputElement>("report-iso").disabled = busy;
         if (busy) {
             $("report-progress-family").textContent = family;
             $("report-progress-label").textContent = detail;
             $<HTMLProgressElement>("report-progress").value = 0;
-            $("report-state").textContent = "SCANNING";
+            $("report-state").textContent = "Scanning";
             $("report-state").dataset.status = "scanning";
-            $("report-side-state").textContent = "SCANNING";
+            $("report-side-state").textContent = "Scanning";
         }
     }
 
     private renderProgress(progress: DiscSupportProgress): void {
         const familyIndex = FAMILY_ORDER.indexOf(progress.family);
         const ratio = progress.total > 0 ? progress.done / progress.total : 0;
-        $("report-progress-family").textContent = progress.family.toUpperCase();
+        $("report-progress-family").textContent =
+            progress.family === "fmv" ? "Movies"
+                : progress.family === "effects" ? "Sound effects" : "Images";
         const label = progress.path === "done"
             ? `${count(progress.total)} checks complete`
             : progress.path;
@@ -214,9 +219,9 @@ export class DiscReportView {
             return;
         }
         const state = $("report-state");
-        state.textContent = "FAILED";
+        state.textContent = "Failed";
         state.dataset.status = "failed";
-        $("report-side-state").textContent = "FAILED";
+        $("report-side-state").textContent = "Failed";
         const active = document.querySelector<HTMLElement>(
             ".report-side-steps li[data-state=\"active\"]",
         );
@@ -231,15 +236,16 @@ export class DiscReportView {
         $("report-results").hidden = true;
         $("report-progress-panel").hidden = true;
         const state = $("report-state");
-        state.textContent = "NOT RUN";
+        state.textContent = "Not run";
         state.dataset.status = "waiting";
-        $("report-side-state").textContent = "NOT RUN";
+        $("report-side-state").textContent = "Not run";
         const run = $<HTMLButtonElement>("report-run");
-        run.textContent = "RUN FULL REPORT";
-        run.disabled = false;
+        run.textContent = "Run report";
+        run.disabled = !this.store;
         $<HTMLButtonElement>("report-copy-json").disabled = true;
         $<HTMLButtonElement>("report-copy-markdown").disabled = true;
         $("report-iso-pick").hidden = this.store?.hasIso() ?? true;
+        $<HTMLInputElement>("report-iso").disabled = false;
         this.resetSideSteps();
     }
 
@@ -262,31 +268,31 @@ export class DiscReportView {
     private renderReport(report: DiscSupportReport): void {
         $("report-results").hidden = false;
         $("report-serial").textContent = report.disc.serial ?? "Unknown";
-        $("report-volume").textContent = report.disc.volumeId;
+        $("report-volume").textContent = report.disc.volumeId || "Not set";
         $("report-data-size").textContent = bytes(report.disc.dataBinBytes);
         $("report-vfi-entries").textContent = count(report.disc.vfiEntries);
         $("report-table-hash").textContent = report.disc.tableSha256;
 
         this.renderFamily("images", report.images.status,
-            counted(report.images.pictures, "picture").toUpperCase(),
+            counted(report.images.pictures, "picture"),
             `${counted(report.images.textures, "texture")} across `
                 + counted(report.images.containers, "container"));
         this.renderFamily("effects", report.effects.status,
             `${count(report.effects.inspectedBanks)} / ${count(report.effects.pairedBanks)} `
-                + `${report.effects.pairedBanks === 1 ? "BANK" : "BANKS"}`,
+                + `${report.effects.pairedBanks === 1 ? "bank" : "banks"} checked`,
             `${bytes(report.effects.bytesRead)} read from `
-                + (report.effects.directories.join(", ") || "no effects tree"));
+                + (report.effects.directories.join(", ") || "no sound-effect directories"));
         this.renderFamily("fmv", report.fmv.status,
             `${count(report.fmv.inspected)} / ${count(report.fmv.discovered)} `
-                + `${report.fmv.discovered === 1 ? "MOVIE" : "MOVIES"}`,
-            "Bounded STR and MPEG metadata inspection");
+                + `${report.fmv.discovered === 1 ? "movie" : "movies"} checked`,
+            "STR/MPEG headers and subtitle file pairs");
 
         const statuses = [report.images.status, report.effects.status, report.fmv.status];
         const overall = statuses.includes("failed")
-            ? "FAILED"
+            ? "Failed"
             : statuses.includes("partial")
-                ? "PARTIAL"
-                : "COMPLETE";
+                ? "Partial"
+                : "Complete";
         const state = $("report-state");
         state.textContent = overall;
         state.dataset.status = overall.toLowerCase();
@@ -300,7 +306,7 @@ export class DiscReportView {
         this.renderMovies(report);
         $("report-json").textContent = `${JSON.stringify(report, null, 2)}\n`;
         const run = $<HTMLButtonElement>("report-run");
-        run.textContent = "REFRESH REPORT";
+        run.textContent = "Run again";
         run.disabled = false;
         $<HTMLButtonElement>("report-copy-json").disabled = false;
         $<HTMLButtonElement>("report-copy-markdown").disabled = false;
@@ -367,15 +373,15 @@ export class DiscReportView {
         const button = $<HTMLButtonElement>(
             format === "json" ? "report-copy-json" : "report-copy-markdown",
         );
-        const original = button.textContent ?? "COPY";
+        const original = button.textContent ?? "Copy";
         const text = format === "json"
             ? `${JSON.stringify(report, null, 2)}\n`
             : formatDiscSupportMarkdown(report);
         try {
             await navigator.clipboard.writeText(text);
-            button.textContent = "COPIED";
+            button.textContent = "Copied";
             window.setTimeout(() => {
-                if (button.textContent === "COPIED") button.textContent = original;
+                if (button.textContent === "Copied") button.textContent = original;
             }, 1200);
         } catch (error) {
             this.dependencies.status(this.dependencies.friendlyError(error), true);

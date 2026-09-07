@@ -589,7 +589,7 @@ const KEYS_IMAGES = "↑↓ image · ENTER preview · E PNG · X original TM2 ·
 const KEYS_STAGE_PREVIEWS = "↑↓ stage · ←→ frame · E preview PNG · X IPC · T TM2 · A stages.bin";
 const KEYS_MODELS = "↑↓ asset · ENTER preview · SPACE play/pause animation · "
     + "drag background to orbit · enable ROTATE, then drag center freely or an X/Y/Z ring";
-const KEYS_REPORT = "Run bounded catalog checks · copy the Markdown row or complete JSON report";
+const KEYS_REPORT = "Check file structure · copy a Markdown summary or the full JSON report";
 
 const sDur = (e: StreamEntry): number =>
     e.sectors * (2048 / e.channels / 16 * 28) / e.rate;
@@ -3201,6 +3201,7 @@ function onKey(e: KeyboardEvent): void {
         if (e.key === "Escape") target.blur();
         return;
     }
+    if (tab === "report") return;
     if (tab === "stage-previews") {
         if (stagePreviewBrowser?.handleKey(e)) e.preventDefault();
         return;
